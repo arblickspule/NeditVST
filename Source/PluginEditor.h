@@ -6,15 +6,6 @@
 #include "SubdivisionProbabilityGrid.h"
 
 //==============================================================================
-/** Step-18 editor: load button, reset-edits safety net, undo/redo, status
-    label, loop-length/sensitivity controls (with a live preview while
-    dragging sensitivity), fade controls, pitch mode (Repitch vs
-    Time-Stretch, with its grain size/window shape/pitch shift controls),
-    trigger mode (Slice Length vs Clock, with its clock-reference menu and
-    subdivision probability grid), and the waveform display — which owns
-    slice visualization, drag-and-drop loading, per-slice probability,
-    manual slice add/move/remove, deleting auto-detected transients, a
-    live playhead highlight, and modifier-key hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -28,13 +19,17 @@ public:
 
 private:
     void buttonClicked (juce::Button* button) override;
-    void timerCallback() override; // keeps Undo/Redo enabled-state in sync
+    void timerCallback() override;
     void chooseAndLoadFile();
-    void updateAfterSampleOrSliceChange(); // refreshes status text, BPM display, and the waveform
-    void updateTriggerModeVisibility(); // shows/hides the Clock-only controls
-    void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
+    void updateAfterSampleOrSliceChange();
+    void updateTriggerModeVisibility();
+    void updatePitchModeVisibility();
+    void refreshAllControls();
 
     SlicerAudioProcessor& processor;
+
+    juce::Viewport viewport;
+    juce::Component contentComponent;
 
     juce::TextButton loadButton { "Load Sample..." };
     juce::TextButton resetEditsButton { "Reset edits" };
@@ -43,22 +38,18 @@ private:
     juce::Label statusLabel;
 
     juce::Label loopLengthLabel;
-    juce::Slider loopLengthSlider; // integer bars, e.g. 1-8
+    juce::Slider loopLengthSlider;
     juce::Label calculatedBpmLabel;
 
     juce::Label pitchModeLabel;
-    juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch"
+    juce::ComboBox pitchModeSelector;
 
-    // Time-Stretch-only controls — same reserved-space/hide pattern as the
-    // Clock-mode-only controls below (grain overlap is fixed at 50% and
-    // deliberately not exposed here). Repitch mode doesn't get a pitch
-    // slider — pitch is already intentionally tied to tempo there.
     juce::Label grainSizeLabel;
     juce::Slider grainSizeSlider;
     juce::Label windowShapeLabel;
-    juce::ComboBox windowShapeSelector; // "Hann" / "Triangular"
+    juce::ComboBox windowShapeSelector;
     juce::Label pitchShiftLabel;
-    juce::Slider pitchShiftSlider; // semitones, -24 to +24
+    juce::Slider pitchShiftSlider;
 
     juce::Label sensitivityLabel;
     juce::Slider sensitivitySlider;
@@ -69,11 +60,8 @@ private:
     juce::Slider fadeOutSlider;
 
     juce::Label triggerModeLabel;
-    juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
+    juce::ComboBox triggerModeSelector;
 
-    // Clock-mode-only controls — laid out in reserved space, hidden
-    // (setVisible(false)) rather than the window resizing dynamically,
-    // whenever Slice Length mode is selected.
     juce::Label clockReferenceLabel;
     juce::ComboBox clockReferenceSelector;
 
@@ -83,6 +71,9 @@ private:
     WaveformDisplay waveformDisplay;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
+
+    static constexpr int headerHeight = 30;
+    static constexpr int maxWindowHeight = 960;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SlicerAudioProcessorEditor)
 };

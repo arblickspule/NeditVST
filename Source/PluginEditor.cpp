@@ -4,33 +4,38 @@
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p)
 {
-    addAndMakeVisible (loadButton);
+    addAndMakeVisible (viewport);
+    viewport.setViewedComponent (&contentComponent, false);
+    viewport.setScrollOnDragMode (juce::Viewport::ScrollOnDragMode::all);
+    viewport.setScrollBarThickness (8);
+
+    contentComponent.addAndMakeVisible (loadButton);
     loadButton.addListener (this);
 
-    addAndMakeVisible (resetEditsButton);
+    contentComponent.addAndMakeVisible (resetEditsButton);
     resetEditsButton.addListener (this);
 
-    addAndMakeVisible (undoButton);
+    contentComponent.addAndMakeVisible (undoButton);
     undoButton.addListener (this);
     undoButton.setEnabled (false);
 
-    addAndMakeVisible (redoButton);
+    contentComponent.addAndMakeVisible (redoButton);
     redoButton.addListener (this);
     redoButton.setEnabled (false);
 
-    startTimerHz (10); // keeps Undo/Redo enabled-state in sync with the processor
+    startTimerHz (10);
 
-    addAndMakeVisible (statusLabel);
+    contentComponent.addAndMakeVisible (statusLabel);
     statusLabel.setJustificationType (juce::Justification::centred);
     statusLabel.setText (processor.hasSample() ? processor.getLoadedFileName()
                                                 : "No sample loaded",
                           juce::dontSendNotification);
 
-    addAndMakeVisible (loopLengthLabel);
+    contentComponent.addAndMakeVisible (loopLengthLabel);
     loopLengthLabel.setText ("Loop length (bars)", juce::dontSendNotification);
     loopLengthLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (loopLengthSlider);
+    contentComponent.addAndMakeVisible (loopLengthSlider);
     loopLengthSlider.setSliderStyle (juce::Slider::IncDecButtons);
     loopLengthSlider.setRange (1.0, 8.0, 1.0);
     loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
@@ -43,14 +48,14 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                      juce::dontSendNotification);
     };
 
-    addAndMakeVisible (calculatedBpmLabel);
+    contentComponent.addAndMakeVisible (calculatedBpmLabel);
     calculatedBpmLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (pitchModeLabel);
+    contentComponent.addAndMakeVisible (pitchModeLabel);
     pitchModeLabel.setText ("Pitch mode", juce::dontSendNotification);
     pitchModeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (pitchModeSelector);
+    contentComponent.addAndMakeVisible (pitchModeSelector);
     pitchModeSelector.addItem ("Repitch", 1);
     pitchModeSelector.addItem ("Time-Stretch", 2);
     pitchModeSelector.setSelectedId (processor.getPitchMode() == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1,
@@ -63,11 +68,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updatePitchModeVisibility();
     };
 
-    addAndMakeVisible (grainSizeLabel);
+    contentComponent.addAndMakeVisible (grainSizeLabel);
     grainSizeLabel.setText ("Grain size (ms)", juce::dontSendNotification);
     grainSizeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (grainSizeSlider);
+    contentComponent.addAndMakeVisible (grainSizeSlider);
     grainSizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     grainSizeSlider.setRange (20.0, 150.0, 1.0);
     grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
@@ -77,11 +82,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setGrainSizeMs ((float) grainSizeSlider.getValue());
     };
 
-    addAndMakeVisible (windowShapeLabel);
+    contentComponent.addAndMakeVisible (windowShapeLabel);
     windowShapeLabel.setText ("Window shape", juce::dontSendNotification);
     windowShapeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (windowShapeSelector);
+    contentComponent.addAndMakeVisible (windowShapeSelector);
     windowShapeSelector.addItem ("Hann", 1);
     windowShapeSelector.addItem ("Triangular", 2);
     windowShapeSelector.setSelectedId (processor.getGrainWindowShape() == SlicerAudioProcessor::GrainWindowShape::triangular ? 2 : 1,
@@ -93,11 +98,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                                     : SlicerAudioProcessor::GrainWindowShape::hann);
     };
 
-    addAndMakeVisible (pitchShiftLabel);
+    contentComponent.addAndMakeVisible (pitchShiftLabel);
     pitchShiftLabel.setText ("Pitch shift (semitones)", juce::dontSendNotification);
     pitchShiftLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (pitchShiftSlider);
+    contentComponent.addAndMakeVisible (pitchShiftSlider);
     pitchShiftSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     pitchShiftSlider.setRange (-24.0, 24.0, 1.0);
     pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
@@ -107,26 +112,17 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setPitchShiftSemitones ((float) pitchShiftSlider.getValue());
     };
 
-    addAndMakeVisible (sensitivityLabel);
+    contentComponent.addAndMakeVisible (sensitivityLabel);
     sensitivityLabel.setText ("Transient sensitivity", juce::dontSendNotification);
     sensitivityLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (sensitivitySlider);
+    contentComponent.addAndMakeVisible (sensitivitySlider);
     sensitivitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
     sensitivitySlider.setRange (0.0, 1.0, 0.01);
     sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
     sensitivitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
     sensitivitySlider.onValueChange = [this]
     {
-        // Committing (which resets every slice probability and briefly
-        // restarts the chain) on EVERY value change would fire many times
-        // a second while the user scrubs the slider — that's what was
-        // causing the "rapid retriggering" glitch, and it was also
-        // silently wiping any probability edits made on the waveform with
-        // every pixel of movement. While actually dragging, just show a
-        // live PREVIEW of where slices would land — no commit, no sound,
-        // no lost edits — and only commit for real on release (onDragEnd)
-        // or for non-drag changes (keyboard nudge, text box entry).
         if (sensitivitySlider.isMouseButtonDown())
         {
             auto preview = processor.previewSlicesAtSensitivity ((float) sensitivitySlider.getValue());
@@ -143,11 +139,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateAfterSampleOrSliceChange();
     };
 
-    addAndMakeVisible (fadeInLabel);
+    contentComponent.addAndMakeVisible (fadeInLabel);
     fadeInLabel.setText ("Fade in (ms)", juce::dontSendNotification);
     fadeInLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (fadeInSlider);
+    contentComponent.addAndMakeVisible (fadeInSlider);
     fadeInSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     fadeInSlider.setRange (0.0, 100.0, 0.5);
     fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
@@ -157,11 +153,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setFadeInMs ((float) fadeInSlider.getValue());
     };
 
-    addAndMakeVisible (fadeOutLabel);
+    contentComponent.addAndMakeVisible (fadeOutLabel);
     fadeOutLabel.setText ("Fade out (ms)", juce::dontSendNotification);
     fadeOutLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (fadeOutSlider);
+    contentComponent.addAndMakeVisible (fadeOutSlider);
     fadeOutSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     fadeOutSlider.setRange (0.0, 100.0, 0.5);
     fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
@@ -171,11 +167,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setFadeOutMs ((float) fadeOutSlider.getValue());
     };
 
-    addAndMakeVisible (triggerModeLabel);
+    contentComponent.addAndMakeVisible (triggerModeLabel);
     triggerModeLabel.setText ("Trigger mode", juce::dontSendNotification);
     triggerModeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (triggerModeSelector);
+    contentComponent.addAndMakeVisible (triggerModeSelector);
     triggerModeSelector.addItem ("Slice Length", 1);
     triggerModeSelector.addItem ("Clock", 2);
     triggerModeSelector.setSelectedId (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::clock ? 2 : 1,
@@ -188,36 +184,35 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateTriggerModeVisibility();
     };
 
-    addAndMakeVisible (clockReferenceLabel);
+    contentComponent.addAndMakeVisible (clockReferenceLabel);
     clockReferenceLabel.setText ("Clock reference", juce::dontSendNotification);
     clockReferenceLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (clockReferenceSelector);
+    contentComponent.addAndMakeVisible (clockReferenceSelector);
     for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        clockReferenceSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+        clockReferenceSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1);
     clockReferenceSelector.setSelectedId (processor.getClockReferenceIndex() + 1, juce::dontSendNotification);
     clockReferenceSelector.onChange = [this]
     {
         processor.setClockReferenceIndex (clockReferenceSelector.getSelectedId() - 1);
     };
 
-    addAndMakeVisible (subdivisionTableLabel);
+    contentComponent.addAndMakeVisible (subdivisionTableLabel);
     subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
     subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
 
-    addAndMakeVisible (subdivisionGrid);
+    contentComponent.addAndMakeVisible (subdivisionGrid);
 
     updateTriggerModeVisibility();
     updatePitchModeVisibility();
 
-    addAndMakeVisible (waveformDisplay);
+    contentComponent.addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
-    // Showing all note-value rows at once (no more horizontal scrolling)
-    // needs more vertical space than the old 90px strip did, and the
-    // Pitch mode row + reserved Time-Stretch controls (now including the
-    // pitch shift slider) need more still.
-    setSize (600, 920 + SubdivisionProbabilityGrid::getPreferredHeight());
+    const int contentHeight = 920 + SubdivisionProbabilityGrid::getPreferredHeight();
+    const int windowWidth = 600;
+    const int windowHeight = juce::jmin (contentHeight + headerHeight, maxWindowHeight);
+    setSize (windowWidth, windowHeight);
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -235,13 +230,20 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
     g.drawFittedText ("NeditVST — step 18: time-stretch pitch control",
-                       getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
+                       getLocalBounds().removeFromTop (headerHeight), juce::Justification::centred, 1);
 }
 
 void SlicerAudioProcessorEditor::resized()
 {
-    auto area = getLocalBounds().reduced (20);
-    area.removeFromTop (30); // space for the paint() header text
+    auto editorArea = getLocalBounds();
+    editorArea.removeFromTop (headerHeight); // paint() draws the header here
+    viewport.setBounds (editorArea);
+
+    const int contentWidth = editorArea.getWidth();
+    const int contentHeight = 920 + SubdivisionProbabilityGrid::getPreferredHeight();
+    contentComponent.setSize (contentWidth, contentHeight);
+
+    auto area = contentComponent.getLocalBounds().reduced (20);
 
     auto topButtonRow = area.removeFromTop (40);
     loadButton.setBounds (topButtonRow.removeFromLeft (topButtonRow.getWidth() - 110));
@@ -313,7 +315,7 @@ void SlicerAudioProcessorEditor::resized()
     redoButton.setBounds (undoRedoRow.removeFromLeft (100));
     area.removeFromTop (10);
 
-    waveformDisplay.setBounds (area); // takes up all remaining space
+    waveformDisplay.setBounds (area);
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
@@ -400,4 +402,37 @@ void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
                                  juce::dontSendNotification);
 
     waveformDisplay.refresh();
+}
+
+void SlicerAudioProcessorEditor::refreshAllControls()
+{
+    loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
+
+    const double bpm = processor.getCalculatedOriginalBpm();
+    calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
+                                 juce::dontSendNotification);
+
+    pitchModeSelector.setSelectedId (processor.getPitchMode() == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1,
+                                      juce::dontSendNotification);
+    updatePitchModeVisibility();
+
+    grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
+    windowShapeSelector.setSelectedId (processor.getGrainWindowShape() == SlicerAudioProcessor::GrainWindowShape::triangular ? 2 : 1,
+                                        juce::dontSendNotification);
+    pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
+
+    sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
+
+    fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
+    fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
+
+    triggerModeSelector.setSelectedId (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::clock ? 2 : 1,
+                                        juce::dontSendNotification);
+    updateTriggerModeVisibility();
+
+    clockReferenceSelector.setSelectedId (processor.getClockReferenceIndex() + 1, juce::dontSendNotification);
+
+    subdivisionGrid.repaint();
+
+    updateAfterSampleOrSliceChange();
 }
