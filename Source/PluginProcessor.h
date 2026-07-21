@@ -307,7 +307,7 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
-    //=== Playback style (Step 19/21) ===
+    //=== Playback style (Step 19/21/22) ===
     // A weighted table, independent of (but rolled at the same time as)
     // the slice/subdivision picks above: Forward is today's behaviour;
     // Ping-Pong plays a slice forward then immediately backward before
@@ -318,15 +318,21 @@ public:
     // (see setTapeStopScope() for how that duration is chosen in Clock
     // mode), as an additional multiplier layered on top of whatever the
     // Pitch Mode already produces — same "shared multiplier" pattern,
-    // just applied at the rate/gain level instead of the position level.
-    // Defaults to Forward-only (weight 0 on Ping-Pong and Tape Stop)
-    // rather than even odds like the other tables — that's what
-    // guarantees the default sounds byte-identical to before this
-    // existed, not just "usually."
-    enum class PlaybackStyle { forward, pingPong, tapeStop };
+    // just applied at the rate/gain level instead of the position level;
+    // Stretch always renders through GranularStretcher regardless of the
+    // global Pitch Mode setting — a deliberate character effect, not
+    // something that should vanish depending on an unrelated toggle —
+    // using its own small, hardcoded grain size and a hard-edged window
+    // (see stretchCharacterGrainSizeMs/WindowShape::hardEdge), stretching
+    // the pick to stretchDurationMultiplier times its natural length.
+    // Defaults to Forward-only (weight 0 on everything else) rather than
+    // even odds like the other tables — that's what guarantees the
+    // default sounds byte-identical to before this existed, not just
+    // "usually."
+    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch };
 
-    static constexpr int numPlaybackStyleOptions = 3;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop"
+    static constexpr int numPlaybackStyleOptions = 4;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch"
 
     float getPlaybackStyleProbability (int index) const
     {
@@ -450,6 +456,7 @@ private:
     {
         if (index == 1) return PlaybackStyle::pingPong;
         if (index == 2) return PlaybackStyle::tapeStop;
+        if (index == 3) return PlaybackStyle::stretch;
         return PlaybackStyle::forward;
     }
 
@@ -514,8 +521,17 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
-    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0} (Forward-only)
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0} (Forward-only)
     std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
+
+    // Stretch (Step 22) character parameters — deliberately fixed, not
+    // exposed in the UI (separate from Pitch Mode's user-facing grain
+    // size/window shape/pitch shift controls, none of which apply here).
+    // Small grains + a hard-edged window make the seams audible; the
+    // duration multiplier is what stretches a pick to 4x its natural
+    // length regardless of tempo, Pitch Mode, or Pitch Shift.
+    static constexpr float stretchCharacterGrainSizeMs = 10.0f; // within the ~8-15ms range asked for
+    static constexpr double stretchDurationMultiplier = 4.0;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision

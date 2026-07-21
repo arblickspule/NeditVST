@@ -260,7 +260,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 21: Tape Stop playback style",
+    g.drawFittedText ("NeditVST — step 22: Stretch playback style",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 

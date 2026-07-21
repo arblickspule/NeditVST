@@ -7,19 +7,21 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-21 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-22 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
     dragging sensitivity), fade controls, pitch mode (Repitch vs
     Time-Stretch, with its grain size/window shape/pitch shift controls),
-    playback style (Forward / Ping-Pong / Tape Stop, rolled once per pick
-    regardless of trigger mode), trigger mode (Slice Length vs Clock, with
-    its clock-reference menu, Tape Stop scope selector, and subdivision
-    probability grid) — all of which live inside a fixed-height,
-    internally-scrolling controlsViewport now, rather than growing the
-    window every time another control gets added — and the waveform
-    display, which stays outside that viewport, always fully visible
-    below it: it owns slice visualization, drag-and-drop loading,
-    per-slice probability, manual slice add/move/remove, deleting
+    playback style (Forward / Ping-Pong / Tape Stop / Stretch, rolled once
+    per pick regardless of trigger mode — Stretch always renders through
+    the granular engine regardless of pitch mode, with its own hardcoded
+    small-grain/hard-edged-window character, no UI of its own), trigger
+    mode (Slice Length vs Clock, with its clock-reference menu, Tape Stop
+    scope selector, and subdivision probability grid) — all of which live
+    inside a fixed-height, internally-scrolling controlsViewport now,
+    rather than growing the window every time another control gets added
+    — and the waveform display, which stays outside that viewport, always
+    fully visible below it: it owns slice visualization, drag-and-drop
+    loading, per-slice probability, manual slice add/move/remove, deleting
     auto-detected transients, a live playhead highlight, and modifier-key
     hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,

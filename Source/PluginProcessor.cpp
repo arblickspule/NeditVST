@@ -76,10 +76,10 @@ namespace
         { "1n",   4.0 }
     } };
 
-    // Playback style names (Step 19/21), indexed the same way the
+    // Playback style names (Step 19/21/22), indexed the same way the
     // weighted table stores them.
     const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop"
+        "Forward", "Ping-Pong", "Tape Stop", "Stretch"
     } };
 
     // Tape Stop scope names (Step 21).
@@ -129,10 +129,14 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
 
     // Forward-only by default (NOT even odds like the other tables) --
-    // guarantees byte-identical default playback, since neither Ping-Pong
-    // nor Tape Stop is ever drawn unless the user explicitly turns its
-    // weight up.
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f };
+    // guarantees byte-identical default playback, since none of Ping-Pong/
+    // Tape Stop/Stretch is ever drawn unless the user explicitly turns its
+    // weight up. (Step 22's spec described this as "all other styles at
+    // weight 1, Stretch at weight 0," which would actually break that
+    // guarantee for existing users -- kept Forward-only here instead,
+    // since "must sound identical to current behavior" is the
+    // longstanding hard requirement across every style added so far.)
+    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f };
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor() = default;
@@ -306,12 +310,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const auto& slice = slices[(size_t) clockCurrentSliceIndex];
                     const bool pingPong = (clockCurrentPlaybackStyle == PlaybackStyle::pingPong);
                     const bool tapeStop = (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop);
+                    const bool stretch = (clockCurrentPlaybackStyle == PlaybackStyle::stretch);
 
                     currentPlaybackStyle = clockCurrentPlaybackStyle;
                     currentSliceStartSample = slice.startSample;
                     currentSliceLength = slice.endSample - slice.startSample;
                     currentPosition = (double) slice.startSample;
-                    currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample) : slice.endSample;
+                    currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
+                                     : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                               : slice.endSample;
                     hasCurrentPick = true;
                     pickJustStarted = true;
                     currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
@@ -332,6 +339,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const double tickBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
                     const double tickLengthHostSamples = tickBeats * (60.0 / hostBpm) * hostSampleRate;
 
+                    // Shared by Tape Stop's whole-window scope and Stretch
+                    // (which always behaves like whole-window) below.
+                    const double windowBeatsForDuration = getNoteValueBeats (clockReferenceIndex.load());
+                    const double windowLengthHostSamples = windowBeatsForDuration * (60.0 / hostBpm) * hostSampleRate;
+
                     if (tapeStop)
                     {
                         // Tape Stop's duration is entirely scope-driven —
@@ -341,11 +353,21 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // never reach the slice's actual end before the
                         // rate hits zero.
                         const bool wholeWindow = (tapeStopScope.load() == TapeStopScope::wholeWindow);
-                        const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
-                        const double windowLengthHostSamples = windowBeats * (60.0 / hostBpm) * hostSampleRate;
-
                         currentPickTapeStopDurationHostSamples = wholeWindow ? windowLengthHostSamples : tickLengthHostSamples;
                         currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping below
+                    }
+                    else if (stretch)
+                    {
+                        // Stretch always overrides the whole window (no
+                        // per-tick option) -- capped by whichever comes
+                        // first: the full stretchDurationMultiplier-x
+                        // natural length, or the window's own boundary
+                        // (mirrors Forward/Ping-Pong's own "whichever comes
+                        // first" clamp against a tick, just against the
+                        // window instead, since there's no tick to speak of
+                        // here).
+                        currentPickLengthInHostSamples = juce::jmin (stretchDurationMultiplier * naturalLengthHostSamples,
+                                                                      windowLengthHostSamples);
                     }
                     else
                     {
@@ -363,16 +385,19 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     hasCurrentPick = false;
                 }
 
-                if (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop
-                    && tapeStopScope.load() == TapeStopScope::wholeWindow)
+                if ((clockCurrentPlaybackStyle == PlaybackStyle::tapeStop
+                     && tapeStopScope.load() == TapeStopScope::wholeWindow)
+                    || clockCurrentPlaybackStyle == PlaybackStyle::stretch)
                 {
-                    // Whole-window Tape Stop overrides normal subdivision
-                    // retriggering -- one continuous decel spans the entire
-                    // window, so there's nothing for a tick to do until the
-                    // window itself changes. Jumping straight to the
-                    // window's end means the next event that fires IS that
-                    // boundary, which is naturally a fresh newWindow pick —
-                    // no separate retrigger-skipping logic needed above.
+                    // Whole-window Tape Stop, and Stretch (which always
+                    // behaves this way, no per-tick option), override
+                    // normal subdivision retriggering -- one continuous
+                    // render spans the entire window, so there's nothing
+                    // for a tick to do until the window itself changes.
+                    // Jumping straight to the window's end means the next
+                    // event that fires IS that boundary, which is
+                    // naturally a fresh newWindow pick — no separate
+                    // retrigger-skipping logic needed above.
                     nextTickPpq = windowEndPpq;
                 }
                 else
@@ -396,7 +421,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             while (! hasCurrentPick
                    || (currentPlaybackStyle == PlaybackStyle::tapeStop
                            ? samplesSincePickStart >= currentPickTapeStopDurationHostSamples
-                           : currentPosition >= (double) ((currentPlaybackStyle == PlaybackStyle::pingPong
+                           : currentPosition >= (double) (((currentPlaybackStyle == PlaybackStyle::pingPong
+                                                                 || currentPlaybackStyle == PlaybackStyle::stretch)
                                                                 ? currentEndSample
                                                                 : juce::jmin (currentEndSample, sourceLength)) - 1)))
             {
@@ -410,12 +436,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 currentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (playbackStyleProbabilities));
                 const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
+                const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
 
                 const auto& slice = slices[(size_t) currentSliceIndex];
                 currentSliceStartSample = slice.startSample;
                 currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
-                currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample) : slice.endSample;
+                currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
+                                 : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                           : slice.endSample;
                 hasCurrentPick = true;
                 pickJustStarted = true;
                 currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
@@ -423,8 +452,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
                 currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward
-                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong
-                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples) : naturalLengthHostSamples;
+                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong/Stretch
+                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
+                                                : stretch ? (stretchDurationMultiplier * naturalLengthHostSamples)
+                                                          : naturalLengthHostSamples;
 
                 if (++pickAttempts > 1000)
                     return; // safety bail — render the rest of this block as silence
@@ -436,15 +467,19 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
         const bool tapeStopActive = (currentPlaybackStyle == PlaybackStyle::tapeStop);
+        const bool stretchActive = (currentPlaybackStyle == PlaybackStyle::stretch);
 
         // Ping-Pong's currentEndSample is a full round trip (2x slice
-        // length) and can legitimately run past sourceLength when the
-        // slice sits at the very end of the buffer — that's fine, since
-        // the actual read position below is always the FOLDED one, safely
-        // bounded to the true slice regardless. The sourceLength clamp is
-        // only needed for Forward, where the raw (unfolded) position IS
-        // the read position.
-        const int schedulingEndSample = pingPongActive ? currentEndSample : juce::jmin (currentEndSample, sourceLength);
+        // length), and Stretch's is stretchDurationMultiplier-x — both can
+        // legitimately run past sourceLength when the slice sits at the
+        // very end of the buffer. That's fine: the actual read position
+        // below is always either the FOLDED one (Ping-Pong) or safely
+        // bounded to the true slice by GranularStretcher itself (Stretch
+        // always renders through it), regardless. The sourceLength clamp
+        // is only needed for Forward/Tape Stop, where the raw (unfolded)
+        // position IS the read position.
+        const bool extendedRangeActive = pingPongActive || stretchActive;
+        const int schedulingEndSample = extendedRangeActive ? currentEndSample : juce::jmin (currentEndSample, sourceLength);
 
         // Shared render step for both modes: only output a sample while
         // we're within the current pick's bounds. In Clock mode, once a
@@ -529,27 +564,50 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             const GranularStretcher::PlaybackStyle grainPlaybackStyle =
                 pingPongActive ? GranularStretcher::PlaybackStyle::pingPong : GranularStretcher::PlaybackStyle::forward;
 
-            if (timeStretchMode)
+            if (timeStretchMode || stretchActive)
             {
-                // Tape Stop's rate multiplier is layered onto BOTH each
-                // grain's own internal read-rate (the same slot pitchRatio
-                // already multiplies) AND the source-domain distance
-                // between grain spawns -- so as the decel progresses, new
-                // grains converge toward the same, increasingly frozen
-                // position instead of continuing to introduce fresh
-                // material at the original pace while only their internal
-                // read slows. outputHopSamples (the real-time spawn
-                // cadence) is deliberately left alone, same as pitchRatio
-                // never touches it either.
-                const double effectivePitchRatio = tapeStopActive ? (pitchRatio * tapeStopRateMultiplier) : pitchRatio;
-                const double effectiveSourceHopSamples = tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier) : sourceHopSamples;
+                // Stretch (Step 22) always renders through GranularStretcher,
+                // even in Repitch mode -- it's a deliberate character
+                // effect, not something that should vanish depending on an
+                // unrelated global toggle. It gets its OWN small, hard-
+                // edged, fixed grain parameters here (never the user-facing
+                // Pitch Mode Time-Stretch grain size/window shape/pitch
+                // shift, none of which apply): outputHopSamples/grainSize
+                // come from stretchCharacterGrainSizeMs, and sourceHopSamples
+                // is derived from playbackRate/stretchDurationMultiplier --
+                // consuming the whole slice at a quarter the normal rate is
+                // exactly what makes the render last stretchDurationMultiplier
+                // times as long. Tape Stop's rate multiplier, by contrast,
+                // is layered onto BOTH each grain's own internal read-rate
+                // (the same slot pitchRatio already multiplies) AND the
+                // source-domain distance between grain spawns -- so as the
+                // decel progresses, new grains converge toward the same,
+                // increasingly frozen position instead of continuing to
+                // introduce fresh material at the original pace while only
+                // their internal read slows. outputHopSamples (the
+                // real-time spawn cadence) is deliberately left alone in
+                // that case, same as pitchRatio never touches it either.
+                double grainOutputHopSamples = outputHopSamples;
+                double grainSourceHopSamples = tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier) : sourceHopSamples;
+                double grainGrainSizeHostSamples = grainSizeHostSamples;
+                double grainPitchRatio = tapeStopActive ? (pitchRatio * tapeStopRateMultiplier) : pitchRatio;
+                GranularStretcher::WindowShape grainWindowShapeToUse = grainWindowShapeForBlock;
+
+                if (stretchActive)
+                {
+                    grainGrainSizeHostSamples = (double) stretchCharacterGrainSizeMs / 1000.0 * hostSampleRate;
+                    grainOutputHopSamples = grainGrainSizeHostSamples * 0.5; // same fixed 50% overlap convention
+                    grainSourceHopSamples = grainOutputHopSamples * (playbackRate / stretchDurationMultiplier);
+                    grainPitchRatio = 1.0; // no user pitch shift for this style -- fully self-contained/hardcoded
+                    grainWindowShapeToUse = GranularStretcher::WindowShape::hardEdge;
+                }
 
                 float channelSums[GranularStretcher::maxChannels] = {};
                 granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
-                                                     outputHopSamples, effectiveSourceHopSamples,
+                                                     grainOutputHopSamples, grainSourceHopSamples,
                                                      (double) currentSliceStartSample, (double) currentSliceLength, grainPlaybackStyle,
-                                                     grainSizeHostSamples, srConversionRatio, effectivePitchRatio,
-                                                     grainWindowShapeForBlock, channelSums);
+                                                     grainGrainSizeHostSamples, srConversionRatio, grainPitchRatio,
+                                                     grainWindowShapeToUse, channelSums);
 
                 for (int outCh = 0; outCh < outChannels; ++outCh)
                 {

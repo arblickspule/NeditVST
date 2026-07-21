@@ -60,8 +60,21 @@ float GranularStretcher::windowGain (double progress, WindowShape shape)
     if (shape == WindowShape::hann)
         return (float) (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * progress));
 
-    // Triangular: linear ramp up to the midpoint, then back down.
-    return (float) (progress < 0.5 ? (2.0 * progress) : (2.0 * (1.0 - progress)));
+    if (shape == WindowShape::triangular)
+        return (float) (progress < 0.5 ? (2.0 * progress) : (2.0 * (1.0 - progress)));
+
+    // hardEdge: full gain across nearly the whole grain, with only a
+    // brief linear ramp (10% of the grain's length) at each end -- see
+    // the enum's doc comment for why this exists.
+    constexpr double edgeFraction = 0.1;
+
+    if (progress < edgeFraction)
+        return (float) (progress / edgeFraction);
+
+    if (progress > 1.0 - edgeFraction)
+        return (float) ((1.0 - progress) / edgeFraction);
+
+    return 1.0f;
 }
 
 void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& sourceBuffer,

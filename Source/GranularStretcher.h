@@ -24,7 +24,15 @@
 class GranularStretcher
 {
 public:
-    enum class WindowShape { hann, triangular };
+    // hardEdge (Step 22): a short, hard-edged fade — full gain across
+    // nearly the whole grain, with just a brief linear ramp at each end
+    // to avoid a true instantaneous discontinuity. Deliberately NOT a
+    // smooth taper like Hann/Triangular: grain boundaries stay audible
+    // rather than being hidden, which is Stretch's whole "seams become
+    // the sound" character. Not exposed via the user-facing Pitch Mode
+    // Time-Stretch window-shape control — Stretch is the only style that
+    // uses it, always, with its own fixed grain size to match.
+    enum class WindowShape { hann, triangular, hardEdge };
     enum class PlaybackStyle { forward, pingPong };
 
     static constexpr int maxChannels = 2;
