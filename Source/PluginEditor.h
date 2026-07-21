@@ -33,6 +33,7 @@ private:
     void updateAfterSampleOrSliceChange(); // refreshes status text, BPM display, and the waveform
     void updateTriggerModeVisibility(); // shows/hides the Clock-only controls
     void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
+    void refreshAllControls(); // syncs all UI controls with processor state after state restore
 
     SlicerAudioProcessor& processor;
 

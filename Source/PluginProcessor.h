@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <functional>
 #include "TransientDetector.h"
 #include "GranularStretcher.h"
 
@@ -51,13 +52,23 @@ public:
     const juce::String getProgramName (int) override { return {}; }
     void changeProgramName (int, const juce::String&) override {}
 
+    //=== State save/restore (DAW session recall) ===
+    // Serialises all user-editable state (sample path, parameters, manual
+    // points, excluded points, slice probabilities) to a ValueTree/XML blob.
+    // The audio sample itself is NOT saved — only its file path, and it is
+    // reloaded from disk on restore.
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
+
+    // Callback invoked after setStateInformation completes. The editor
+    // sets this to refresh all its controls from the processor's state.
+    std::function<void()> onStateRestored;
 
     //=== Sample loading (called from the editor) ===
     void loadSample (const juce::File& file);
     bool hasSample() const { return sampleLoaded; }
     juce::String getLoadedFileName() const { return loadedFileName; }
+    juce::File getLoadedFile() const { return loadedFile; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
 
     //=== Slicing ===
@@ -427,6 +438,7 @@ private:
     double sampleSampleRate = 44100.0;
     bool sampleLoaded = false;
     juce::String loadedFileName;
+    juce::File loadedFile;
     juce::CriticalSection sampleLock; // guards sampleBuffer/slices during loadSample()
 
     TransientDetector transientDetector;

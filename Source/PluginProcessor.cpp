@@ -403,14 +403,176 @@ juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
     return new SlicerAudioProcessorEditor (*this);
 }
 
-void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
+void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // TODO once there are parameters worth persisting (loop length, slice
-    // probabilities) — not wired up yet in this step.
+    juce::ValueTree tree ("NeditVST", juce::Identifier ("version"), 1);
+
+    tree.setProperty ("samplePath", loadedFile.getFullPathName(), nullptr);
+    tree.setProperty ("loopLengthBars", loopLengthBars.load(), nullptr);
+    tree.setProperty ("sensitivity", currentSensitivity.load(), nullptr);
+    tree.setProperty ("fadeInMs", fadeInMs.load(), nullptr);
+    tree.setProperty ("fadeOutMs", fadeOutMs.load(), nullptr);
+    tree.setProperty ("triggerMode", static_cast<int> (triggerMode.load()), nullptr);
+    tree.setProperty ("clockReferenceIndex", clockReferenceIndex.load(), nullptr);
+    tree.setProperty ("pitchMode", static_cast<int> (pitchMode.load()), nullptr);
+    tree.setProperty ("grainSizeMs", grainSizeMs.load(), nullptr);
+    tree.setProperty ("grainWindowShape", static_cast<int> (grainWindowShape.load()), nullptr);
+    tree.setProperty ("pitchShiftSemitones", pitchShiftSemitones.load(), nullptr);
+
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        juce::ValueTree subDivTree ("SubdivisionProbabilities");
+        for (float p : subdivisionProbabilities)
+            subDivTree.appendChild (juce::ValueTree ("Prob", juce::Identifier ("value"), (double) p), nullptr);
+        tree.appendChild (subDivTree, nullptr);
+
+        juce::ValueTree sliceProbTree ("SliceProbabilities");
+        for (float p : sliceProbabilities)
+            sliceProbTree.appendChild (juce::ValueTree ("Prob", juce::Identifier ("value"), (double) p), nullptr);
+        tree.appendChild (sliceProbTree, nullptr);
+
+        juce::ValueTree manualTree ("ManualPoints");
+        for (const auto& mp : manualPoints)
+        {
+            juce::ValueTree pt ("Point");
+            pt.setProperty ("id", mp.id, nullptr);
+            pt.setProperty ("sample", mp.samplePosition, nullptr);
+            manualTree.appendChild (pt, nullptr);
+        }
+        tree.appendChild (manualTree, nullptr);
+
+        tree.setProperty ("nextManualPointId", nextManualPointId, nullptr);
+
+        juce::ValueTree exclTree ("ExcludedPoints");
+        for (const auto& ep : excludedPoints)
+        {
+            juce::ValueTree pt ("Point");
+            pt.setProperty ("id", ep.id, nullptr);
+            pt.setProperty ("sample", ep.samplePosition, nullptr);
+            exclTree.appendChild (pt, nullptr);
+        }
+        tree.appendChild (exclTree, nullptr);
+
+        tree.setProperty ("nextExcludedPointId", nextExcludedPointId, nullptr);
+    }
+
+    juce::XmlElement xml (tree.createXml());
+    copyXmlToBinary (xml, destData);
 }
 
-void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
+void SlicerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+
+    if (xml == nullptr || ! xml->hasTagName ("NeditVST"))
+        return;
+
+    juce::ValueTree tree (*xml);
+
+    // Restore simple parameters first — these don't trigger side effects.
+    loopLengthBars.store ((int) tree.getProperty ("loopLengthBars", 1));
+    currentSensitivity.store ((float) tree.getProperty ("sensitivity", defaultSensitivity));
+    fadeInMs.store ((float) tree.getProperty ("fadeInMs", 5.0));
+    fadeOutMs.store ((float) tree.getProperty ("fadeOutMs", 15.0));
+    triggerMode.store (static_cast<TriggerMode> ((int) tree.getProperty ("triggerMode", 0)));
+    clockReferenceIndex.store ((int) tree.getProperty ("clockReferenceIndex", 13));
+    pitchMode.store (static_cast<PitchMode> ((int) tree.getProperty ("pitchMode", 0)));
+    grainSizeMs.store ((float) tree.getProperty ("grainSizeMs", 60.0));
+    grainWindowShape.store (static_cast<GrainWindowShape> ((int) tree.getProperty ("grainWindowShape", 0)));
+    pitchShiftSemitones.store ((float) tree.getProperty ("pitchShiftSemitones", 0.0));
+
+    // Restore subdivision probabilities.
+    {
+        const juce::ScopedLock sl (sampleLock);
+        subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
+
+        auto subDivTree = tree.getChildByName ("SubdivisionProbabilities");
+
+        if (subDivTree.isValid())
+        {
+            int i = 0;
+
+            for (auto* child = subDivTree.getFirstChildElement();
+                 child != nullptr && i < numNoteValueOptions;
+                 child = child->getNextElement(), ++i)
+            {
+                subdivisionProbabilities[(size_t) i] =
+                    (float) child->getProperty ("value", 1.0);
+            }
+        }
+    }
+
+    // Load the sample from the saved file path. This clears manual/excluded
+    // points and runs detection with defaultSensitivity, but we override
+    // that right after.
+    const juce::File sampleFile (tree.getProperty ("samplePath", ""));
+
+    if (sampleFile.existsAsFile())
+        loadSample (sampleFile);
+
+    // Restore manual and excluded points, then rebuild slices. This re-runs
+    // detection at the saved sensitivity and merges the saved manual/excluded
+    // points into the result.
+    std::vector<ManualPointInfo> manual, excluded;
+
+    auto manualTree = tree.getChildByName ("ManualPoints");
+
+    if (manualTree.isValid())
+    {
+        for (auto* child = manualTree.getFirstChildElement();
+             child != nullptr;
+             child = child->getNextElement())
+        {
+            ManualPointInfo mp;
+            mp.id = (int) child->getProperty ("id", -1);
+            mp.samplePosition = (int) child->getProperty ("sample", 0);
+            manual.push_back (mp);
+        }
+    }
+
+    nextManualPointId = (int) tree.getProperty ("nextManualPointId", 1);
+
+    auto exclTree = tree.getChildByName ("ExcludedPoints");
+
+    if (exclTree.isValid())
+    {
+        for (auto* child = exclTree.getFirstChildElement();
+             child != nullptr;
+             child = child->getNextElement())
+        {
+            ManualPointInfo ep;
+            ep.id = (int) child->getProperty ("id", -1);
+            ep.samplePosition = (int) child->getProperty ("sample", 0);
+            excluded.push_back (ep);
+        }
+    }
+
+    nextExcludedPointId = (int) tree.getProperty ("nextExcludedPointId", 1);
+
+    applyManualState (manual, excluded);
+
+    // Restore slice probabilities — must come after applyManualState because
+    // that call resets all probabilities to 1.0 during rebuild.
+    auto sliceProbTree = tree.getChildByName ("SliceProbabilities");
+
+    if (sliceProbTree.isValid())
+    {
+        const juce::ScopedLock sl (sampleLock);
+        int i = 0;
+
+        for (auto* child = sliceProbTree.getFirstChildElement();
+             child != nullptr && i < (int) sliceProbabilities.size();
+             child = child->getNextElement(), ++i)
+        {
+            sliceProbabilities[(size_t) i] =
+                (float) child->getProperty ("value", 1.0);
+        }
+    }
+
+    // Notify the editor to refresh all its controls from the restored state.
+    if (onStateRestored)
+        onStateRestored();
 }
 
 void SlicerAudioProcessor::loadSample (const juce::File& file)
@@ -429,6 +591,7 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
         sampleSampleRate = reader->sampleRate;
         sampleLoaded = true;
         loadedFileName = file.getFileName();
+        loadedFile = file;
 
         transientDetector.analyze (sampleBuffer, sampleSampleRate);
 

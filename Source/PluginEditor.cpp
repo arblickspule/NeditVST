@@ -213,6 +213,8 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
 
+    processor.onStateRestored = [this] { refreshAllControls(); };
+
     // Showing all note-value rows at once (no more horizontal scrolling)
     // needs more vertical space than the old 90px strip did, and the
     // Pitch mode row + reserved Time-Stretch controls (now including the
@@ -222,6 +224,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
 {
+    processor.onStateRestored = nullptr;
     loadButton.removeListener (this);
     resetEditsButton.removeListener (this);
     undoButton.removeListener (this);
@@ -400,4 +403,37 @@ void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
                                  juce::dontSendNotification);
 
     waveformDisplay.refresh();
+}
+
+void SlicerAudioProcessorEditor::refreshAllControls()
+{
+    loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
+
+    const double bpm = processor.getCalculatedOriginalBpm();
+    calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
+                                 juce::dontSendNotification);
+
+    pitchModeSelector.setSelectedId (processor.getPitchMode() == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1,
+                                      juce::dontSendNotification);
+    updatePitchModeVisibility();
+
+    grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
+    windowShapeSelector.setSelectedId (processor.getGrainWindowShape() == SlicerAudioProcessor::GrainWindowShape::triangular ? 2 : 1,
+                                        juce::dontSendNotification);
+    pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
+
+    sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
+
+    fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
+    fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
+
+    triggerModeSelector.setSelectedId (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::clock ? 2 : 1,
+                                        juce::dontSendNotification);
+    updateTriggerModeVisibility();
+
+    clockReferenceSelector.setSelectedId (processor.getClockReferenceIndex() + 1, juce::dontSendNotification);
+
+    subdivisionGrid.repaint();
+
+    updateAfterSampleOrSliceChange();
 }
