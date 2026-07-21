@@ -211,6 +211,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setClockReferenceIndex (clockReferenceSelector.getSelectedId() - 1);
     };
 
+    controlsContent.addAndMakeVisible (tapeStopScopeLabel);
+    tapeStopScopeLabel.setText ("Tape Stop scope", juce::dontSendNotification);
+    tapeStopScopeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (tapeStopScopeSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numTapeStopScopeOptions; ++i)
+        tapeStopScopeSelector.addItem (SlicerAudioProcessor::getTapeStopScopeName (i), i + 1); // JUCE item IDs are 1-based
+    tapeStopScopeSelector.setSelectedId (processor.getTapeStopScope() == SlicerAudioProcessor::TapeStopScope::perTick ? 2 : 1,
+                                          juce::dontSendNotification);
+    tapeStopScopeSelector.onChange = [this]
+    {
+        processor.setTapeStopScope (tapeStopScopeSelector.getSelectedId() == 2
+                                         ? SlicerAudioProcessor::TapeStopScope::perTick
+                                         : SlicerAudioProcessor::TapeStopScope::wholeWindow);
+    };
+
     controlsContent.addAndMakeVisible (subdivisionTableLabel);
     subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
     subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
@@ -244,7 +260,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 20: scrollable controls panel",
+    g.drawFittedText ("NeditVST — step 21: Tape Stop playback style",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -343,6 +359,11 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     clockReferenceSelector.setBounds (clockReferenceRow.removeFromLeft (150));
     area.removeFromTop (10);
 
+    auto tapeStopScopeRow = area.removeFromTop (30);
+    tapeStopScopeLabel.setBounds (tapeStopScopeRow.removeFromLeft (140));
+    tapeStopScopeSelector.setBounds (tapeStopScopeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
     subdivisionTableLabel.setBounds (area.removeFromTop (20));
     subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
     area.removeFromTop (20);
@@ -411,6 +432,8 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
 
     clockReferenceLabel.setVisible (clock);
     clockReferenceSelector.setVisible (clock);
+    tapeStopScopeLabel.setVisible (clock);
+    tapeStopScopeSelector.setVisible (clock);
     subdivisionTableLabel.setVisible (clock);
     subdivisionGrid.setVisible (clock);
 }

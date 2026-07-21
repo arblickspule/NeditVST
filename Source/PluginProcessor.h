@@ -307,20 +307,26 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
-    //=== Playback style (Step 19) ===
-    // A second weighted table, independent of (but rolled at the same
-    // time as) the slice/subdivision picks above: Forward is today's
-    // behaviour; Ping-Pong plays a slice forward then immediately
-    // backward before the next pick, via the shared foldPosition()
-    // mapping in GranularStretcher (used by both pitch modes' render
-    // paths, so it behaves identically in Repitch and Time-Stretch).
-    // Defaults to Forward-only (weight 0 on Ping-Pong) rather than even
-    // odds like the other tables — that's what guarantees the default
-    // sounds byte-identical to before this existed, not just "usually."
-    enum class PlaybackStyle { forward, pingPong };
+    //=== Playback style (Step 19/21) ===
+    // A weighted table, independent of (but rolled at the same time as)
+    // the slice/subdivision picks above: Forward is today's behaviour;
+    // Ping-Pong plays a slice forward then immediately backward before
+    // the next pick, via the shared foldPosition() mapping in
+    // GranularStretcher (used by both pitch modes' render paths, so it
+    // behaves identically in Repitch and Time-Stretch); Tape Stop
+    // decelerates rate AND gain linearly to zero across a fixed duration
+    // (see setTapeStopScope() for how that duration is chosen in Clock
+    // mode), as an additional multiplier layered on top of whatever the
+    // Pitch Mode already produces — same "shared multiplier" pattern,
+    // just applied at the rate/gain level instead of the position level.
+    // Defaults to Forward-only (weight 0 on Ping-Pong and Tape Stop)
+    // rather than even odds like the other tables — that's what
+    // guarantees the default sounds byte-identical to before this
+    // existed, not just "usually."
+    enum class PlaybackStyle { forward, pingPong, tapeStop };
 
-    static constexpr int numPlaybackStyleOptions = 2;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong"
+    static constexpr int numPlaybackStyleOptions = 3;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop"
 
     float getPlaybackStyleProbability (int index) const
     {
@@ -339,6 +345,27 @@ public:
         if (index >= 0 && index < (int) playbackStyleProbabilities.size())
             playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
+
+    //=== Tape Stop scope (Step 21) ===
+    // Clock-mode-only: how long a Tape Stop pick's decel lasts. Slice
+    // Length mode doesn't need this choice — the duration there is always
+    // just the pick's own natural slice length, same timebase Forward
+    // already uses.
+    //   wholeWindow (default) — one continuous decel across the entire
+    //     clock reference length, overriding normal subdivision
+    //     retriggering for that window (no ticks; the next window picks
+    //     fresh as usual).
+    //   perTick — each individual subdivision tick gets its own quick
+    //     decel-to-zero-and-restart, same cadence Clock mode already
+    //     retriggers at — a rapid stutter of small tape-stops rather than
+    //     one long sweep.
+    enum class TapeStopScope { wholeWindow, perTick };
+
+    static constexpr int numTapeStopScopeOptions = 2;
+    static juce::String getTapeStopScopeName (int index); // "Whole window" / "Per tick"
+
+    void setTapeStopScope (TapeStopScope scope) { tapeStopScope.store (scope); }
+    TapeStopScope getTapeStopScope() const { return tapeStopScope.load(); }
 
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
@@ -414,6 +441,18 @@ private:
 
     int pickWeightedRandomSlice() { return pickWeightedIndex (sliceProbabilities); }
 
+    // Maps a playbackStyleProbabilities index (as drawn by pickWeightedIndex)
+    // to its enum value. A plain out-of-range/negative index (shouldn't
+    // happen — the table always has numPlaybackStyleOptions entries) falls
+    // back to Forward rather than asserting, matching pickWeightedIndex's
+    // own defensive style elsewhere.
+    static PlaybackStyle indexToPlaybackStyle (int index)
+    {
+        if (index == 1) return PlaybackStyle::pingPong;
+        if (index == 2) return PlaybackStyle::tapeStop;
+        return PlaybackStyle::forward;
+    }
+
     // Shared by redetectSlices() and every manual-point mutation: re-runs
     // auto-detection at the given sensitivity, merges the result with the
     // current manual points, sorts + dedupes into one boundary list, and
@@ -475,7 +514,8 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
-    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0} (Forward-only)
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0} (Forward-only)
+    std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision
@@ -516,6 +556,17 @@ private:
     // InHostSamples itself might get shortened by a Clock-mode tick.
     // Meaningless/unused for Forward.
     double currentPickMidpointHostSamples = 0.0;
+
+    // Fixed real-time length (host samples) of a Tape Stop pick's decel
+    // ramp — the pick's natural slice length in Slice Length mode; the
+    // window or tick length in Clock mode, per Tape Stop scope. Rate and
+    // gain both ramp from 1.0 to 0.0 across this, via samplesSincePick-
+    // Start / this. Deliberately NOT capped by the slice's own natural
+    // length in Clock mode (unlike Forward/Ping-Pong's currentPickLength-
+    // InHostSamples) — the whole point is that read position may not
+    // reach the slice's actual end before the rate hits zero. Meaningless
+    // /unused for Forward/Ping-Pong.
+    double currentPickTapeStopDurationHostSamples = 0.0;
 
     // Lock-free copy of currentSliceIndex, written by the audio thread
     // whenever a new pick begins, read by the UI thread for the playhead

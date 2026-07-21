@@ -7,20 +7,21 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-20 editor: load button, reset-edits safety net, undo/redo, status
+/** Step-21 editor: load button, reset-edits safety net, undo/redo, status
     label, loop-length/sensitivity controls (with a live preview while
     dragging sensitivity), fade controls, pitch mode (Repitch vs
     Time-Stretch, with its grain size/window shape/pitch shift controls),
-    playback style (Forward vs Ping-Pong, rolled once per pick regardless
-    of trigger mode), trigger mode (Slice Length vs Clock, with its
-    clock-reference menu and subdivision probability grid) — all of which
-    live inside a fixed-height, internally-scrolling controlsViewport now,
-    rather than growing the window every time another control gets added
-    — and the waveform display, which stays outside that viewport, always
-    fully visible below it: it owns slice visualization, drag-and-drop
-    loading, per-slice probability, manual slice add/move/remove,
-    deleting auto-detected transients, a live playhead highlight, and
-    modifier-key hover cues. */
+    playback style (Forward / Ping-Pong / Tape Stop, rolled once per pick
+    regardless of trigger mode), trigger mode (Slice Length vs Clock, with
+    its clock-reference menu, Tape Stop scope selector, and subdivision
+    probability grid) — all of which live inside a fixed-height,
+    internally-scrolling controlsViewport now, rather than growing the
+    window every time another control gets added — and the waveform
+    display, which stays outside that viewport, always fully visible
+    below it: it owns slice visualization, drag-and-drop loading,
+    per-slice probability, manual slice add/move/remove, deleting
+    auto-detected transients, a live playhead highlight, and modifier-key
+    hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -89,7 +90,7 @@ private:
     juce::Label triggerModeLabel;
     juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
 
-    // Playback style (Step 19) — visible in BOTH trigger modes, unlike
+    // Playback style (Step 19/21) — visible in BOTH trigger modes, unlike
     // the Clock-only controls below: it's rolled once per pick in Slice
     // Length mode too, not just once per Clock window.
     juce::Label playbackStyleLabel;
@@ -100,6 +101,12 @@ private:
     // whenever Slice Length mode is selected.
     juce::Label clockReferenceLabel;
     juce::ComboBox clockReferenceSelector;
+
+    // Tape Stop scope (Step 21) — also Clock-mode-only: Slice Length mode
+    // doesn't need this choice, since a Tape Stop pick's duration there is
+    // always just the pick's own natural slice length.
+    juce::Label tapeStopScopeLabel;
+    juce::ComboBox tapeStopScopeSelector; // "Whole window" / "Per tick"
 
     juce::Label subdivisionTableLabel;
     SubdivisionProbabilityGrid subdivisionGrid;
