@@ -455,23 +455,27 @@ public:
     // using its own small, hardcoded grain size and a hard-edged window
     // (see stretchCharacterGrainSizeMs/WindowShape::hardEdge), stretching
     // the pick to stretchDurationMultiplier times its natural length;
-    // Filter Sweep applies a resonant low-pass (see filterSweepFilter)
-    // as post-processing on this pick's rendered output, cutoff swept
-    // log-scale from ~9kHz down to ~250Hz across the pick's duration —
-    // "works on the output regardless of how it was generated" is what
-    // makes this the one style needing zero scheduling special-casing at
-    // all (no currentEndSample/currentPickLengthInHostSamples override,
-    // no beat-quantize exclusion code, no Clock-mode branch — it already
-    // falls through to exactly the same paths Forward does for all of
-    // that, and just gets an extra post-process step layered on top).
+    // Filter Down/Filter Up (Step 29/30) both apply the same resonant
+    // low-pass (see filterSweepFilter) as post-processing on this pick's
+    // rendered output, cutoff swept log-scale across the pick's duration —
+    // Down sweeps ~9kHz -> ~250Hz (open to closed, the classic breakbeat/
+    // DnB "filter close"), Up is the mirror image, ~250Hz -> ~9kHz. Scope
+    // (see FilterSweepScope below) picks what "across the pick's duration"
+    // means in Clock mode. "Works on the output regardless of how it was
+    // generated" is what makes these the only styles needing zero
+    // scheduling special-casing (no currentEndSample/currentPickLength-
+    // InHostSamples override, no beat-quantize exclusion code, no forced
+    // Clock-mode retrigger override — they already fall through to
+    // exactly the same paths Forward does for all of that, and just get
+    // an extra post-process step layered on top).
     // Defaults to Forward-only (weight 0 on everything else) rather than
     // even odds like the other tables — that's what guarantees the
     // default sounds byte-identical to before this existed, not just
     // "usually."
-    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweep };
+    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweepDown, filterSweepUp };
 
-    static constexpr int numPlaybackStyleOptions = 5;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Sweep"
+    static constexpr int numPlaybackStyleOptions = 6;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up"
 
     float getPlaybackStyleProbability (int index) const
     {
@@ -511,6 +515,33 @@ public:
 
     void setTapeStopScope (TapeStopScope scope) { tapeStopScope.store (scope); }
     TapeStopScope getTapeStopScope() const { return tapeStopScope.load(); }
+
+    //=== Filter Sweep scope (Step 30) ===
+    // Clock-mode-only, same visibility pattern as Tape Stop scope above —
+    // but its own separate state (defaults differ) and a different
+    // relationship to ticks:
+    //   perTick (default) — today's behaviour, unchanged: sweep progress
+    //     is samplesSincePickStart / currentPickLengthInHostSamples,
+    //     resetting at every individual retrigger, same as Slice Length
+    //     mode always uses regardless of this setting.
+    //   wholeWindow — ticks keep retriggering normally at the subdivision
+    //     rate (NOT overridden the way Tape Stop's wholeWindow overrides
+    //     normal retriggering) — only the cutoff's progress fraction
+    //     changes, to samplesSinceWindowStart / currentWindowLengthHost-
+    //     Samples, continuous across every tick in that window and only
+    //     reset when a new window begins.
+    // Default is perTick, the OPPOSITE of Tape Stop scope's wholeWindow
+    // default — Filter Sweep's existing behaviour (from Step 29, before
+    // this scope choice existed) was already per-pick/per-tick, so this
+    // default is what keeps that behaviour unchanged for anyone who's
+    // already using it.
+    enum class FilterSweepScope { wholeWindow, perTick };
+
+    static constexpr int numFilterSweepScopeOptions = 2;
+    static juce::String getFilterSweepScopeName (int index); // "Whole window" / "Per tick"
+
+    void setFilterSweepScope (FilterSweepScope scope) { filterSweepScope.store (scope); }
+    FilterSweepScope getFilterSweepScope() const { return filterSweepScope.load(); }
 
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
@@ -695,7 +726,8 @@ private:
         if (index == 1) return PlaybackStyle::pingPong;
         if (index == 2) return PlaybackStyle::tapeStop;
         if (index == 3) return PlaybackStyle::stretch;
-        if (index == 4) return PlaybackStyle::filterSweep;
+        if (index == 4) return PlaybackStyle::filterSweepDown;
+        if (index == 5) return PlaybackStyle::filterSweepUp;
         return PlaybackStyle::forward;
     }
 
@@ -845,8 +877,9 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
-    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
     std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
+    std::atomic<FilterSweepScope> filterSweepScope { FilterSweepScope::perTick };
 
     // Stretch (Step 22) character parameters — deliberately fixed, not
     // exposed in the UI (separate from Pitch Mode's user-facing grain
@@ -857,12 +890,14 @@ private:
     static constexpr float stretchCharacterGrainSizeMs = 10.0f; // within the ~8-15ms range asked for
     static constexpr double stretchDurationMultiplier = 4.0;
 
-    // Filter Sweep (Step 29) character parameters — deliberately fixed, no
-    // exposed controls, same "defer the knob until proven necessary"
-    // pattern as Stretch's grain size above. Direction is Close: cutoff
-    // starts open and sweeps down to closed across the pick's duration —
-    // the classic breakbeat/DnB "filter close." Resonance ~2.0 approximates
-    // the requested Q~2-3 range in this filter class's own "resonance"
+    // Filter Down/Filter Up (Step 29/30) character parameters —
+    // deliberately fixed, no exposed controls, same "defer the knob until
+    // proven necessary" pattern as Stretch's grain size above.
+    // filterSweepStartHz/filterSweepEndHz are Filter Down's open->closed
+    // endpoints (the classic breakbeat/DnB "filter close"); Filter Up
+    // just swaps which endpoint it starts/ends at (see processBlock()) --
+    // no separate constants needed. Resonance ~2.0 approximates the
+    // requested Q~2-3 range in this filter class's own "resonance"
     // parameter (per juce::dsp::StateVariableTPTFilter's docs, standard
     // 12dB/octave — i.e. no added resonance — is 1/sqrt(2); higher values
     // add character without self-oscillating at this level). One shared
@@ -884,6 +919,19 @@ private:
     int clockCurrentSliceIndex = -1;
     int clockCurrentSubdivisionIndex = -1;
     PlaybackStyle clockCurrentPlaybackStyle = PlaybackStyle::forward; // drawn once per window, alongside the two above
+
+    // Filter Sweep's Whole Window scope (Step 30) — how far into the
+    // CURRENT WINDOW we are, in host samples, as opposed to samplesSince-
+    // PickStart's per-pick tracking just below. Reset only on a genuine
+    // new-window event (never on an ordinary per-tick retrigger, unlike
+    // samplesSincePickStart), so it stays continuous across every tick
+    // inside one window. currentWindowLengthHostSamples is set alongside
+    // it, at the same new-window event, from whatever the clock reference
+    // note value resolves to in host samples at that moment — both are
+    // Clock-mode-only and meaningless in Slice Length mode (which has no
+    // concept of a "window").
+    double samplesSinceWindowStart = 0.0;
+    double currentWindowLengthHostSamples = 0.0;
 
     // Self-chaining playback state — which slice is currently sounding,
     // where we are within it (source sample units), and where it ends.

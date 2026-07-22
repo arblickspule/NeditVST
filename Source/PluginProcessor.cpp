@@ -76,14 +76,19 @@ namespace
         { "1n",   4.0 }
     } };
 
-    // Playback style names (Step 19/21/22/29), indexed the same way the
+    // Playback style names (Step 19/21/22/29/30), indexed the same way the
     // weighted table stores them.
     const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Sweep"
+        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up"
     } };
 
     // Tape Stop scope names (Step 21).
     const std::array<const char*, SlicerAudioProcessor::numTapeStopScopeOptions> tapeStopScopeNames { {
+        "Whole window", "Per tick"
+    } };
+
+    // Filter Sweep scope names (Step 30).
+    const std::array<const char*, SlicerAudioProcessor::numFilterSweepScopeOptions> filterSweepScopeNames { {
         "Whole window", "Per tick"
     } };
 }
@@ -102,6 +107,14 @@ juce::String SlicerAudioProcessor::getTapeStopScopeName (int index)
         return {};
 
     return tapeStopScopeNames[(size_t) index];
+}
+
+juce::String SlicerAudioProcessor::getFilterSweepScopeName (int index)
+{
+    if (index < 0 || index >= numFilterSweepScopeOptions)
+        return {};
+
+    return filterSweepScopeNames[(size_t) index];
 }
 
 juce::String SlicerAudioProcessor::getNoteValueName (int index)
@@ -174,20 +187,20 @@ SlicerAudioProcessor::SlicerAudioProcessor()
 
     // Forward-only by default (NOT even odds like the other tables) --
     // guarantees byte-identical default playback, since none of Ping-Pong/
-    // Tape Stop/Stretch/Filter Sweep is ever drawn unless the user
-    // explicitly turns its weight up. (Step 22's spec described this as
-    // "all other styles at weight 1, Stretch at weight 0," which would
+    // Tape Stop/Stretch/Filter Down/Filter Up is ever drawn unless the
+    // user explicitly turns its weight up. (Step 22's spec described this
+    // as "all other styles at weight 1, Stretch at weight 0," which would
     // actually break that guarantee for existing users -- kept
     // Forward-only here instead, since "must sound identical to current
     // behavior" is the longstanding hard requirement across every style
     // added so far.)
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
-    // Filter Sweep (Step 29): fixed type/resonance, set once here rather
-    // than per-sample -- only the cutoff frequency needs to change during
-    // playback (see processBlock()). Sample rate/channel count get set
-    // properly in prepareToPlay(); the defaults here are harmless
-    // placeholders until then.
+    // Filter Down/Filter Up (Step 29/30): fixed type/resonance, set once
+    // here rather than per-sample -- only the cutoff frequency needs to
+    // change during playback (see processBlock()). Sample rate/channel
+    // count get set properly in prepareToPlay(); the defaults here are
+    // harmless placeholders until then.
     filterSweepFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
     filterSweepFilter.setResonance (filterSweepResonance);
 }
@@ -393,6 +406,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
                     const juce::int64 windowIndex = (juce::int64) std::floor (samplePpq / windowBeats);
                     windowEndPpq = (double) (windowIndex + 1) * windowBeats;
+
+                    // Filter Sweep's Whole Window scope (Step 30) -- reset
+                    // ONLY here, on a genuine new-window event, never on an
+                    // ordinary per-tick retrigger below, so the sweep stays
+                    // continuous across every tick inside this window.
+                    samplesSinceWindowStart = 0.0;
+                    currentWindowLengthHostSamples = windowBeats * (60.0 / hostBpm) * hostSampleRate;
                 }
 
                 // Retrigger (or first-trigger) this window's slice from its
@@ -616,7 +636,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
         const bool tapeStopActive = (currentPlaybackStyle == PlaybackStyle::tapeStop);
         const bool stretchActive = (currentPlaybackStyle == PlaybackStyle::stretch);
-        const bool filterSweepActive = (currentPlaybackStyle == PlaybackStyle::filterSweep);
+        const bool filterSweepActive = (currentPlaybackStyle == PlaybackStyle::filterSweepDown
+                                         || currentPlaybackStyle == PlaybackStyle::filterSweepUp);
 
         // Ping-Pong's currentEndSample is a full round trip (2x slice
         // length), and Stretch's is stretchDurationMultiplier-x — both can
@@ -706,23 +727,47 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             gain = juce::jlimit (0.0, 1.0, gain);
 
-            // Filter Sweep (Step 29): cutoff computed once per sample here
-            // (shared across every output channel below, not recomputed
-            // per channel) from the same progress fraction the fade
-            // calculations above already use. Log-scale interpolation --
-            // not linear Hz -- between start/end frequency, since
-            // frequency perception is logarithmic; this is what keeps the
-            // sweep sounding musically even rather than front-loaded.
-            // Direction is fixed at Close (open -> closed): the classic
-            // breakbeat/DnB "filter close."
+            // Filter Down/Filter Up (Step 29/30): cutoff computed once per
+            // sample here (shared across every output channel below, not
+            // recomputed per channel). Log-scale interpolation -- not
+            // linear Hz -- between start/end frequency, since frequency
+            // perception is logarithmic; this is what keeps the sweep
+            // sounding musically even rather than front-loaded. Filter Down
+            // sweeps filterSweepStartHz -> filterSweepEndHz (open to
+            // closed, the classic breakbeat/DnB "filter close"); Filter Up
+            // is the mirror image, filterSweepEndHz -> filterSweepStartHz.
+            //
+            // The progress fraction itself depends on Filter Sweep scope
+            // (Clock mode only -- Slice Length mode has no concept of a
+            // "window", so it always behaves like Per Tick regardless of
+            // the scope setting, same as before this scope choice existed):
+            //   Per Tick (default) -- samplesSincePickStart /
+            //     currentPickLengthInHostSamples, resetting at every
+            //     retrigger -- today's Step 29 behaviour, unchanged.
+            //   Whole Window -- samplesSinceWindowStart / currentWindow-
+            //     LengthHostSamples instead, continuous across every tick
+            //     in the window (ticks keep retriggering normally --
+            //     unlike Tape Stop's Whole Window, nothing here overrides
+            //     that), only resetting when a new window begins.
             float filterSweepCutoffHz = filterSweepStartHz;
 
             if (filterSweepActive)
             {
-                const double progress = (currentPickLengthInHostSamples > 0.0)
-                    ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
-                    : 1.0;
-                filterSweepCutoffHz = (float) (filterSweepStartHz * std::pow ((double) filterSweepEndHz / (double) filterSweepStartHz, progress));
+                const bool useWholeWindow = clockMode && (filterSweepScope.load() == FilterSweepScope::wholeWindow);
+
+                const double progress = useWholeWindow
+                    ? ((currentWindowLengthHostSamples > 0.0)
+                           ? juce::jlimit (0.0, 1.0, samplesSinceWindowStart / currentWindowLengthHostSamples)
+                           : 1.0)
+                    : ((currentPickLengthInHostSamples > 0.0)
+                           ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
+                           : 1.0);
+
+                const bool isUp = (currentPlaybackStyle == PlaybackStyle::filterSweepUp);
+                const double sweepStartHz = isUp ? (double) filterSweepEndHz : (double) filterSweepStartHz;
+                const double sweepEndHz = isUp ? (double) filterSweepStartHz : (double) filterSweepEndHz;
+
+                filterSweepCutoffHz = (float) (sweepStartHz * std::pow (sweepEndHz / sweepStartHz, progress));
                 filterSweepFilter.setCutoffFrequency (filterSweepCutoffHz);
             }
 
@@ -848,6 +893,19 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
         }
+
+        // Filter Sweep's Whole Window scope (Step 30) needs true window-
+        // elapsed real time, not just time spent actively rendering a pick
+        // -- unlike samplesSincePickStart above, this increments every
+        // sample the window is open, including any silence between a
+        // slice naturally finishing early and the next forced tick, so a
+        // Whole Window sweep stays locked to the window's actual wall-
+        // clock length rather than lagging behind it. Slice Length mode
+        // has no concept of a window, so this is simply never consulted
+        // there (see the useWholeWindow guard above, which already
+        // requires clockMode).
+        if (clockMode)
+            samplesSinceWindowStart += 1.0;
     }
 }
 

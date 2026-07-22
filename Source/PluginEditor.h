@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-29 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-30 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -26,15 +26,19 @@
     both Beat-quantize toggles/grain size/window shape all hide when it's
     active, while trim markers and Audition stay available regardless),
     playback style (Forward / Ping-Pong / Tape Stop / Stretch / Filter
-    Sweep, rolled once per pick regardless of trigger mode — Stretch
-    always renders through the granular engine regardless of pitch mode,
-    with its own hardcoded small-grain/hard-edged-window character;
-    Filter Sweep applies a resonant low-pass swept log-scale from ~9kHz
-    down to ~250Hz across the pick's duration as post-processing on the
-    output, regardless of pitch mode or trigger mode — no UI of its own
-    for either), trigger
+    Down / Filter Up, rolled once per pick regardless of trigger mode —
+    Stretch always renders through the granular engine regardless of pitch
+    mode, with its own hardcoded small-grain/hard-edged-window character;
+    Filter Down/Filter Up both apply a resonant low-pass swept log-scale
+    across the pick's duration as post-processing on the output — Down
+    ~9kHz down to ~250Hz, Up the mirror image — regardless of pitch mode,
+    with a Filter Sweep scope selector (Whole Window vs Per Tick, Clock-
+    mode-only, same visibility pattern as Tape Stop scope) controlling
+    whether that sweep resets every tick or runs continuously across a
+    whole Clock window — no other UI for either style), trigger
     mode (Slice Length vs Clock, with its clock-reference menu, Tape Stop
-    scope selector, and subdivision probability grid) — all of which live
+    scope selector, Filter Sweep scope selector, and subdivision
+    probability grid) — all of which live
     inside a fixed-height, internally-scrolling controlsViewport now,
     rather than growing the window every time another control gets added
     — and the waveform display, which stays outside that viewport, always
@@ -173,6 +177,13 @@ private:
     // always just the pick's own natural slice length.
     juce::Label tapeStopScopeLabel;
     juce::ComboBox tapeStopScopeSelector; // "Whole window" / "Per tick"
+
+    // Filter Sweep scope (Step 30) — same Clock-mode-only visibility
+    // pattern as Tape Stop scope above, but its own separate control/state
+    // (defaults differ: this one's Per Tick by default, the opposite of
+    // Tape Stop scope's Whole Window default).
+    juce::Label filterSweepScopeLabel;
+    juce::ComboBox filterSweepScopeSelector; // "Whole window" / "Per tick"
 
     juce::Label subdivisionTableLabel;
     SubdivisionProbabilityGrid subdivisionGrid;

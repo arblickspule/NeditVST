@@ -290,6 +290,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                          : SlicerAudioProcessor::TapeStopScope::wholeWindow);
     };
 
+    controlsContent.addAndMakeVisible (filterSweepScopeLabel);
+    filterSweepScopeLabel.setText ("Filter Sweep scope", juce::dontSendNotification);
+    filterSweepScopeLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (filterSweepScopeSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numFilterSweepScopeOptions; ++i)
+        filterSweepScopeSelector.addItem (SlicerAudioProcessor::getFilterSweepScopeName (i), i + 1); // JUCE item IDs are 1-based
+    filterSweepScopeSelector.setSelectedId (processor.getFilterSweepScope() == SlicerAudioProcessor::FilterSweepScope::perTick ? 2 : 1,
+                                             juce::dontSendNotification);
+    filterSweepScopeSelector.onChange = [this]
+    {
+        processor.setFilterSweepScope (filterSweepScopeSelector.getSelectedId() == 2
+                                            ? SlicerAudioProcessor::FilterSweepScope::perTick
+                                            : SlicerAudioProcessor::FilterSweepScope::wholeWindow);
+    };
+
     controlsContent.addAndMakeVisible (subdivisionTableLabel);
     subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
     subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
@@ -326,7 +342,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 29: Filter Sweep playback style",
+    g.drawFittedText ("NeditVST — step 30: Filter Down/Up direction split + scope",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -452,6 +468,11 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     tapeStopScopeSelector.setBounds (tapeStopScopeRow.removeFromLeft (150));
     area.removeFromTop (10);
 
+    auto filterSweepScopeRow = area.removeFromTop (30);
+    filterSweepScopeLabel.setBounds (filterSweepScopeRow.removeFromLeft (140));
+    filterSweepScopeSelector.setBounds (filterSweepScopeRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
     subdivisionTableLabel.setBounds (area.removeFromTop (20));
     subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
     area.removeFromTop (20);
@@ -535,6 +556,8 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     clockReferenceSelector.setVisible (clock);
     tapeStopScopeLabel.setVisible (clock);
     tapeStopScopeSelector.setVisible (clock);
+    filterSweepScopeLabel.setVisible (clock);
+    filterSweepScopeSelector.setVisible (clock);
     subdivisionTableLabel.setVisible (clock);
     subdivisionGrid.setVisible (clock);
 }
