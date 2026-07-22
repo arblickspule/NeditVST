@@ -7,21 +7,24 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-26 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-27 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
-    transport starts), status label, loop-length/sensitivity controls
-    (with a live preview while dragging sensitivity), a manual BPM
-    override toggle + field that replaces the bars-derived tempo
-    calculation entirely when enabled,
-    fade controls, pitch mode (Repitch vs Time-Stretch, each with its own
-    Beat-quantize-slice-length toggle — Time-Stretch's defaults ON, since
-    it's a free improvement there; Repitch's own separate toggle defaults
-    OFF, since quantizing there trades off pitch accuracy for beat-exact
-    duration — plus Time-Stretch's grain size/window shape/pitch shift
-    controls; both toggles snap each Forward/Ping-Pong pick's rendered
-    duration to the nearest note value so consecutive picks always land
-    on exact beat-grid positions),
+    transport starts, and available regardless of Pitch Mode), status
+    label, loop-length/sensitivity controls (with a live preview while
+    dragging sensitivity), a manual BPM override toggle + field that
+    replaces the bars-derived tempo calculation entirely when enabled,
+    fade controls, pitch mode (Repitch vs Time-Stretch vs NoSync — each
+    with its own dedicated controls, shown/hidden as a group per mode:
+    Repitch and Time-Stretch each get their own separate Beat-quantize-
+    slice-length toggle, Time-Stretch's defaults ON since it's a free
+    improvement there and Repitch's own separate toggle defaults OFF
+    since quantizing there trades off pitch accuracy for beat-exact
+    duration; Time-Stretch also has grain size/window shape/pitch shift
+    controls; NoSync has a single Transpose (semitones) control and
+    nothing else — no tempo math at all, so Loop Length/calculated-BPM/
+    both Beat-quantize toggles/grain size/window shape all hide when it's
+    active, while trim markers and Audition stay available regardless),
     playback style (Forward / Ping-Pong / Tape Stop / Stretch, rolled once
     per pick regardless of trigger mode — Stretch always renders through
     the granular engine regardless of pitch mode, with its own hardcoded
@@ -98,7 +101,7 @@ private:
     juce::Slider manualBpmOverrideSlider;
 
     juce::Label pitchModeLabel;
-    juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch"
+    juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch" / "NoSync"
 
     // Beat-quantized slice length — Repitch mode (Step 26). Same label and
     // concept as the Time-Stretch toggle below, but its own separate
@@ -106,6 +109,15 @@ private:
     // trades off pitch accuracy rather than being a free improvement).
     // Repitch-only, shown/hidden opposite the Time-Stretch-only group.
     juce::ToggleButton beatQuantizeToggleRepitch { "Beat-quantize slice length" };
+
+    // NoSync-only transpose control (Step 27) — the only control NoSync
+    // mode has: no tempo math, no beat-quantize, no grain settings, just
+    // sample-rate matching plus this. Same -24..+24 range as Time-
+    // Stretch's own pitch shift control, kept as a separate control/state
+    // rather than shared with it (same "each mode gets its own" pattern
+    // already used for the two Beat-quantize toggles above).
+    juce::Label transposeLabel;
+    juce::Slider transposeSlider; // semitones, -24 to +24
 
     // Time-Stretch-only controls — same reserved-space/hide pattern as the
     // Clock-mode-only controls below (grain overlap is fixed at 50% and
