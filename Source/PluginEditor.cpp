@@ -22,7 +22,10 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     redoButton.addListener (this);
     redoButton.setEnabled (false);
 
-    startTimerHz (10); // keeps Undo/Redo enabled-state in sync with the processor
+    controlsContent.addAndMakeVisible (auditionButton);
+    auditionButton.addListener (this);
+
+    startTimerHz (10); // keeps Undo/Redo enabled-state (and the Audition button's label/colour) in sync with the processor
 
     controlsContent.addAndMakeVisible (statusLabel);
     statusLabel.setJustificationType (juce::Justification::centred);
@@ -285,6 +288,7 @@ SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
     resetEditsButton.removeListener (this);
     undoButton.removeListener (this);
     redoButton.removeListener (this);
+    auditionButton.removeListener (this);
 }
 
 void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -293,7 +297,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 24: Beat-quantized slice length",
+    g.drawFittedText ("NeditVST — step 25: Audition + transient-snapping trim",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -332,6 +336,8 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     loadButton.setBounds (topButtonRow.removeFromLeft (topButtonRow.getWidth() - 110));
     topButtonRow.removeFromLeft (10);
     resetEditsButton.setBounds (topButtonRow);
+    area.removeFromTop (10);
+    auditionButton.setBounds (area.removeFromTop (30));
     area.removeFromTop (10);
     statusLabel.setBounds (area.removeFromTop (30));
     area.removeFromTop (20);
@@ -441,12 +447,25 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
         processor.redoLastEdit();
         updateAfterSampleOrSliceChange();
     }
+    else if (button == &auditionButton)
+    {
+        processor.setAuditionActive (! processor.getAuditionActive());
+    }
 }
 
 void SlicerAudioProcessorEditor::timerCallback()
 {
     undoButton.setEnabled (processor.canUndoEdit());
     redoButton.setEnabled (processor.canRedoEdit());
+
+    // Polled rather than driven only by the button's own click, since the
+    // processor can also stop an audition on its own (host transport
+    // started) — the label/colour has to reflect that auto-stop too.
+    const bool auditioning = processor.getAuditionActive();
+    auditionButton.setButtonText (auditioning ? "Stop Audition" : "Audition");
+    auditionButton.setColour (juce::TextButton::buttonColourId,
+                               auditioning ? juce::Colours::orange.withAlpha (0.6f)
+                                           : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
 }
 
 void SlicerAudioProcessorEditor::chooseAndLoadFile()

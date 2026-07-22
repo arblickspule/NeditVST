@@ -7,10 +7,13 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-24 editor: load button, reset-edits safety net, undo/redo, status
-    label, loop-length/sensitivity controls (with a live preview while
-    dragging sensitivity), a manual BPM override toggle + field that
-    replaces the bars-derived tempo calculation entirely when enabled,
+/** Step-25 editor: load button, reset-edits safety net, undo/redo, an
+    Audition button (plays the current trim on a tight raw loop,
+    independent of host transport, auto-stopping the instant the
+    transport starts), status label, loop-length/sensitivity controls
+    (with a live preview while dragging sensitivity), a manual BPM
+    override toggle + field that replaces the bars-derived tempo
+    calculation entirely when enabled,
     fade controls, pitch mode (Repitch vs Time-Stretch, with its grain
     size/window shape/beat-quantize-slice-length/pitch shift controls —
     beat-quantize defaults ON whenever Time-Stretch is active, snapping
@@ -68,6 +71,16 @@ private:
     juce::TextButton undoButton { "Undo" };
     juce::TextButton redoButton { "Redo" };
     juce::Label statusLabel;
+
+    // Audition (Step 25) — plays [trimStart, trimEnd) on a tight raw loop,
+    // independent of host transport, so a trim can be dialled in and
+    // confirmed by ear before worrying about the DAW's own playback state.
+    // Label toggles between "Audition"/"Stop Audition" in timerCallback()
+    // (same polling mechanism already used to keep Undo/Redo's enabled
+    // state in sync) since the processor can also stop it on its own the
+    // instant host transport starts — the button has to reflect that
+    // auto-stop, not just its own clicks.
+    juce::TextButton auditionButton { "Audition" };
 
     juce::Label loopLengthLabel;
     juce::Slider loopLengthSlider; // integer bars, e.g. 1-8

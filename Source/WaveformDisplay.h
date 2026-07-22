@@ -23,10 +23,13 @@
       - Double-click or Cmd-click an auto-detected point (white line)
         deletes it — it won't come back until sensitivity or Reset changes
         that. Position 0 can't be deleted.
-      - Click-drag a Trim Start/End handle (yellow flag) moves it — nothing
-        outside the trimmed range can ever be detected, manually placed, or
-        played; dragging a handle inward past an existing slice boundary
-        drops that boundary from the active slice list on the next rebuild.
+      - Click-drag a Trim Start/End handle (yellow flag) moves it, snapping
+        to the nearest transient (Shift bypasses snapping, same as manual
+        slice points — identical modifier behaviour, no new pattern to
+        learn) — nothing outside the trimmed range can ever be detected,
+        manually placed, or played; dragging a handle inward past an
+        existing slice boundary drops that boundary from the active slice
+        list on the next rebuild.
 
     Also accepts drag-and-drop of audio files straight onto it. */
 class WaveformDisplay : public juce::Component,

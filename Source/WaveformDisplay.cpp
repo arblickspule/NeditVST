@@ -448,7 +448,8 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 {
     if (draggingTrimHandle == TrimHandle::start)
     {
-        processor.setTrimStartSample (xToSample (event.x));
+        const bool snap = ! event.mods.isShiftDown();
+        processor.setTrimStartSample (xToSample (event.x), snap);
         refresh();
 
         if (onTrimChanged)
@@ -459,7 +460,8 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 
     if (draggingTrimHandle == TrimHandle::end)
     {
-        processor.setTrimEndSample (xToSample (event.x));
+        const bool snap = ! event.mods.isShiftDown();
+        processor.setTrimEndSample (xToSample (event.x), snap);
         refresh();
 
         if (onTrimChanged)

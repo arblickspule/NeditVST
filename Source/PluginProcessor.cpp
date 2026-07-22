@@ -182,17 +182,40 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     const juce::ScopedLock sl (sampleLock);
 
-    if (! sampleLoaded || slices.empty())
+    if (! sampleLoaded)
         return;
 
     auto* playHead = getPlayHead();
+    const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo>{};
+    const bool hostTransportPlaying = position.hasValue() && position->getIsPlaying();
+    const double hostSampleRate = getSampleRate();
+
+    // Audition (Step 25): takes priority over everything below — a raw,
+    // generative-engine-bypassing loop of [trimStart, trimEnd), independent
+    // of host transport (it has to work even while the transport's
+    // stopped, since setting up a trim happens before worrying about
+    // sync). Auto-stops the instant the host transport starts playing, so
+    // it and the real engine below never talk over each other.
+    if (auditionActive.load())
+    {
+        if (hostTransportPlaying)
+            auditionActive.store (false);
+        else
+        {
+            if (hostSampleRate > 0.0)
+                renderAudition (buffer, hostSampleRate);
+
+            return;
+        }
+    }
+
+    if (slices.empty())
+        return;
 
     if (playHead == nullptr)
         return;
 
-    const auto position = playHead->getPosition();
-
-    if (! position.hasValue() || ! position->getIsPlaying())
+    if (! position.hasValue() || ! hostTransportPlaying)
     {
         hasCurrentPick = false; // transport stopped — fresh chain next time it starts
         clockModeInitialized = false;
@@ -202,7 +225,6 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     }
 
     const double hostBpm = position->getBpm().hasValue() ? *position->getBpm() : 120.0;
-    const double hostSampleRate = getSampleRate();
 
     if (hostBpm <= 0.0 || hostSampleRate <= 0.0)
         return;
@@ -779,6 +801,7 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
         hasCurrentPick = false; // don't let a stale pick read past the new buffer's end
         clockModeInitialized = false;
         clockCurrentPickValid = false;
+        auditionActive.store (false); // Step 25 -- a stale audition loop from the old buffer/trim makes no sense against the new one
     }
 
     undoManager.clearUndoHistory(); // old undo steps reference positions in a different file now
@@ -808,6 +831,46 @@ double SlicerAudioProcessor::computeSourceSpanSeconds() const
     const int trimEnd = trimEndSample.load();
     const int spanSamples = juce::jmax (0, trimEnd - trimStart);
     return (double) spanSamples / sampleSampleRate;
+}
+
+void SlicerAudioProcessor::renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate)
+{
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    const int sourceLength = sampleBuffer.getNumSamples();
+    const int sourceChannels = sampleBuffer.getNumChannels();
+    const int outChannels = buffer.getNumChannels();
+    const int numSamples = buffer.getNumSamples();
+
+    if (trimEnd - trimStart <= 0 || sourceLength == 0 || sourceChannels == 0)
+        return;
+
+    // Native pitch/speed: sample-rate matching only (correcting for the
+    // loaded file's own sample rate vs. the host's) — never repitchRatio,
+    // which is what keeps this "exactly the source content" regardless of
+    // loopLengthBars/tempo. No fades either — the loop seam is meant to be
+    // audibly exposed, not hidden.
+    const double auditionRate = sampleSampleRate / hostSampleRate;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (auditionPosition < (double) trimStart || auditionPosition >= (double) (trimEnd - 1))
+            auditionPosition = (double) trimStart;
+
+        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) auditionPosition);
+        const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
+        const float frac = (float) (auditionPosition - (double) idx0);
+
+        for (int outCh = 0; outCh < outChannels; ++outCh)
+        {
+            const int srcCh = juce::jmin (outCh, sourceChannels - 1);
+            const float s0 = sampleBuffer.getSample (srcCh, idx0);
+            const float s1 = sampleBuffer.getSample (srcCh, idx1);
+            buffer.addSample (outCh, i, s0 + frac * (s1 - s0));
+        }
+
+        auditionPosition += auditionRate;
+    }
 }
 
 void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs)

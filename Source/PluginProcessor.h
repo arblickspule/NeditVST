@@ -78,7 +78,7 @@ public:
 
     float getSensitivity() const { return currentSensitivity.load(); }
 
-    //=== Trim markers (Step 23) ===
+    //=== Trim markers (Step 23/25) ===
     // Two independent boundaries, in source-sample units, confining
     // EVERYTHING else in this class to [trimStart, trimEnd): transient
     // detection, manual slice point add/move (including the snap-to-
@@ -93,22 +93,77 @@ public:
     int getTrimStartSample() const { return trimStartSample.load(); }
     int getTrimEndSample() const { return trimEndSample.load(); }
 
-    void setTrimStartSample (int sample)
+    // Snapping (Step 25) reuses the exact same mechanism manual slice
+    // points already use — TransientDetector::findNearestPeak, with Shift
+    // held (snapToTransient = false) bypassing it for free placement — no
+    // new interaction pattern. One deliberate scoping difference: manual
+    // points' snap search is confined to the current trim window, but a
+    // trim handle can't use that same constraint (there's no "inside the
+    // trim" yet until the trim itself is set), so this searches the WHOLE
+    // file's cached transient data, unconstrained — findNearestPeak's
+    // default (-1, -1) range args already mean exactly that. The raw
+    // target is clamped to the allowed handle range (guarding against the
+    // two handles crossing) both before AND after the snap search, since
+    // an unconstrained search can land a peak right at — or past — that
+    // boundary.
+    void setTrimStartSample (int sample, bool snapToTransient = true)
     {
         const int currentEnd = trimEndSample.load();
         const int upperBound = juce::jmax (0, currentEnd - minTrimGapSamples); // guards tiny/degenerate buffers
-        trimStartSample.store (juce::jlimit (0, upperBound, sample));
+        int target = juce::jlimit (0, upperBound, sample);
+
+        if (snapToTransient)
+        {
+            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
+            target = juce::jlimit (0, upperBound, transientDetector.findNearestPeak (target, radiusSamples));
+        }
+
+        trimStartSample.store (target);
         rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
     }
 
-    void setTrimEndSample (int sample)
+    void setTrimEndSample (int sample, bool snapToTransient = true)
     {
         const int currentStart = trimStartSample.load();
         const int bufferLength = sampleBuffer.getNumSamples();
         const int lowerBound = juce::jmin (currentStart + minTrimGapSamples, bufferLength); // guards tiny/degenerate buffers
-        trimEndSample.store (juce::jlimit (lowerBound, bufferLength, sample));
+        int target = juce::jlimit (lowerBound, bufferLength, sample);
+
+        if (snapToTransient)
+        {
+            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
+            target = juce::jlimit (lowerBound, bufferLength, transientDetector.findNearestPeak (target, radiusSamples));
+        }
+
+        trimEndSample.store (target);
         rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
     }
+
+    //=== Audition (Step 25) ===
+    // Plays [trimStart, trimEnd) on a tight raw loop at native pitch/speed
+    // — sample-rate-matched only (no repitch, no fades, no slicing/picks/
+    // probability), completely bypassing the generative engine below, so
+    // what you hear is exactly the source content — for counting bars by
+    // ear before committing to a loop length. Deliberately unfaded at the
+    // loop seam: a click there IS the diagnostic ("not tight yet"), not a
+    // defect to smooth over.
+    //
+    // Works independent of host transport — it has to run whether or not
+    // the DAW is playing, since setting up a trim happens before worrying
+    // about sync — and auto-stops the instant host transport starts
+    // playing, so audition and the real engine never talk over each
+    // other. Click Audition again to stop manually if the transport isn't
+    // running. See processBlock()'s auditionActive check, which runs
+    // before (and instead of) everything below it.
+    void setAuditionActive (bool active)
+    {
+        const juce::ScopedLock sl (sampleLock); // guards auditionPosition, same lock processBlock uses
+        if (active)
+            auditionPosition = (double) trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
+        auditionActive.store (active);
+    }
+
+    bool getAuditionActive() const { return auditionActive.load(); }
 
     // Live preview (Step 12): shows what detection WOULD produce at a
     // given sensitivity — merged with the current manual/excluded points,
@@ -594,6 +649,13 @@ private:
     // consistent with the direct-read path "for free."
     double computeSourceSpanSeconds() const;
 
+    // Audition (Step 25) — the raw, generative-engine-bypassing loop
+    // render. Called from processBlock() (sampleLock already held) in
+    // place of everything below it whenever auditionActive is set. Reads/
+    // writes auditionPosition; safe from the UI thread too only because
+    // setAuditionActive() takes the same lock.
+    void renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate);
+
     struct ManualSlicePoint
     {
         int id = -1;
@@ -641,6 +703,14 @@ private:
     std::atomic<int> trimStartSample { 0 };
     std::atomic<int> trimEndSample { 0 };
     static constexpr int minTrimGapSamples = 64;
+
+    // Audition (Step 25) — auditionActive is checked/cleared from the
+    // audio thread (auto-stop) and set from the UI thread (button click);
+    // auditionPosition is plain (not atomic) since it's only ever touched
+    // under sampleLock — by processBlock()/renderAudition() on the audio
+    // thread, and by setAuditionActive() on the UI thread.
+    std::atomic<bool> auditionActive { false };
+    double auditionPosition = 0.0;
 
     // Manual BPM override (Step 23) — off by default, so behaviour is
     // unchanged (bars-derived tempo, same as always) until the user
