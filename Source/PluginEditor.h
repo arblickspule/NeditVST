@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-27 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-28 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -36,8 +36,10 @@
     — and the waveform display, which stays outside that viewport, always
     fully visible below it: it owns slice visualization, drag-and-drop
     loading, per-slice probability, manual slice add/move/remove, deleting
-    auto-detected transients, a live playhead highlight, and modifier-key
-    hover cues. */
+    auto-detected transients, a live generative playhead highlight, a
+    dodger-blue Audition playhead line (Step 28, mutually exclusive with
+    the generative one since the two engines can never run at once), and
+    modifier-key hover cues. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer

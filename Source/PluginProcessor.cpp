@@ -224,7 +224,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (auditionActive.load())
     {
         if (hostTransportPlaying)
+        {
             auditionActive.store (false);
+            auditionPlaybackPositionForUI.store (-1); // Step 28 -- the playhead indicator must vanish the instant this auto-stop fires, same as the audio itself
+        }
         else
         {
             if (hostSampleRate > 0.0)
@@ -847,6 +850,7 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
         clockModeInitialized = false;
         clockCurrentPickValid = false;
         auditionActive.store (false); // Step 25 -- a stale audition loop from the old buffer/trim makes no sense against the new one
+        auditionPlaybackPositionForUI.store (-1); // Step 28 -- and neither does its stale playhead indicator
     }
 
     undoManager.clearUndoHistory(); // old undo steps reference positions in a different file now
@@ -916,6 +920,11 @@ void SlicerAudioProcessor::renderAudition (juce::AudioBuffer<float>& buffer, dou
 
         auditionPosition += auditionRate;
     }
+
+    // Audition playhead (Step 28) — once per block is plenty for a 30fps
+    // UI poll (WaveformDisplay's timer), so this doesn't need to be a
+    // per-sample store inside the loop above.
+    auditionPlaybackPositionForUI.store ((int) auditionPosition);
 }
 
 void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs)

@@ -7,9 +7,14 @@
 /** Draws the loaded sample's waveform, a vertical line at each slice
     boundary (bright magenta = manually placed, white = auto-detected),
     one draggable probability "fader" per slice, a live highlight over
-    whichever slice is currently sounding, and two draggable Trim Start /
+    whichever slice is currently sounding, two draggable Trim Start /
     Trim End handles (Step 23) — distinct yellow flagged lines, with
-    everything outside them dimmed to make the excluded region obvious.
+    everything outside them dimmed to make the excluded region obvious —
+    and a thin dodger-blue playhead line tracking Audition's current read
+    position while it's running (Step 28) — a distinct colour from every
+    other marker/cue here, and mutually exclusive with the generative
+    playhead highlight above (Audition and the generative engine can
+    never run at the same time), so no overlap handling is needed.
 
     Interactions:
       - Drag within a slice's body (away from any boundary line) sets that
@@ -77,7 +82,7 @@ public:
     std::function<void()> onTrimChanged;
 
 private:
-    void timerCallback() override; // drives the live playhead highlight + Cmd-hover cue
+    void timerCallback() override; // drives the live playhead highlight, audition playhead, and Cmd-hover cue
 
     void rebuildWaveformPeaks();
     int getSliceIndexAtX (int x) const; // -1 if no sample loaded or x is outside any slice

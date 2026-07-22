@@ -158,12 +158,31 @@ public:
     void setAuditionActive (bool active)
     {
         const juce::ScopedLock sl (sampleLock); // guards auditionPosition, same lock processBlock uses
+
         if (active)
+        {
             auditionPosition = (double) trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
+            auditionPlaybackPositionForUI.store (trimStartSample.load()); // immediate UI feedback, rather than waiting for the first rendered block
+        }
+        else
+        {
+            auditionPlaybackPositionForUI.store (-1);
+        }
+
         auditionActive.store (active);
     }
 
     bool getAuditionActive() const { return auditionActive.load(); }
+
+    //=== Audition playhead (Step 28) ===
+    // Lock-free copy of the audition engine's current read position, for
+    // the waveform's playhead indicator — same pattern as
+    // getCurrentlyPlayingSliceIndex() below, just for Audition instead of
+    // the generative engine. -1 means "not currently auditioning" (default,
+    // and also set whenever audition stops — manually or auto-stopped by
+    // host transport starting, per setAuditionActive()/processBlock()).
+    // Written every block by renderAudition() while it's running.
+    int getAuditionPlaybackPosition() const { return auditionPlaybackPositionForUI.load(); }
 
     // Live preview (Step 12): shows what detection WOULD produce at a
     // given sensitivity — merged with the current manual/excluded points,
@@ -796,6 +815,11 @@ private:
     // thread, and by setAuditionActive() on the UI thread.
     std::atomic<bool> auditionActive { false };
     double auditionPosition = 0.0;
+
+    // Audition playhead (Step 28) — lock-free, written by renderAudition()
+    // every block (audio thread), read by WaveformDisplay's 30fps timer
+    // (UI thread), same pattern as currentlyPlayingSliceIndexForUI below.
+    std::atomic<int> auditionPlaybackPositionForUI { -1 };
 
     // Manual BPM override (Step 23) — off by default, so behaviour is
     // unchanged (bars-derived tempo, same as always) until the user

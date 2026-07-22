@@ -131,6 +131,30 @@ void WaveformDisplay::paint (juce::Graphics& g)
         }
     }
 
+    // --- Audition playhead (Step 28): a thin, distinctly-coloured
+    // vertical line at the audition engine's current read position.
+    // Independent of slicing entirely (drawn here, before the per-slice
+    // loop's own early-return below, so it still shows even with zero
+    // slices) — Audition bypasses slicing completely, same as it bypasses
+    // the rest of the generative engine. Mutually exclusive with the
+    // generative playhead highlight further down: Audition and the
+    // generative engine can never run at the same time (Audition
+    // auto-stops the instant host transport starts), so no overlap logic
+    // is needed here — this is simply never true at the same moment
+    // getCurrentlyPlayingSliceIndex() would be. ---
+    {
+        const int auditionPosition = processor.getAuditionPlaybackPosition();
+        const int totalSamplesForAudition = processor.getSampleBuffer().getNumSamples();
+
+        if (auditionPosition >= 0 && totalSamplesForAudition > 0)
+        {
+            const float auditionX = ((float) auditionPosition / (float) totalSamplesForAudition) * bounds.getWidth();
+
+            g.setColour (juce::Colours::dodgerblue);
+            g.drawVerticalLine ((int) auditionX, bounds.getY(), bounds.getBottom());
+        }
+    }
+
     // --- Slice boundaries + probability faders ---
     // While a live preview is active (e.g. dragging the sensitivity
     // slider), draw the proposed layout instead of the committed one.
