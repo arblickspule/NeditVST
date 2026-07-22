@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-30 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-31 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -41,13 +41,18 @@
     probability grid) — all of which live
     inside a fixed-height, internally-scrolling controlsViewport now,
     rather than growing the window every time another control gets added
-    — and the waveform display, which stays outside that viewport, always
-    fully visible below it: it owns slice visualization, drag-and-drop
-    loading, per-slice probability, manual slice add/move/remove, deleting
-    auto-detected transients, a live generative playhead highlight, a
-    dodger-blue Audition playhead line (Step 28, mutually exclusive with
-    the generative one since the two engines can never run at once), and
-    modifier-key hover cues. */
+    — and, below a "Zoom to Trims"/"Reset Zoom" button pair (Step 31), the
+    (now wider) waveform display, which stays outside that viewport,
+    always fully visible below it: it owns slice visualization, drag-and-
+    drop loading, per-slice probability, manual slice add/move/remove,
+    deleting auto-detected transients, a live generative playhead
+    highlight, a dodger-blue Audition playhead line (Step 28, mutually
+    exclusive with the generative one since the two engines can never run
+    at once), modifier-key hover cues, a small beat-number grid (Step 31),
+    and its own scroll-to-zoom/Shift-scroll-to-pan view range — every
+    interaction above continues to work correctly at any zoom/pan state,
+    not just fully zoomed out, since all of it maps through the same
+    visible-range seam internally. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -187,6 +192,12 @@ private:
 
     juce::Label subdivisionTableLabel;
     SubdivisionProbabilityGrid subdivisionGrid;
+
+    // Zoom/pan (Step 31) — live directly on the editor (like waveformDisplay
+    // itself), not inside controlsContent, so they stay visible next to the
+    // waveform regardless of how far the controls above are scrolled.
+    juce::TextButton zoomToTrimsButton { "Zoom to Trims" };
+    juce::TextButton resetZoomButton { "Reset Zoom" };
 
     WaveformDisplay waveformDisplay;
 

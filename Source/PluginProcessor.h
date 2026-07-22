@@ -60,6 +60,11 @@ public:
     juce::String getLoadedFileName() const { return loadedFileName; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
 
+    // The loaded sample's own sample rate (not the host's) — needed by
+    // WaveformDisplay's zoom (Step 31) to convert a minimum-zoom duration
+    // in milliseconds into source samples.
+    double getSampleSampleRate() const { return sampleSampleRate; }
+
     //=== Slicing ===
     void redetectSlices (float sensitivity, float holdoffMs);
     int getNumSlices() const { return (int) slices.size(); }

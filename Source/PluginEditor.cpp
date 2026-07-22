@@ -316,6 +316,15 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     updatePitchModeVisibility();
     updateManualBpmOverrideVisibility();
 
+    // Zoom/pan (Step 31) — live directly on the editor, not controlsContent,
+    // so they stay visible next to the waveform regardless of scroll
+    // position, same reasoning as waveformDisplay itself living there.
+    addAndMakeVisible (zoomToTrimsButton);
+    zoomToTrimsButton.addListener (this);
+
+    addAndMakeVisible (resetZoomButton);
+    resetZoomButton.addListener (this);
+
     addAndMakeVisible (waveformDisplay);
     waveformDisplay.onSampleChanged = [this] { updateAfterSampleOrSliceChange(); };
     waveformDisplay.onTrimChanged = [this] { updateAfterSampleOrSliceChange(); };
@@ -324,7 +333,9 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // (it scrolls internally within controlsViewport's fixed height) —
     // this no longer needs to grow every time a control gets added, and
     // comfortably fits any modern laptop screen, 16" MacBook included.
-    setSize (600, 780);
+    // Widened from 600 (Step 31) to give the waveform display significantly
+    // more horizontal room for zoom/pan and the beat-number grid.
+    setSize (900, 780);
 }
 
 SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
@@ -334,6 +345,8 @@ SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
     undoButton.removeListener (this);
     redoButton.removeListener (this);
     auditionButton.removeListener (this);
+    zoomToTrimsButton.removeListener (this);
+    resetZoomButton.removeListener (this);
 }
 
 void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -342,7 +355,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 30: Filter Down/Up direction split + scope",
+    g.drawFittedText ("NeditVST — step 31: Waveform width, zoom/pan, and beat grid",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 
@@ -361,6 +374,14 @@ void SlicerAudioProcessorEditor::resized()
     const int contentWidth = controlsViewport.getWidth() - controlsViewport.getScrollBarThickness();
     const int contentHeight = layoutControlsContent (contentWidth);
     controlsContent.setSize (contentWidth, contentHeight);
+
+    // Zoom/pan (Step 31) — a small fixed row above the waveform, always
+    // visible alongside it regardless of controlsContent's scroll position.
+    auto zoomButtonsRow = area.removeFromTop (30);
+    zoomToTrimsButton.setBounds (zoomButtonsRow.removeFromLeft (150));
+    zoomButtonsRow.removeFromLeft (10);
+    resetZoomButton.setBounds (zoomButtonsRow.removeFromLeft (150));
+    area.removeFromTop (10);
 
     waveformDisplay.setBounds (area); // takes up all remaining space, always fully visible
 }
@@ -508,6 +529,14 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
     else if (button == &auditionButton)
     {
         processor.setAuditionActive (! processor.getAuditionActive());
+    }
+    else if (button == &zoomToTrimsButton)
+    {
+        waveformDisplay.zoomToTrims();
+    }
+    else if (button == &resetZoomButton)
+    {
+        waveformDisplay.resetZoom();
     }
 }
 
