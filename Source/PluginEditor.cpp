@@ -326,7 +326,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 28: Audition playhead indicator",
+    g.drawFittedText ("NeditVST — step 29: Filter Sweep playback style",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 }
 

@@ -437,7 +437,7 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
-    //=== Playback style (Step 19/21/22) ===
+    //=== Playback style (Step 19/21/22/29) ===
     // A weighted table, independent of (but rolled at the same time as)
     // the slice/subdivision picks above: Forward is today's behaviour;
     // Ping-Pong plays a slice forward then immediately backward before
@@ -454,15 +454,24 @@ public:
     // something that should vanish depending on an unrelated toggle —
     // using its own small, hardcoded grain size and a hard-edged window
     // (see stretchCharacterGrainSizeMs/WindowShape::hardEdge), stretching
-    // the pick to stretchDurationMultiplier times its natural length.
+    // the pick to stretchDurationMultiplier times its natural length;
+    // Filter Sweep applies a resonant low-pass (see filterSweepFilter)
+    // as post-processing on this pick's rendered output, cutoff swept
+    // log-scale from ~9kHz down to ~250Hz across the pick's duration —
+    // "works on the output regardless of how it was generated" is what
+    // makes this the one style needing zero scheduling special-casing at
+    // all (no currentEndSample/currentPickLengthInHostSamples override,
+    // no beat-quantize exclusion code, no Clock-mode branch — it already
+    // falls through to exactly the same paths Forward does for all of
+    // that, and just gets an extra post-process step layered on top).
     // Defaults to Forward-only (weight 0 on everything else) rather than
     // even odds like the other tables — that's what guarantees the
     // default sounds byte-identical to before this existed, not just
     // "usually."
-    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch };
+    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweep };
 
-    static constexpr int numPlaybackStyleOptions = 4;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch"
+    static constexpr int numPlaybackStyleOptions = 5;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Sweep"
 
     float getPlaybackStyleProbability (int index) const
     {
@@ -686,6 +695,7 @@ private:
         if (index == 1) return PlaybackStyle::pingPong;
         if (index == 2) return PlaybackStyle::tapeStop;
         if (index == 3) return PlaybackStyle::stretch;
+        if (index == 4) return PlaybackStyle::filterSweep;
         return PlaybackStyle::forward;
     }
 
@@ -835,7 +845,7 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
-    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0} (Forward-only)
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
     std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
 
     // Stretch (Step 22) character parameters — deliberately fixed, not
@@ -846,6 +856,23 @@ private:
     // length regardless of tempo, Pitch Mode, or Pitch Shift.
     static constexpr float stretchCharacterGrainSizeMs = 10.0f; // within the ~8-15ms range asked for
     static constexpr double stretchDurationMultiplier = 4.0;
+
+    // Filter Sweep (Step 29) character parameters — deliberately fixed, no
+    // exposed controls, same "defer the knob until proven necessary"
+    // pattern as Stretch's grain size above. Direction is Close: cutoff
+    // starts open and sweeps down to closed across the pick's duration —
+    // the classic breakbeat/DnB "filter close." Resonance ~2.0 approximates
+    // the requested Q~2-3 range in this filter class's own "resonance"
+    // parameter (per juce::dsp::StateVariableTPTFilter's docs, standard
+    // 12dB/octave — i.e. no added resonance — is 1/sqrt(2); higher values
+    // add character without self-oscillating at this level). One shared
+    // filter instance is fine — Playback Style is a single mutually-
+    // exclusive pick per pick, so it's never touched by more than one
+    // pick's processing at a time.
+    static constexpr float filterSweepStartHz = 9000.0f;
+    static constexpr float filterSweepEndHz = 250.0f;
+    static constexpr float filterSweepResonance = 2.0f;
+    juce::dsp::StateVariableTPTFilter<float> filterSweepFilter;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision

@@ -76,10 +76,10 @@ namespace
         { "1n",   4.0 }
     } };
 
-    // Playback style names (Step 19/21/22), indexed the same way the
+    // Playback style names (Step 19/21/22/29), indexed the same way the
     // weighted table stores them.
     const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop", "Stretch"
+        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Sweep"
     } };
 
     // Tape Stop scope names (Step 21).
@@ -174,22 +174,36 @@ SlicerAudioProcessor::SlicerAudioProcessor()
 
     // Forward-only by default (NOT even odds like the other tables) --
     // guarantees byte-identical default playback, since none of Ping-Pong/
-    // Tape Stop/Stretch is ever drawn unless the user explicitly turns its
-    // weight up. (Step 22's spec described this as "all other styles at
-    // weight 1, Stretch at weight 0," which would actually break that
-    // guarantee for existing users -- kept Forward-only here instead,
-    // since "must sound identical to current behavior" is the
-    // longstanding hard requirement across every style added so far.)
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f };
+    // Tape Stop/Stretch/Filter Sweep is ever drawn unless the user
+    // explicitly turns its weight up. (Step 22's spec described this as
+    // "all other styles at weight 1, Stretch at weight 0," which would
+    // actually break that guarantee for existing users -- kept
+    // Forward-only here instead, since "must sound identical to current
+    // behavior" is the longstanding hard requirement across every style
+    // added so far.)
+    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+
+    // Filter Sweep (Step 29): fixed type/resonance, set once here rather
+    // than per-sample -- only the cutoff frequency needs to change during
+    // playback (see processBlock()). Sample rate/channel count get set
+    // properly in prepareToPlay(); the defaults here are harmless
+    // placeholders until then.
+    filterSweepFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
+    filterSweepFilter.setResonance (filterSweepResonance);
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor() = default;
 
-void SlicerAudioProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
+void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     hasCurrentPick = false;
     clockModeInitialized = false;
     clockCurrentPickValid = false;
+
+    // Filter Sweep (Step 29) -- must be prepared with the real sample rate
+    // before setCutoffFrequency() means anything; 2 channels covers this
+    // plugin's stereo-only output (isBusesLayoutSupported() requires it).
+    filterSweepFilter.prepare ({ sampleRate, (juce::uint32) samplesPerBlock, 2 });
 }
 
 void SlicerAudioProcessor::releaseResources() {}
@@ -594,11 +608,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
 
         if (pickJustStarted)
+        {
             granularStretcher.reset (currentPosition); // matches whichever mode's active; harmless if unused this pick
+            filterSweepFilter.reset(); // Step 29 -- no bleed from a previous pick; harmless if unused this pick
+        }
 
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
         const bool tapeStopActive = (currentPlaybackStyle == PlaybackStyle::tapeStop);
         const bool stretchActive = (currentPlaybackStyle == PlaybackStyle::stretch);
+        const bool filterSweepActive = (currentPlaybackStyle == PlaybackStyle::filterSweep);
 
         // Ping-Pong's currentEndSample is a full round trip (2x slice
         // length), and Stretch's is stretchDurationMultiplier-x — both can
@@ -688,6 +706,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             gain = juce::jlimit (0.0, 1.0, gain);
 
+            // Filter Sweep (Step 29): cutoff computed once per sample here
+            // (shared across every output channel below, not recomputed
+            // per channel) from the same progress fraction the fade
+            // calculations above already use. Log-scale interpolation --
+            // not linear Hz -- between start/end frequency, since
+            // frequency perception is logarithmic; this is what keeps the
+            // sweep sounding musically even rather than front-loaded.
+            // Direction is fixed at Close (open -> closed): the classic
+            // breakbeat/DnB "filter close."
+            float filterSweepCutoffHz = filterSweepStartHz;
+
+            if (filterSweepActive)
+            {
+                const double progress = (currentPickLengthInHostSamples > 0.0)
+                    ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
+                    : 1.0;
+                filterSweepCutoffHz = (float) (filterSweepStartHz * std::pow ((double) filterSweepEndHz / (double) filterSweepStartHz, progress));
+                filterSweepFilter.setCutoffFrequency (filterSweepCutoffHz);
+            }
+
             // Tape Stop doesn't fold position (it decelerates a plain
             // forward read) -- grainPlaybackStyle naturally comes out as
             // forward for it, same as it already does for anything that
@@ -751,7 +789,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 for (int outCh = 0; outCh < outChannels; ++outCh)
                 {
                     const int srcCh = juce::jmin (juce::jmin (outCh, sourceChannels - 1), GranularStretcher::maxChannels - 1);
-                    buffer.addSample (outCh, i, channelSums[srcCh] * (float) gain);
+                    float outputSample = channelSums[srcCh] * (float) gain;
+
+                    if (filterSweepActive)
+                        outputSample = filterSweepFilter.processSample (outCh, outputSample);
+
+                    buffer.addSample (outCh, i, outputSample);
                 }
             }
             else
@@ -774,7 +817,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const int srcCh = juce::jmin (outCh, sourceChannels - 1);
                     const float s0 = sampleBuffer.getSample (srcCh, idx0);
                     const float s1 = sampleBuffer.getSample (srcCh, idx1);
-                    const float sample = (s0 + frac * (s1 - s0)) * (float) gain;
+                    float sample = (s0 + frac * (s1 - s0)) * (float) gain;
+
+                    if (filterSweepActive)
+                        sample = filterSweepFilter.processSample (outCh, sample);
 
                     buffer.addSample (outCh, i, sample);
                 }
