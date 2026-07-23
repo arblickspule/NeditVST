@@ -84,6 +84,7 @@ private:
     void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
     void updateManualBpmOverrideVisibility(); // shows/hides the BPM numeric field
     int layoutControlsContent (int contentWidth); // lays out every control below; returns the total height they need
+    void refreshAllControls(); // syncs all UI controls with processor state after state restore
 
     SlicerAudioProcessor& processor;
 
