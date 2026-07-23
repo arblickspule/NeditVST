@@ -401,6 +401,7 @@ public:
         triggerMode.store (mode);
         clockModeInitialized = false; // force a fresh window/pick on next block
         clockCurrentPickValid = false;
+        resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
     }
 
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
@@ -520,6 +521,29 @@ public:
 
     void setTapeStopScope (TapeStopScope scope) { tapeStopScope.store (scope); }
     TapeStopScope getTapeStopScope() const { return tapeStopScope.load(); }
+
+    //=== Slice Length periodic reset (Step 34) ===
+    // Mandatory (no "Off" option) -- Slice Length mode has always been
+    // purely self-paced by natural pick completion, with zero host-
+    // position awareness, which is exactly why it's been able to drift
+    // arbitrarily far from the beat grid over a long session (Clock mode
+    // never has this problem, since its own window/tick system already
+    // keeps it host-position-locked). This forces a hard resync every
+    // resetBars bars: whatever's currently playing gets cut off (cleanly
+    // faded, never clicked -- see processBlock()) exactly on the boundary,
+    // and a fresh weighted pick starts right there. See processBlock()'s
+    // resetWindowEndPpq tracking for the mechanism -- a lightweight
+    // version of Clock mode's own per-sample window-boundary detection,
+    // reused directly rather than re-derived.
+    // Visible only in Slice Length mode -- Clock mode already has its own
+    // window-boundary mechanism via clockReferenceIndex and doesn't need
+    // this at all.
+    static constexpr int numResetBarsOptions = 4;
+    static juce::String getResetBarsName (int index); // "1 bar" / "2 bars" / "4 bars" / "8 bars"
+    static int getResetBarsValue (int index);         // 1 / 2 / 4 / 8
+
+    void setResetBarsIndex (int index) { resetBarsIndex.store (juce::jlimit (0, numResetBarsOptions - 1, index)); }
+    int getResetBarsIndex() const { return resetBarsIndex.load(); }
 
     //=== Filter Sweep scope (Step 30) ===
     // Clock-mode-only, same visibility pattern as Tape Stop scope above —
@@ -886,6 +910,17 @@ private:
     std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
     std::atomic<FilterSweepScope> filterSweepScope { FilterSweepScope::perTick };
 
+    // Slice Length periodic reset (Step 34) -- index into {1, 2, 4, 8}
+    // bars (see getResetBarsValue()). Defaults to index 2 (4 bars): a
+    // reasonable middle ground that still resyncs regularly without
+    // interrupting typical short phrases too aggressively. Unlike every
+    // other toggle in this class, this one is intentionally NOT "off by
+    // default to preserve existing behaviour" -- the whole feature is
+    // mandatory, so Slice Length mode's playback genuinely changes (for
+    // the better) the moment this exists, per the explicit decision that
+    // this isn't optional.
+    std::atomic<int> resetBarsIndex { 2 };
+
     // Stretch (Step 22) character parameters — deliberately fixed, not
     // exposed in the UI (separate from Pitch Mode's user-facing grain
     // size/window shape/pitch shift controls, none of which apply here).
@@ -924,6 +959,20 @@ private:
     int clockCurrentSliceIndex = -1;
     int clockCurrentSubdivisionIndex = -1;
     PlaybackStyle clockCurrentPlaybackStyle = PlaybackStyle::forward; // drawn once per window, alongside the two above
+
+    // Slice Length mode's periodic reset (Step 34, audio thread only) --
+    // a lightweight, independent version of the window-boundary tracking
+    // just above: resetWindowInitialized false forces a fresh window +
+    // fresh pick on next block (transport start, or entering Slice Length
+    // mode), same "always start aligned" behaviour clockModeInitialized
+    // already gives Clock mode. resetWindowEndPpq is checked every SAMPLE
+    // in the Slice Length branch below, not once per block -- the exact
+    // bug Step 6 introduced and fixed was computing a boundary once per
+    // block from the block's start position, silently missing boundaries
+    // that fell mid-block; this reuses Clock mode's own per-sample
+    // newWindow check directly rather than re-deriving that logic.
+    bool resetWindowInitialized = false;
+    double resetWindowEndPpq = 0.0;
 
     // Filter Sweep's Whole Window scope (Step 30) — how far into the
     // CURRENT WINDOW we are, in host samples, as opposed to samplesSince-

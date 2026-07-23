@@ -318,6 +318,19 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
                                             : SlicerAudioProcessor::FilterSweepScope::wholeWindow);
     };
 
+    controlsContent.addAndMakeVisible (resetEveryLabel);
+    resetEveryLabel.setText ("Reset every", juce::dontSendNotification);
+    resetEveryLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (resetEverySelector);
+    for (int i = 0; i < SlicerAudioProcessor::numResetBarsOptions; ++i)
+        resetEverySelector.addItem (SlicerAudioProcessor::getResetBarsName (i), i + 1); // JUCE item IDs are 1-based
+    resetEverySelector.setSelectedId (processor.getResetBarsIndex() + 1, juce::dontSendNotification);
+    resetEverySelector.onChange = [this]
+    {
+        processor.setResetBarsIndex (resetEverySelector.getSelectedId() - 1);
+    };
+
     controlsContent.addAndMakeVisible (subdivisionTableLabel);
     subdivisionTableLabel.setText ("Subdivision probability", juce::dontSendNotification);
     subdivisionTableLabel.setJustificationType (juce::Justification::centredLeft);
@@ -378,7 +391,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 33: Flag Loop length as stale on trim change",
+    g.drawFittedText ("NeditVST — step 34: Mandatory periodic reset for Slice Length mode",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -540,6 +553,11 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     filterSweepScopeSelector.setBounds (filterSweepScopeRow.removeFromLeft (150));
     area.removeFromTop (10);
 
+    auto resetEveryRow = area.removeFromTop (30);
+    resetEveryLabel.setBounds (resetEveryRow.removeFromLeft (140));
+    resetEverySelector.setBounds (resetEveryRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
     subdivisionTableLabel.setBounds (area.removeFromTop (20));
     subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
     area.removeFromTop (20);
@@ -635,6 +653,12 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     filterSweepScopeSelector.setVisible (clock);
     subdivisionTableLabel.setVisible (clock);
     subdivisionGrid.setVisible (clock);
+
+    // Reset every (Step 34) — the mirror image of the Clock-only controls
+    // above: Slice Length mode only, since Clock mode already has its own
+    // window-boundary mechanism and doesn't need this at all.
+    resetEveryLabel.setVisible (! clock);
+    resetEverySelector.setVisible (! clock);
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()

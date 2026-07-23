@@ -91,6 +91,16 @@ namespace
     const std::array<const char*, SlicerAudioProcessor::numFilterSweepScopeOptions> filterSweepScopeNames { {
         "Whole window", "Per tick"
     } };
+
+    // Slice Length periodic reset (Step 34) -- names and their underlying
+    // bar counts, held as a parallel pair rather than a NoteValueOption-
+    // style struct since bar counts (not beats) are the natural unit
+    // here, and every other place in this codebase already converts bars
+    // to beats via "* 4" (4/4) rather than storing beats directly.
+    const std::array<const char*, SlicerAudioProcessor::numResetBarsOptions> resetBarsNames { {
+        "1 bar", "2 bars", "4 bars", "8 bars"
+    } };
+    const std::array<int, SlicerAudioProcessor::numResetBarsOptions> resetBarsValues { { 1, 2, 4, 8 } };
 }
 
 juce::String SlicerAudioProcessor::getPlaybackStyleName (int index)
@@ -115,6 +125,22 @@ juce::String SlicerAudioProcessor::getFilterSweepScopeName (int index)
         return {};
 
     return filterSweepScopeNames[(size_t) index];
+}
+
+juce::String SlicerAudioProcessor::getResetBarsName (int index)
+{
+    if (index < 0 || index >= numResetBarsOptions)
+        return {};
+
+    return resetBarsNames[(size_t) index];
+}
+
+int SlicerAudioProcessor::getResetBarsValue (int index)
+{
+    if (index < 0 || index >= numResetBarsOptions)
+        return 4; // matches the default index (2 -> 4 bars)
+
+    return resetBarsValues[(size_t) index];
 }
 
 juce::String SlicerAudioProcessor::getNoteValueName (int index)
@@ -248,6 +274,7 @@ void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     hasCurrentPick = false;
     clockModeInitialized = false;
     clockCurrentPickValid = false;
+    resetWindowInitialized = false; // Step 34
 
     // Filter Sweep (Step 29) -- must be prepared with the real sample rate
     // before setCutoffFrequency() means anything; 2 channels covers this
@@ -311,6 +338,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         hasCurrentPick = false; // transport stopped — fresh chain next time it starts
         clockModeInitialized = false;
         clockCurrentPickValid = false;
+        resetWindowInitialized = false; // Step 34 -- re-snap to the current reset window next time transport starts
         currentlyPlayingSliceIndexForUI.store (-1);
         return;
     }
@@ -387,16 +415,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (granularNeedsReseed.exchange (false))
         granularStretcher.reset (currentPosition); // pitch mode changed mid-pick — reseed from wherever we are now
 
-    // Only Clock mode needs the host's beat position — Slice Length mode
-    // paces itself purely from slice content length and never looks at ppq.
-    double ppqStart = 0.0;
-    double ppqPerSample = 0.0;
+    // Both modes need the host's beat position now (Step 34): Clock mode
+    // for its own ticks/windows, and Slice Length mode for its lightweight
+    // periodic-reset boundary tracking below -- previously Slice Length
+    // mode paced itself purely from slice content length and never looked
+    // at ppq at all.
+    const double ppqStart = position->getPpqPosition().hasValue() ? *position->getPpqPosition() : 0.0;
+    const double ppqPerSample = (hostBpm / 60.0) / hostSampleRate;
 
     if (clockMode)
     {
-        ppqStart = position->getPpqPosition().hasValue() ? *position->getPpqPosition() : 0.0;
-        ppqPerSample = (hostBpm / 60.0) / hostSampleRate;
-
         if (! clockModeInitialized)
         {
             // Just entered Clock mode, or transport just started — snap to
@@ -408,10 +436,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             nextTickPpq = ppqStart;
             clockModeInitialized = true;
         }
+
+        resetWindowInitialized = false; // Slice Length's reset-window state is meaningless here; re-entering Slice Length mode later starts fresh
     }
     else
     {
         clockModeInitialized = false; // so re-entering Clock mode later starts fresh
+
+        // Slice Length periodic reset (Step 34) — same "just entered /
+        // transport just started, snap to the current window and force an
+        // immediate pick" treatment Clock mode gives itself just above.
+        if (! resetWindowInitialized)
+        {
+            const double resetWindowBeats = (double) getResetBarsValue (resetBarsIndex.load()) * 4.0; // 4/4
+            const juce::int64 windowIndex = (juce::int64) std::floor (ppqStart / resetWindowBeats);
+            resetWindowEndPpq = (double) (windowIndex + 1) * resetWindowBeats;
+            resetWindowInitialized = true;
+            hasCurrentPick = false; // force a fresh pick aligned to this window right away
+        }
     }
 
     for (int i = 0; i < numSamples; ++i)
@@ -424,10 +466,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // already in sync if the user switches mode later mid-stream.
         bool pickJustStarted = false;
 
+        // Needed by both modes now (Step 34): Clock mode's own tick/window
+        // checks below, and Slice Length mode's reset-boundary check
+        // further down — computed once per sample, not once per block, on
+        // purpose (see the reset-boundary comment below for why).
+        const double samplePpq = ppqStart + (double) i * ppqPerSample;
+
         if (clockMode)
         {
-            const double samplePpq = ppqStart + (double) i * ppqPerSample;
-
             if (samplePpq >= nextTickPpq)
             {
                 const bool newWindow = ! clockCurrentPickValid || samplePpq >= windowEndPpq;
@@ -567,12 +613,42 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
         else
         {
-            // Slice Length mode (unchanged): pick a fresh slice whenever
-            // nothing's playing or the current one has run its course.
-            // Tape Stop's "run its course" is time-based (its read
-            // position deliberately never reaches currentEndSample -- see
+            // Slice Length mode: pick a fresh slice whenever nothing's
+            // playing or the current one has run its course. Tape Stop's
+            // "run its course" is time-based (its read position
+            // deliberately never reaches currentEndSample -- see
             // currentPickTapeStopDurationHostSamples), unlike Forward/
             // Ping-Pong which are always position-based.
+
+            // Periodic reset (Step 34): checked every SAMPLE, not once per
+            // block from the block's start position -- the exact bug
+            // Step 6 introduced and fixed was computing a cycle/window
+            // boundary once per block, which silently missed boundaries
+            // landing mid-block. This reuses Clock mode's own per-sample
+            // newWindow check directly (same shape of problem, same fix)
+            // rather than re-deriving it. Crossing a boundary cuts off
+            // whatever's currently playing right here -- hasCurrentPick
+            // false makes the while-loop below pick fresh, starting
+            // exactly on this sample -- and advances to the NEXT boundary.
+            if (samplePpq >= resetWindowEndPpq)
+            {
+                const double resetWindowBeatsNow = (double) getResetBarsValue (resetBarsIndex.load()) * 4.0; // 4/4, live-read so a mid-stream dropdown change takes effect at the next boundary, same as Clock reference already does
+                const juce::int64 windowIndex = (juce::int64) std::floor (samplePpq / resetWindowBeatsNow);
+                resetWindowEndPpq = (double) (windowIndex + 1) * resetWindowBeatsNow;
+
+                hasCurrentPick = false;
+            }
+
+            // How much host-sample time remains until the next reset
+            // boundary -- capped into every fresh pick's currentPickLength-
+            // InHostSamples (and, for Tape Stop, currentPickTapeStopDuration-
+            // HostSamples) below: the same established anticipatory-fade
+            // pattern already used for Clock's ticks, Tape Stop, and Filter
+            // Sweep (all of which already cap their own duration/length to
+            // "whichever comes first"), so a pick that's about to get cut
+            // off by a reset always fades out cleanly instead of clicking.
+            const double samplesUntilReset = juce::jmax (0.0, (resetWindowEndPpq - samplePpq) / ppqPerSample);
+
             int pickAttempts = 0;
 
             while (! hasCurrentPick
@@ -657,6 +733,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             currentPickMidpointHostSamples = quantizedLengthHostSamples * 0.5;
                     }
                 }
+
+                // Periodic reset (Step 34): applied LAST, after beat-quantize
+                // may have already substituted a different target duration --
+                // reset always wins if it would cut the pick shorter than
+                // whatever duration was otherwise chosen, same "whichever
+                // comes first" precedence Clock mode's own tick/window caps
+                // already use. currentPickTapeStopDurationHostSamples is
+                // capped unconditionally too (harmless no-op for every style
+                // but Tape Stop, which is exactly how that variable already
+                // behaves elsewhere in this function).
+                currentPickLengthInHostSamples = juce::jmin (currentPickLengthInHostSamples, samplesUntilReset);
+                currentPickTapeStopDurationHostSamples = juce::jmin (currentPickTapeStopDurationHostSamples, samplesUntilReset);
 
                 if (++pickAttempts > 1000)
                     return; // safety bail — render the rest of this block as silence

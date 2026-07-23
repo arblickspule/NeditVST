@@ -7,7 +7,7 @@
 #include "PlaybackStyleGrid.h"
 
 //==============================================================================
-/** Step-33 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-34 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -38,7 +38,11 @@
     whole Clock window — no other UI for either style), trigger
     mode (Slice Length vs Clock, with its clock-reference menu, Tape Stop
     scope selector, Filter Sweep scope selector, and subdivision
-    probability grid) — all of which live
+    probability grid — Slice Length mode instead gets a mandatory "Reset
+    every" 1/2/4/8-bar selector, Step 34, forcing a hard resync at a fixed
+    bar interval, since Slice Length's purely self-paced natural-completion
+    scheduling has no other host-position awareness and can otherwise drift
+    arbitrarily far from the beat grid) — all of which live
     inside a fixed-height, internally-scrolling controlsViewport now,
     rather than growing the window every time another control gets added
     — and, below a "Zoom to Trims"/"Reset Zoom" button pair (Step 31), the
@@ -209,6 +213,14 @@ private:
     // Tape Stop scope's Whole Window default).
     juce::Label filterSweepScopeLabel;
     juce::ComboBox filterSweepScopeSelector; // "Whole window" / "Per tick"
+
+    // Slice Length periodic reset (Step 34) — the mirror image of the
+    // Clock-mode-only controls above: visible ONLY in Slice Length mode,
+    // since Clock mode already has its own window-boundary mechanism via
+    // Clock reference and doesn't need this at all. No "Off" option —
+    // mandatory whenever Slice Length mode is active.
+    juce::Label resetEveryLabel;
+    juce::ComboBox resetEverySelector; // "1 bar" / "2 bars" / "4 bars" / "8 bars"
 
     juce::Label subdivisionTableLabel;
     SubdivisionProbabilityGrid subdivisionGrid;
