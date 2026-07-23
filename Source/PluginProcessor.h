@@ -60,6 +60,11 @@ public:
     juce::String getLoadedFileName() const { return loadedFileName; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
 
+    // The loaded sample's own sample rate (not the host's) — needed by
+    // WaveformDisplay's zoom (Step 31) to convert a minimum-zoom duration
+    // in milliseconds into source samples.
+    double getSampleSampleRate() const { return sampleSampleRate; }
+
     //=== Slicing ===
     void redetectSlices (float sensitivity, float holdoffMs);
     int getNumSlices() const { return (int) slices.size(); }
@@ -77,6 +82,112 @@ public:
     }
 
     float getSensitivity() const { return currentSensitivity.load(); }
+
+    //=== Trim markers (Step 23/25) ===
+    // Two independent boundaries, in source-sample units, confining
+    // EVERYTHING else in this class to [trimStart, trimEnd): transient
+    // detection, manual slice point add/move (including the snap-to-
+    // transient search), and therefore what can ever become a slice or get
+    // played. Default to the full sample length on load (start=0,
+    // end=buffer length), so behaviour is unchanged until the user actually
+    // drags a handle. Continuous parameters like sensitivity/loop length —
+    // deliberately NOT undo-tracked (see the Undo/redo section below) —
+    // dragging a handle just re-triggers the same rebuild pathway sensitivity
+    // changes already use, which naturally drops any existing slice boundary
+    // (manual or auto) that now falls outside the new range.
+    int getTrimStartSample() const { return trimStartSample.load(); }
+    int getTrimEndSample() const { return trimEndSample.load(); }
+
+    // Snapping (Step 25) reuses the exact same mechanism manual slice
+    // points already use — TransientDetector::findNearestPeak, with Shift
+    // held (snapToTransient = false) bypassing it for free placement — no
+    // new interaction pattern. One deliberate scoping difference: manual
+    // points' snap search is confined to the current trim window, but a
+    // trim handle can't use that same constraint (there's no "inside the
+    // trim" yet until the trim itself is set), so this searches the WHOLE
+    // file's cached transient data, unconstrained — findNearestPeak's
+    // default (-1, -1) range args already mean exactly that. The raw
+    // target is clamped to the allowed handle range (guarding against the
+    // two handles crossing) both before AND after the snap search, since
+    // an unconstrained search can land a peak right at — or past — that
+    // boundary.
+    void setTrimStartSample (int sample, bool snapToTransient = true)
+    {
+        const int currentEnd = trimEndSample.load();
+        const int upperBound = juce::jmax (0, currentEnd - minTrimGapSamples); // guards tiny/degenerate buffers
+        int target = juce::jlimit (0, upperBound, sample);
+
+        if (snapToTransient)
+        {
+            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
+            target = juce::jlimit (0, upperBound, transientDetector.findNearestPeak (target, radiusSamples));
+        }
+
+        trimStartSample.store (target);
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    void setTrimEndSample (int sample, bool snapToTransient = true)
+    {
+        const int currentStart = trimStartSample.load();
+        const int bufferLength = sampleBuffer.getNumSamples();
+        const int lowerBound = juce::jmin (currentStart + minTrimGapSamples, bufferLength); // guards tiny/degenerate buffers
+        int target = juce::jlimit (lowerBound, bufferLength, sample);
+
+        if (snapToTransient)
+        {
+            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
+            target = juce::jlimit (lowerBound, bufferLength, transientDetector.findNearestPeak (target, radiusSamples));
+        }
+
+        trimEndSample.store (target);
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    //=== Audition (Step 25) ===
+    // Plays [trimStart, trimEnd) on a tight raw loop at native pitch/speed
+    // — sample-rate-matched only (no repitch, no fades, no slicing/picks/
+    // probability), completely bypassing the generative engine below, so
+    // what you hear is exactly the source content — for counting bars by
+    // ear before committing to a loop length. Deliberately unfaded at the
+    // loop seam: a click there IS the diagnostic ("not tight yet"), not a
+    // defect to smooth over.
+    //
+    // Works independent of host transport — it has to run whether or not
+    // the DAW is playing, since setting up a trim happens before worrying
+    // about sync — and auto-stops the instant host transport starts
+    // playing, so audition and the real engine never talk over each
+    // other. Click Audition again to stop manually if the transport isn't
+    // running. See processBlock()'s auditionActive check, which runs
+    // before (and instead of) everything below it.
+    void setAuditionActive (bool active)
+    {
+        const juce::ScopedLock sl (sampleLock); // guards auditionPosition, same lock processBlock uses
+
+        if (active)
+        {
+            auditionPosition = (double) trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
+            auditionPlaybackPositionForUI.store (trimStartSample.load()); // immediate UI feedback, rather than waiting for the first rendered block
+        }
+        else
+        {
+            auditionPlaybackPositionForUI.store (-1);
+        }
+
+        auditionActive.store (active);
+    }
+
+    bool getAuditionActive() const { return auditionActive.load(); }
+
+    //=== Audition playhead (Step 28) ===
+    // Lock-free copy of the audition engine's current read position, for
+    // the waveform's playhead indicator — same pattern as
+    // getCurrentlyPlayingSliceIndex() below, just for Audition instead of
+    // the generative engine. -1 means "not currently auditioning" (default,
+    // and also set whenever audition stops — manually or auto-stopped by
+    // host transport starting, per setAuditionActive()/processBlock()).
+    // Written every block by renderAudition() while it's running.
+    int getAuditionPlaybackPosition() const { return auditionPlaybackPositionForUI.load(); }
 
     // Live preview (Step 12): shows what detection WOULD produce at a
     // given sensitivity — merged with the current manual/excluded points,
@@ -196,14 +307,38 @@ public:
     void setLoopLengthBars (int bars) { loopLengthBars.store (juce::jmax (1, bars)); }
     int getLoopLengthBars() const { return loopLengthBars.load(); }
 
-    // Calculated from loopLengthBars + the sample's actual length. Exposed
-    // mainly so the editor can display it — "this loop is ~140 BPM".
+    //=== Manual BPM override (Step 23) ===
+    // When enabled, REPLACES the bars-derived tempo calculation entirely
+    // (not layered alongside it) — see computeSourceSpanSeconds(), the one
+    // shared function both this and the Trim markers above feed into, used
+    // consistently by processBlock()'s direct-read path and by whatever
+    // GranularStretcher renders (via the same repitchRatio it already
+    // flows through).
+    void setManualBpmOverrideEnabled (bool enabled) { manualBpmOverrideEnabled.store (enabled); }
+    bool getManualBpmOverrideEnabled() const { return manualBpmOverrideEnabled.load(); }
+
+    void setManualBpmOverrideValue (double bpm) { manualBpmOverrideValue.store (juce::jmax (1.0, bpm)); }
+    double getManualBpmOverrideValue() const { return manualBpmOverrideValue.load(); }
+
+    // Calculated from loopLengthBars + (the trimmed span of the sample, or
+    // the manual BPM override when enabled). Exposed mainly so the editor
+    // can display it — "this loop is ~140 BPM". Shows the override value
+    // directly when it's active, rather than a value re-derived from it
+    // (those are mathematically the same number for the *source* span, but
+    // showing the raw override avoids any rounding-trip confusion).
     double getCalculatedOriginalBpm() const
     {
+        if (manualBpmOverrideEnabled.load())
+            return manualBpmOverrideValue.load();
+
         if (! sampleLoaded || sampleBuffer.getNumSamples() == 0)
             return 0.0;
 
-        const double lengthSeconds = (double) sampleBuffer.getNumSamples() / sampleSampleRate;
+        const double lengthSeconds = computeSourceSpanSeconds();
+
+        if (lengthSeconds <= 0.0)
+            return 0.0;
+
         const double beats = (double) loopLengthBars.load() * 4.0; // assumes 4/4
         return (beats * 60.0) / lengthSeconds;
     }
@@ -266,6 +401,7 @@ public:
         triggerMode.store (mode);
         clockModeInitialized = false; // force a fresh window/pick on next block
         clockCurrentPickValid = false;
+        resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
     }
 
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
@@ -307,6 +443,135 @@ public:
             subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
+    //=== Playback style (Step 19/21/22/29) ===
+    // A weighted table, independent of (but rolled at the same time as)
+    // the slice/subdivision picks above: Forward is today's behaviour;
+    // Ping-Pong plays a slice forward then immediately backward before
+    // the next pick, via the shared foldPosition() mapping in
+    // GranularStretcher (used by both pitch modes' render paths, so it
+    // behaves identically in Repitch and Time-Stretch); Tape Stop
+    // decelerates rate AND gain linearly to zero across a fixed duration
+    // (see setTapeStopScope() for how that duration is chosen in Clock
+    // mode), as an additional multiplier layered on top of whatever the
+    // Pitch Mode already produces — same "shared multiplier" pattern,
+    // just applied at the rate/gain level instead of the position level;
+    // Stretch always renders through GranularStretcher regardless of the
+    // global Pitch Mode setting — a deliberate character effect, not
+    // something that should vanish depending on an unrelated toggle —
+    // using its own small, hardcoded grain size and a hard-edged window
+    // (see stretchCharacterGrainSizeMs/WindowShape::hardEdge), stretching
+    // the pick to stretchDurationMultiplier times its natural length;
+    // Filter Down/Filter Up (Step 29/30) both apply the same resonant
+    // low-pass (see filterSweepFilter) as post-processing on this pick's
+    // rendered output, cutoff swept log-scale across the pick's duration —
+    // Down sweeps ~9kHz -> ~250Hz (open to closed, the classic breakbeat/
+    // DnB "filter close"), Up is the mirror image, ~250Hz -> ~9kHz. Scope
+    // (see FilterSweepScope below) picks what "across the pick's duration"
+    // means in Clock mode. "Works on the output regardless of how it was
+    // generated" is what makes these the only styles needing zero
+    // scheduling special-casing (no currentEndSample/currentPickLength-
+    // InHostSamples override, no beat-quantize exclusion code, no forced
+    // Clock-mode retrigger override — they already fall through to
+    // exactly the same paths Forward does for all of that, and just get
+    // an extra post-process step layered on top).
+    // Defaults to Forward-only (weight 0 on everything else) rather than
+    // even odds like the other tables — that's what guarantees the
+    // default sounds byte-identical to before this existed, not just
+    // "usually."
+    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweepDown, filterSweepUp };
+
+    static constexpr int numPlaybackStyleOptions = 6;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up"
+
+    float getPlaybackStyleProbability (int index) const
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index < 0 || index >= (int) playbackStyleProbabilities.size())
+            return 1.0f;
+
+        return playbackStyleProbabilities[(size_t) index];
+    }
+
+    void setPlaybackStyleProbability (int index, float probability)
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index >= 0 && index < (int) playbackStyleProbabilities.size())
+            playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+    }
+
+    //=== Tape Stop scope (Step 21) ===
+    // Clock-mode-only: how long a Tape Stop pick's decel lasts. Slice
+    // Length mode doesn't need this choice — the duration there is always
+    // just the pick's own natural slice length, same timebase Forward
+    // already uses.
+    //   wholeWindow (default) — one continuous decel across the entire
+    //     clock reference length, overriding normal subdivision
+    //     retriggering for that window (no ticks; the next window picks
+    //     fresh as usual).
+    //   perTick — each individual subdivision tick gets its own quick
+    //     decel-to-zero-and-restart, same cadence Clock mode already
+    //     retriggers at — a rapid stutter of small tape-stops rather than
+    //     one long sweep.
+    enum class TapeStopScope { wholeWindow, perTick };
+
+    static constexpr int numTapeStopScopeOptions = 2;
+    static juce::String getTapeStopScopeName (int index); // "Whole window" / "Per tick"
+
+    void setTapeStopScope (TapeStopScope scope) { tapeStopScope.store (scope); }
+    TapeStopScope getTapeStopScope() const { return tapeStopScope.load(); }
+
+    //=== Slice Length periodic reset (Step 34) ===
+    // Mandatory (no "Off" option) -- Slice Length mode has always been
+    // purely self-paced by natural pick completion, with zero host-
+    // position awareness, which is exactly why it's been able to drift
+    // arbitrarily far from the beat grid over a long session (Clock mode
+    // never has this problem, since its own window/tick system already
+    // keeps it host-position-locked). This forces a hard resync every
+    // resetBars bars: whatever's currently playing gets cut off (cleanly
+    // faded, never clicked -- see processBlock()) exactly on the boundary,
+    // and a fresh weighted pick starts right there. See processBlock()'s
+    // resetWindowEndPpq tracking for the mechanism -- a lightweight
+    // version of Clock mode's own per-sample window-boundary detection,
+    // reused directly rather than re-derived.
+    // Visible only in Slice Length mode -- Clock mode already has its own
+    // window-boundary mechanism via clockReferenceIndex and doesn't need
+    // this at all.
+    static constexpr int numResetBarsOptions = 4;
+    static juce::String getResetBarsName (int index); // "1 bar" / "2 bars" / "4 bars" / "8 bars"
+    static int getResetBarsValue (int index);         // 1 / 2 / 4 / 8
+
+    void setResetBarsIndex (int index) { resetBarsIndex.store (juce::jlimit (0, numResetBarsOptions - 1, index)); }
+    int getResetBarsIndex() const { return resetBarsIndex.load(); }
+
+    //=== Filter Sweep scope (Step 30) ===
+    // Clock-mode-only, same visibility pattern as Tape Stop scope above —
+    // but its own separate state (defaults differ) and a different
+    // relationship to ticks:
+    //   perTick (default) — today's behaviour, unchanged: sweep progress
+    //     is samplesSincePickStart / currentPickLengthInHostSamples,
+    //     resetting at every individual retrigger, same as Slice Length
+    //     mode always uses regardless of this setting.
+    //   wholeWindow — ticks keep retriggering normally at the subdivision
+    //     rate (NOT overridden the way Tape Stop's wholeWindow overrides
+    //     normal retriggering) — only the cutoff's progress fraction
+    //     changes, to samplesSinceWindowStart / currentWindowLengthHost-
+    //     Samples, continuous across every tick in that window and only
+    //     reset when a new window begins.
+    // Default is perTick, the OPPOSITE of Tape Stop scope's wholeWindow
+    // default — Filter Sweep's existing behaviour (from Step 29, before
+    // this scope choice existed) was already per-pick/per-tick, so this
+    // default is what keeps that behaviour unchanged for anyone who's
+    // already using it.
+    enum class FilterSweepScope { wholeWindow, perTick };
+
+    static constexpr int numFilterSweepScopeOptions = 2;
+    static juce::String getFilterSweepScopeName (int index); // "Whole window" / "Per tick"
+
+    void setFilterSweepScope (FilterSweepScope scope) { filterSweepScope.store (scope); }
+    FilterSweepScope getFilterSweepScope() const { return filterSweepScope.load(); }
+
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
     // rendered, never when slices get picked/retriggered or how they're
@@ -320,7 +585,24 @@ public:
     //     native, sample-rate-corrected-only rate (pitch-preserving),
     //     while their START positions get spaced to track tempo, so pitch
     //     stays fixed regardless of speed.
-    enum class PitchMode { repitch, timeStretch };
+    //   noSync (Step 27) — no tempo math at all: replaces the tempo-derived
+    //     repitchRatio entirely with a simple transpose ratio
+    //     (pow(2, transposeSemitones/12)), so the final rate is pure
+    //     sample-rate matching plus transpose. No GranularStretcher
+    //     involvement for the base engine — that's specifically a
+    //     tempo-sync tool, not applicable here. Needs no scheduling
+    //     changes: "pick finishes when currentPosition reaches
+    //     currentEndSample" is already expressed in source-sample terms,
+    //     not host-beat terms, so a NoSync pick naturally just plays until
+    //     its content ends, disregarding the beat grid, the moment the
+    //     rate calculation above is in place — nothing else in the
+    //     render/scheduling path needs touching. Playback styles stay
+    //     fully compatible with no special-casing: Ping-Pong's folding,
+    //     Tape Stop's decel, and Stretch's forced-GranularStretcher
+    //     override all layer on top of whichever base rate the current
+    //     Pitch Mode produces, exactly as they already do for Repitch/
+    //     Time-Stretch — this was already orthogonal.
+    enum class PitchMode { repitch, timeStretch, noSync };
 
     void setPitchMode (PitchMode mode)
     {
@@ -329,6 +611,14 @@ public:
     }
 
     PitchMode getPitchMode() const { return pitchMode.load(); }
+
+    // NoSync-only transpose control (Step 27) — the ONLY thing that
+    // affects NoSync's playback rate (see PitchMode::noSync above). Same
+    // -24..+24 range as Time-Stretch's own pitch shift control, for
+    // consistency; 0 semitones is a no-op (transposeRatio == 1.0), same
+    // "identity by default" convention as pitchShiftSemitones below.
+    void setTransposeSemitones (float semitones) { transposeSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
+    float getTransposeSemitones() const { return transposeSemitones.load(); }
 
     // Grain length for Time-Stretch mode. Overlap is fixed at 50% (not
     // exposed) to keep the UI minimal.
@@ -346,6 +636,80 @@ public:
     // complete no-op (pitchRatio == 1.0), same as before this existed.
     void setPitchShiftSemitones (float semitones) { pitchShiftSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
     float getPitchShiftSemitones() const { return pitchShiftSemitones.load(); }
+
+    //=== Beat-quantized slice length (Step 24) ===
+    // Only takes effect for Pitch Mode == timeStretch AND Trigger Mode ==
+    // sliceLength — Clock mode already enforces beat-alignment via its own
+    // tick system, so this is simply not consulted there. Default ON
+    // whenever Time-Stretch is active: this is the standard behaviour for
+    // that mode, not an opt-in extra (unlike every other toggle in this
+    // class, which defaults to preserving prior behaviour — Time-Stretch
+    // mode itself is still off by default, so nothing changes for anyone
+    // who hasn't already opted into it).
+    //
+    // Per pick (computed once, at pick-start, in the Slice Length while-loop
+    // below — see currentPickBeatQuantized/currentPickQuantizedStretchRatio):
+    //   1. naturalBeats = (slice length in source seconds) / (60 / originalBpm)
+    //      — using the trim/override-aware getCalculatedOriginalBpm() above.
+    //      Ping-Pong uses the FULL ROUND TRIP (2x slice length) here, since
+    //      that's the unit whose duration should land on the beat grid.
+    //   2. Snap naturalBeats to the nearest entry in the existing note-value
+    //      palette (getNoteValueBeats()/numNoteValueOptions above — reused
+    //      directly, not duplicated) via nearestNoteValueIndex() below.
+    //   3. targetHostSeconds = quantizedBeats * (60 / hostBpm)
+    //   4. This pick's own stretch ratio = sliceNaturalSourceSeconds /
+    //      targetHostSeconds — substituted for the global repitchRatio,
+    //      symmetrically, everywhere repitchRatio would otherwise drive
+    //      this pick's granular hop schedule AND its scheduling-position
+    //      advance rate (see currentPickQuantizedStretchRatio's use in
+    //      processBlock). The result: this pick's rendered duration lands
+    //      exactly on quantizedBeats, so consecutive picks' durations
+    //      always sum to exact beat-grid positions -- drift becomes
+    //      structurally impossible rather than something to correct after
+    //      the fact.
+    // Tape Stop and Stretch skip this entirely (never even computed for
+    // those styles) — both already deliberately override natural duration
+    // as their whole purpose, and forcing a decel-to-zero or an extreme
+    // granular mangle onto an exact beat length would fight the effect
+    // rather than serve it.
+    //
+    // The target-duration calculation itself (steps 1-3 above) is shared
+    // with Repitch mode's own separate toggle just below — see
+    // computeBeatQuantizeTarget() — since it's identical regardless of
+    // pitch mode; only what the resulting ratio gets applied TO differs.
+    void setBeatQuantizeSliceLengthEnabled (bool enabled) { beatQuantizeSliceLengthEnabled.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabled() const { return beatQuantizeSliceLengthEnabled.load(); }
+
+    //=== Beat-quantized slice length — Repitch mode (Step 26) ===
+    // Same label, same underlying target-duration calculation as the
+    // Time-Stretch toggle above (computeBeatQuantizeTarget() is shared, not
+    // duplicated) — but its own separate state, since the defaults differ,
+    // and its own separate effect: instead of handing the target duration
+    // to GranularStretcher's hop schedule, it's used to compute THIS PICK's
+    // own varispeed playback rate, the same way repitchRatio already
+    // controls duration and pitch together for every other pick. In
+    // practice this needs no pitch-mode-specific code at all beyond the
+    // pick-start calculation: processBlock()'s shared scheduling-position
+    // advance (currentPosition += effectivePlaybackRate) already consults
+    // currentPickBeatQuantized/currentPickQuantizedStretchRatio regardless
+    // of pitch mode, and in Repitch mode that position IS the direct read
+    // pointer — so substituting the quantized ratio there is exactly
+    // "adjust the normal repitch-mode rate calculation." This introduces a
+    // small per-pick pitch variance, same trade-off already accepted for
+    // the Time-Stretch side of this feature — nothing to compensate for or
+    // hide.
+    //
+    // Default OFF, unlike Time-Stretch's default-on: this one has a real
+    // pitch trade-off, so it's opt-in rather than the new standard
+    // behaviour. With it off (the default), Repitch mode is byte-identical
+    // to before this toggle existed.
+    //
+    // Same exclusions as the Time-Stretch toggle: Tape Stop/Stretch skip
+    // it regardless of which Pitch Mode is active, and it only applies in
+    // Slice Length trigger mode (Clock mode's tick system already enforces
+    // beat-alignment either way).
+    void setBeatQuantizeSliceLengthEnabledRepitch (bool enabled) { beatQuantizeSliceLengthEnabledRepitch.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabledRepitch() const { return beatQuantizeSliceLengthEnabledRepitch.load(); }
 
 private:
     // Weighted-random pick across a list of weights. Falls back to
@@ -381,6 +745,51 @@ private:
 
     int pickWeightedRandomSlice() { return pickWeightedIndex (sliceProbabilities); }
 
+    // Maps a playbackStyleProbabilities index (as drawn by pickWeightedIndex)
+    // to its enum value. A plain out-of-range/negative index (shouldn't
+    // happen — the table always has numPlaybackStyleOptions entries) falls
+    // back to Forward rather than asserting, matching pickWeightedIndex's
+    // own defensive style elsewhere.
+    static PlaybackStyle indexToPlaybackStyle (int index)
+    {
+        if (index == 1) return PlaybackStyle::pingPong;
+        if (index == 2) return PlaybackStyle::tapeStop;
+        if (index == 3) return PlaybackStyle::stretch;
+        if (index == 4) return PlaybackStyle::filterSweepDown;
+        if (index == 5) return PlaybackStyle::filterSweepUp;
+        return PlaybackStyle::forward;
+    }
+
+    // Beat-quantized slice length (Step 24): finds the note-value palette
+    // entry (see numNoteValueOptions/getNoteValueBeats() above) closest to
+    // targetBeats. Reuses the existing palette directly rather than
+    // duplicating it.
+    static int nearestNoteValueIndex (double targetBeats);
+
+    // Beat-quantized slice length (Step 24/26) — the shared target-duration
+    // calculation both the Time-Stretch and Repitch toggles feed into, so
+    // it's computed once here rather than duplicated per pitch mode:
+    //   1. naturalBeats = (slice length in source seconds) / (60 / originalBpm)
+    //      — Ping-Pong passes pingPong=true, using the FULL ROUND TRIP
+    //      (2x sliceLength) as the span whose duration should land on the
+    //      beat grid.
+    //   2. Snap to the nearest note-value palette entry (nearestNoteValueIndex).
+    //   3. targetHostSeconds = quantizedBeats * (60 / hostBpm)
+    //   4. stretchRatio = sliceNaturalSourceSeconds / targetHostSeconds —
+    //      this pick's own replacement for the global repitchRatio.
+    // result.quantized stays false (stretchRatio/targetHostSeconds
+    // meaningless) if sliceLength/originalBpm/hostBpm/targetHostSeconds
+    // are degenerate (<= 0) — callers check this before using the rest.
+    struct BeatQuantizeResult
+    {
+        bool quantized = false;
+        double stretchRatio = 1.0;      // replaces repitchRatio for this pick
+        double targetHostSeconds = 0.0; // this pick's target duration, in host seconds
+    };
+
+    static BeatQuantizeResult computeBeatQuantizeTarget (int sliceLength, bool pingPong,
+                                                          double sampleSampleRate, double originalBpm, double hostBpm);
+
     // Shared by redetectSlices() and every manual-point mutation: re-runs
     // auto-detection at the given sensitivity, merges the result with the
     // current manual points, sorts + dedupes into one boundary list, and
@@ -392,9 +801,35 @@ private:
 
     // Pure merge logic (no side effects, no member writes) shared by the
     // real rebuild above and previewSlicesAtSensitivity(). Takes a raw
-    // auto-detection result and folds in exclusions + manual points.
-    // Must be called with sampleLock already held.
-    std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices) const;
+    // auto-detection result (already confined to [trimStart, trimEnd) by
+    // the caller) and folds in exclusions + manual points, filtering out
+    // any manual point that now falls outside the trim range rather than
+    // deleting it outright — same "soft exclude" treatment already used
+    // for auto-detected exclusions, so widening the trim again later can
+    // bring it back. Must be called with sampleLock already held.
+    std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const;
+
+    // Unifies the tempo math (Step 23) that both Trim markers and Manual
+    // BPM override feed into:
+    //   sourceSpanSeconds = manualBpmOverrideEnabled
+    //       ? (loopLengthBars * 4 * 60) / manualBpmOverrideValue
+    //       : (trimEndSample - trimStartSample) / sampleSampleRate
+    // Used by both getCalculatedOriginalBpm() (the UI's "~X BPM" label) and
+    // processBlock()'s repitchRatio — replaces the old calculation, which
+    // used the whole buffer's length regardless of trim (the bug this
+    // fixes). The existing repitchRatio formula itself (sourceSpanSeconds /
+    // hostLoopLengthSeconds) is otherwise unchanged, and GranularStretcher
+    // never computes tempo itself — it only ever receives the ratios
+    // (repitchRatio, srConversionRatio) this feeds into, so it stays
+    // consistent with the direct-read path "for free."
+    double computeSourceSpanSeconds() const;
+
+    // Audition (Step 25) — the raw, generative-engine-bypassing loop
+    // render. Called from processBlock() (sampleLock already held) in
+    // place of everything below it whenever auditionActive is set. Reads/
+    // writes auditionPosition; safe from the UI thread too only because
+    // setAuditionActive() takes the same lock.
+    void renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate);
 
     struct ManualSlicePoint
     {
@@ -435,6 +870,35 @@ private:
     juce::Random random;
 
     std::atomic<int> loopLengthBars { 1 };
+
+    // Trim markers (Step 23) — source-sample-domain bounds confining
+    // detection/manual points/playback. Set to the full buffer on load in
+    // loadSample(). minTrimGapSamples keeps the two handles from ever
+    // crossing/colliding, so the range can never degenerate to zero width.
+    std::atomic<int> trimStartSample { 0 };
+    std::atomic<int> trimEndSample { 0 };
+    static constexpr int minTrimGapSamples = 64;
+
+    // Audition (Step 25) — auditionActive is checked/cleared from the
+    // audio thread (auto-stop) and set from the UI thread (button click);
+    // auditionPosition is plain (not atomic) since it's only ever touched
+    // under sampleLock — by processBlock()/renderAudition() on the audio
+    // thread, and by setAuditionActive() on the UI thread.
+    std::atomic<bool> auditionActive { false };
+    double auditionPosition = 0.0;
+
+    // Audition playhead (Step 28) — lock-free, written by renderAudition()
+    // every block (audio thread), read by WaveformDisplay's 30fps timer
+    // (UI thread), same pattern as currentlyPlayingSliceIndexForUI below.
+    std::atomic<int> auditionPlaybackPositionForUI { -1 };
+
+    // Manual BPM override (Step 23) — off by default, so behaviour is
+    // unchanged (bars-derived tempo, same as always) until the user
+    // explicitly enables it. 120 is just a sane inert starting value; it
+    // has zero effect while disabled.
+    std::atomic<bool> manualBpmOverrideEnabled { false };
+    std::atomic<double> manualBpmOverrideValue { 120.0 };
+
     std::atomic<float> currentSensitivity { defaultSensitivity };
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
@@ -442,6 +906,48 @@ private:
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
+    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
+    std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
+    std::atomic<FilterSweepScope> filterSweepScope { FilterSweepScope::perTick };
+
+    // Slice Length periodic reset (Step 34) -- index into {1, 2, 4, 8}
+    // bars (see getResetBarsValue()). Defaults to index 2 (4 bars): a
+    // reasonable middle ground that still resyncs regularly without
+    // interrupting typical short phrases too aggressively. Unlike every
+    // other toggle in this class, this one is intentionally NOT "off by
+    // default to preserve existing behaviour" -- the whole feature is
+    // mandatory, so Slice Length mode's playback genuinely changes (for
+    // the better) the moment this exists, per the explicit decision that
+    // this isn't optional.
+    std::atomic<int> resetBarsIndex { 2 };
+
+    // Stretch (Step 22) character parameters — deliberately fixed, not
+    // exposed in the UI (separate from Pitch Mode's user-facing grain
+    // size/window shape/pitch shift controls, none of which apply here).
+    // Small grains + a hard-edged window make the seams audible; the
+    // duration multiplier is what stretches a pick to 4x its natural
+    // length regardless of tempo, Pitch Mode, or Pitch Shift.
+    static constexpr float stretchCharacterGrainSizeMs = 10.0f; // within the ~8-15ms range asked for
+    static constexpr double stretchDurationMultiplier = 4.0;
+
+    // Filter Down/Filter Up (Step 29/30) character parameters —
+    // deliberately fixed, no exposed controls, same "defer the knob until
+    // proven necessary" pattern as Stretch's grain size above.
+    // filterSweepStartHz/filterSweepEndHz are Filter Down's open->closed
+    // endpoints (the classic breakbeat/DnB "filter close"); Filter Up
+    // just swaps which endpoint it starts/ends at (see processBlock()) --
+    // no separate constants needed. Resonance ~2.0 approximates the
+    // requested Q~2-3 range in this filter class's own "resonance"
+    // parameter (per juce::dsp::StateVariableTPTFilter's docs, standard
+    // 12dB/octave — i.e. no added resonance — is 1/sqrt(2); higher values
+    // add character without self-oscillating at this level). One shared
+    // filter instance is fine — Playback Style is a single mutually-
+    // exclusive pick per pick, so it's never touched by more than one
+    // pick's processing at a time.
+    static constexpr float filterSweepStartHz = 9000.0f;
+    static constexpr float filterSweepEndHz = 250.0f;
+    static constexpr float filterSweepResonance = 2.0f;
+    juce::dsp::StateVariableTPTFilter<float> filterSweepFilter;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision
@@ -452,15 +958,74 @@ private:
     double windowEndPpq = 0.0;
     int clockCurrentSliceIndex = -1;
     int clockCurrentSubdivisionIndex = -1;
+    PlaybackStyle clockCurrentPlaybackStyle = PlaybackStyle::forward; // drawn once per window, alongside the two above
+
+    // Slice Length mode's periodic reset (Step 34, audio thread only) --
+    // a lightweight, independent version of the window-boundary tracking
+    // just above: resetWindowInitialized false forces a fresh window +
+    // fresh pick on next block (transport start, or entering Slice Length
+    // mode), same "always start aligned" behaviour clockModeInitialized
+    // already gives Clock mode. resetWindowEndPpq is checked every SAMPLE
+    // in the Slice Length branch below, not once per block -- the exact
+    // bug Step 6 introduced and fixed was computing a boundary once per
+    // block from the block's start position, silently missing boundaries
+    // that fell mid-block; this reuses Clock mode's own per-sample
+    // newWindow check directly rather than re-deriving that logic.
+    bool resetWindowInitialized = false;
+    double resetWindowEndPpq = 0.0;
+
+    // Filter Sweep's Whole Window scope (Step 30) — how far into the
+    // CURRENT WINDOW we are, in host samples, as opposed to samplesSince-
+    // PickStart's per-pick tracking just below. Reset only on a genuine
+    // new-window event (never on an ordinary per-tick retrigger, unlike
+    // samplesSincePickStart), so it stays continuous across every tick
+    // inside one window. currentWindowLengthHostSamples is set alongside
+    // it, at the same new-window event, from whatever the clock reference
+    // note value resolves to in host samples at that moment — both are
+    // Clock-mode-only and meaningless in Slice Length mode (which has no
+    // concept of a "window").
+    double samplesSinceWindowStart = 0.0;
+    double currentWindowLengthHostSamples = 0.0;
 
     // Self-chaining playback state — which slice is currently sounding,
     // where we are within it (source sample units), and where it ends.
     // When position reaches the end, the very next sample immediately
     // picks a new slice and continues with zero gap.
+    //
+    // currentPosition/currentEndSample are the "unfolded" scheduling
+    // position — for Ping-Pong, currentEndSample is pushed out to a full
+    // round trip (2x slice length) and currentPosition just keeps
+    // counting up through it, same as it always has for Forward.
+    // currentSliceStartSample/currentSliceLength are the TRUE slice
+    // bounds regardless of style, kept separately since currentEndSample
+    // no longer is one for Ping-Pong — these feed GranularStretcher::
+    // foldPosition() to compute the actual (bounced, for Ping-Pong) read
+    // position each render step.
     bool hasCurrentPick = false;
     int currentSliceIndex = -1;
     double currentPosition = 0.0;
     int currentEndSample = 0;
+    int currentSliceStartSample = 0;
+    int currentSliceLength = 0;
+    PlaybackStyle currentPlaybackStyle = PlaybackStyle::forward;
+
+    // Where (in host-output samples since this pick started) a Ping-Pong
+    // round trip reverses direction — always one slice's worth of natural
+    // (un-doubled) playback time, regardless of how currentPickLength-
+    // InHostSamples itself might get shortened by a Clock-mode tick.
+    // Meaningless/unused for Forward.
+    double currentPickMidpointHostSamples = 0.0;
+
+    // Fixed real-time length (host samples) of a Tape Stop pick's decel
+    // ramp — the pick's natural slice length in Slice Length mode; the
+    // window or tick length in Clock mode, per Tape Stop scope. Rate and
+    // gain both ramp from 1.0 to 0.0 across this, via samplesSincePick-
+    // Start / this. Deliberately NOT capped by the slice's own natural
+    // length in Clock mode (unlike Forward/Ping-Pong's currentPickLength-
+    // InHostSamples) — the whole point is that read position may not
+    // reach the slice's actual end before the rate hits zero. Meaningless
+    // /unused for Forward/Ping-Pong.
+    double currentPickTapeStopDurationHostSamples = 0.0;
 
     // Lock-free copy of currentSliceIndex, written by the audio thread
     // whenever a new pick begins, read by the UI thread for the playhead
@@ -485,6 +1050,31 @@ private:
     std::atomic<float> pitchShiftSemitones { 0.0f };
     std::atomic<bool> granularNeedsReseed { false };
     GranularStretcher granularStretcher;
+
+    // NoSync's own transpose control (Step 27) — separate from Time-
+    // Stretch's pitchShiftSemitones above, same as every other pitch-mode
+    // gets its own dedicated state rather than sharing one.
+    std::atomic<float> transposeSemitones { 0.0f };
+
+    // Beat-quantized slice length (Step 24) — default ON, see the public
+    // setter/getter's doc comment above for why that's correct here
+    // (unlike every other toggle in this class).
+    std::atomic<bool> beatQuantizeSliceLengthEnabled { true };
+
+    // Beat-quantized slice length — Repitch mode (Step 26). Default OFF,
+    // unlike the Time-Stretch toggle above: this one has a real pitch
+    // trade-off, so it's opt-in rather than a new standard behaviour.
+    std::atomic<bool> beatQuantizeSliceLengthEnabledRepitch { false };
+
+    // Per-pick beat-quantization state (Step 24, audio thread only) —
+    // computed once at pick-start in Slice Length mode (never in Clock
+    // mode, and never for Tape Stop/Stretch picks — currentPickBeatQuantized
+    // stays false for those, and currentPickQuantizedStretchRatio is simply
+    // not consulted). Substitutes for repitchRatio, symmetrically, in both
+    // this pick's granular hop schedule and its scheduling-position advance
+    // rate — see processBlock().
+    bool currentPickBeatQuantized = false;
+    double currentPickQuantizedStretchRatio = 1.0;
 
     // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
     // avoid double-triggering on a single drum hit's ringing tail.

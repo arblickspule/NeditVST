@@ -27,6 +27,10 @@
             file="../Source/GranularStretcher.cpp"/>
       <FILE id="j2Fp8N" name="GranularStretcher.h" compile="0" resource="0"
             file="../Source/GranularStretcher.h"/>
+      <FILE id="q4Wb7K" name="PlaybackStyleGrid.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStyleGrid.cpp"/>
+      <FILE id="s6Hn2Y" name="PlaybackStyleGrid.h" compile="0" resource="0"
+            file="../Source/PlaybackStyleGrid.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>
@@ -41,6 +45,7 @@
     <MODULE id="juce_audio_utils" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_core" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_data_structures" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
+    <MODULE id="juce_dsp" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>

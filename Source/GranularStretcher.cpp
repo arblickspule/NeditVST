@@ -1,6 +1,20 @@
 #include "GranularStretcher.h"
 #include <cmath>
 
+double GranularStretcher::foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style)
+{
+    if (style == PlaybackStyle::forward || sliceLength <= 0.0)
+        return elapsedSourceSamples;
+
+    const double period = 2.0 * sliceLength;
+    double cycle = std::fmod (elapsedSourceSamples, period);
+
+    if (cycle < 0.0) // defensive -- elapsedSourceSamples should never go negative in practice
+        cycle += period;
+
+    return (cycle < sliceLength) ? cycle : (period - cycle);
+}
+
 void GranularStretcher::reset (double startSourcePosition)
 {
     for (auto& g : grains)
@@ -46,14 +60,30 @@ float GranularStretcher::windowGain (double progress, WindowShape shape)
     if (shape == WindowShape::hann)
         return (float) (0.5 - 0.5 * std::cos (2.0 * juce::MathConstants<double>::pi * progress));
 
-    // Triangular: linear ramp up to the midpoint, then back down.
-    return (float) (progress < 0.5 ? (2.0 * progress) : (2.0 * (1.0 - progress)));
+    if (shape == WindowShape::triangular)
+        return (float) (progress < 0.5 ? (2.0 * progress) : (2.0 * (1.0 - progress)));
+
+    // hardEdge: full gain across nearly the whole grain, with only a
+    // brief linear ramp (10% of the grain's length) at each end -- see
+    // the enum's doc comment for why this exists.
+    constexpr double edgeFraction = 0.1;
+
+    if (progress < edgeFraction)
+        return (float) (progress / edgeFraction);
+
+    if (progress > 1.0 - edgeFraction)
+        return (float) ((1.0 - progress) / edgeFraction);
+
+    return 1.0f;
 }
 
 void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& sourceBuffer,
                                            int sourceChannels,
                                            double outputHopSamples,
                                            double sourceHopSamples,
+                                           double sliceStartSample,
+                                           double sliceLength,
+                                           PlaybackStyle style,
                                            double grainSizeHostSamples,
                                            double srConversionRatio,
                                            double pitchRatio,
@@ -65,10 +95,22 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
     for (int ch = 0; ch < sourceChannels; ++ch)
         channelSumsOut[ch] = 0.0f;
 
+    // nextGrainSourceStart marches forward unbounded (same "elapsed since
+    // slice start, unfolded" quantity PluginProcessor's currentPosition
+    // tracks for its own render path) -- foldPosition() is applied only at
+    // the moment a grain actually spawns, so each grain's OWN read still
+    // runs forward at its native rate below; only where consecutive grains
+    // START bounces back and forth for Ping-Pong.
+    const auto spawnAtCurrentMarch = [&]
+    {
+        const double folded = sliceStartSample + foldPosition (nextGrainSourceStart - sliceStartSample, sliceLength, style);
+        spawnGrain (folded);
+        nextGrainSourceStart += sourceHopSamples;
+    };
+
     if (pendingImmediateSpawn)
     {
-        spawnGrain (nextGrainSourceStart);
-        nextGrainSourceStart += sourceHopSamples;
+        spawnAtCurrentMarch();
         pendingImmediateSpawn = false;
     }
     else if (outputHopSamples > 0.0)
@@ -77,8 +119,7 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
 
         while (hopAccumulator >= outputHopSamples)
         {
-            spawnGrain (nextGrainSourceStart);
-            nextGrainSourceStart += sourceHopSamples;
+            spawnAtCurrentMarch();
             hopAccumulator -= outputHopSamples;
         }
     }

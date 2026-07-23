@@ -24,9 +24,28 @@
 class GranularStretcher
 {
 public:
-    enum class WindowShape { hann, triangular };
+    // hardEdge (Step 22): a short, hard-edged fade — full gain across
+    // nearly the whole grain, with just a brief linear ramp at each end
+    // to avoid a true instantaneous discontinuity. Deliberately NOT a
+    // smooth taper like Hann/Triangular: grain boundaries stay audible
+    // rather than being hidden, which is Stretch's whole "seams become
+    // the sound" character. Not exposed via the user-facing Pitch Mode
+    // Time-Stretch window-shape control — Stretch is the only style that
+    // uses it, always, with its own fixed grain size to match.
+    enum class WindowShape { hann, triangular, hardEdge };
+    enum class PlaybackStyle { forward, pingPong };
 
     static constexpr int maxChannels = 2;
+
+    // Step 19: shared position-mapping, used identically by both pitch
+    // modes' render paths — this class's own grain-start scheduling
+    // below, and PluginProcessor's direct-read (Repitch) path, which
+    // calls this same function directly. Forward is the identity (today's
+    // behaviour, byte-for-byte). Ping-Pong folds an unbounded, ever-
+    // increasing "elapsed since slice start" into [0, sliceLength):
+    // counting up for the first sliceLength (the forward leg), then back
+    // down for the next sliceLength (the backward leg), repeating.
+    static double foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style);
 
     // Call whenever a new pick begins (fresh slice chosen, or a Clock-mode
     // retrigger) — clears every grain and queues one to spawn immediately
@@ -36,7 +55,10 @@ public:
     // Call once per host output sample while a pick is active and Time-
     // Stretch mode is selected. Spawns new grains on schedule (every
     // outputHopSamples, sourceHopSamples further into the source than the
-    // previous grain's start), advances every active grain by
+    // previous grain's start — that marching-forward position gets run
+    // through foldPosition() at the moment each grain spawns, so Ping-Pong
+    // bounces grain PLACEMENT while every grain still reads forward
+    // internally at its own rate), advances every active grain by
     // srConversionRatio * pitchRatio, and adds this sample's summed
     // windowed output into channelSumsOut[0 .. sourceChannels-1]
     // (sourceChannels clamped to maxChannels; caller must clear/own that
@@ -51,6 +73,9 @@ public:
                             int sourceChannels,
                             double outputHopSamples,
                             double sourceHopSamples,
+                            double sliceStartSample,
+                            double sliceLength,
+                            PlaybackStyle style,
                             double grainSizeHostSamples,
                             double srConversionRatio,
                             double pitchRatio,
