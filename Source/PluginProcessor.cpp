@@ -1501,6 +1501,15 @@ void SlicerAudioProcessor::randomizeSequence()
     const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
     const double originalBpm = getCalculatedOriginalBpm();
 
+    // Shared across every row (Step 39 fix) -- tracks which columns are
+    // already claimed by some previously-placed hit's FULL span, not just
+    // its starting column. Checking this before placing, rather than
+    // clearing other rows' cells at a single column after the fact, is
+    // what keeps a longer bar from getting fragmented by a later row
+    // landing mid-span: once a column is marked occupied here, no other
+    // row may start a hit there for the rest of this randomization pass.
+    std::vector<bool> columnOccupied ((size_t) columns, false);
+
     for (int row = 0; row < rows; ++row)
     {
         const auto& slice = slices[(size_t) row];
@@ -1518,24 +1527,31 @@ void SlicerAudioProcessor::randomizeSequence()
             naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
         }
 
-        // Walk the row left to right; at each free column, flip a coin to
-        // place a hit. If placed, skip ahead by this row's own natural
-        // length so the next candidate column can't land inside where
-        // this hit would still be ringing out -- the exclusion zone the
-        // spec calls for. Cross-row column conflicts (a different row
-        // wanting the same column) are left to the same structural-
-        // monophony clear setSequencerCell() itself uses -- whichever row
-        // reaches a column last simply wins it, same as manual drawing.
+        // Walk the row left to right; at each free (unoccupied) column,
+        // flip a coin to place a hit. If placed, mark every column across
+        // this hit's own natural-length span as occupied -- not just the
+        // starting column -- so no other row can land inside where this
+        // hit would still be ringing out, then skip ahead by that same
+        // span for this row's own next candidate column.
         int column = 0;
 
         while (column < columns)
         {
+            if (columnOccupied[(size_t) column])
+            {
+                ++column;
+                continue;
+            }
+
             if (random.nextFloat() < 0.35f)
             {
-                for (int r = 0; r < rows; ++r)
-                    sequencerGrid[(size_t) (r * columns + column)] = false;
-
                 sequencerGrid[(size_t) (row * columns + column)] = true;
+
+                const int spanEnd = juce::jmin (columns, column + naturalSteps);
+
+                for (int c = column; c < spanEnd; ++c)
+                    columnOccupied[(size_t) c] = true;
+
                 column += naturalSteps;
             }
             else
