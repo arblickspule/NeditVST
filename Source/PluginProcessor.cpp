@@ -1501,23 +1501,15 @@ void SlicerAudioProcessor::randomizeSequence()
     const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
     const double originalBpm = getCalculatedOriginalBpm();
 
-    // Shared across every row (Step 39 fix) -- tracks which columns are
-    // already claimed by some previously-placed hit's FULL span, not just
-    // its starting column. Checking this before placing, rather than
-    // clearing other rows' cells at a single column after the fact, is
-    // what keeps a longer bar from getting fragmented by a later row
-    // landing mid-span: once a column is marked occupied here, no other
-    // row may start a hit there for the rest of this randomization pass.
-    std::vector<bool> columnOccupied ((size_t) columns, false);
+    // Each row's natural length in steps, computed once up front (Step 40)
+    // -- same math SequencerGrid's piano-roll bar uses. Needed per-row on
+    // every pass below, so it's not worth recomputing from scratch each time.
+    std::vector<int> naturalStepsPerRow ((size_t) rows, 1);
 
     for (int row = 0; row < rows; ++row)
     {
         const auto& slice = slices[(size_t) row];
         const int sliceLength = slice.endSample - slice.startSample;
-
-        // Same natural-length-in-steps math SequencerGrid's piano-roll bar
-        // uses, computed here directly since randomization needs it as a
-        // per-row placement constraint, not just a rendering hint.
         int naturalSteps = 1;
 
         if (sliceLength > 0 && sampleSampleRate > 0.0 && stepBeats > 0.0 && originalBpm > 0.0)
@@ -1527,38 +1519,94 @@ void SlicerAudioProcessor::randomizeSequence()
             naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
         }
 
-        // Walk the row left to right; at each free (unoccupied) column,
-        // flip a coin to place a hit. If placed, mark every column across
-        // this hit's own natural-length span as occupied -- not just the
-        // starting column -- so no other row can land inside where this
-        // hit would still be ringing out, then skip ahead by that same
-        // span for this row's own next candidate column.
-        int column = 0;
+        naturalStepsPerRow[(size_t) row] = naturalSteps;
+    }
 
-        while (column < columns)
+    // Tracks which columns are already claimed by some previously-placed
+    // hit's FULL span, not just its starting column -- what stops a longer
+    // bar from getting fragmented by another hit landing mid-span.
+    std::vector<bool> columnOccupied ((size_t) columns, false);
+
+    // Fair round-robin placement (Step 40): a single sequential row-by-row
+    // sweep let early rows (or simply rows lucky enough to go first)
+    // greedily claim most of the grid before later rows ever got a turn --
+    // a row that never gets a placement opportunity obviously can't show
+    // its own length either, which was the real cause of length-awareness
+    // seeming broken for later rows. Instead, run repeated PASSES, each
+    // pass offering every row exactly one placement opportunity in a
+    // freshly reshuffled order, so no row (and no fixed position within a
+    // pass) is systematically favoured. Stops once a whole pass places
+    // nothing -- either the grid is full, or every remaining attempt lost
+    // its random roll -- capped generously against runaway looping.
+    std::vector<int> rowOrder ((size_t) rows);
+
+    for (int i = 0; i < rows; ++i)
+        rowOrder[(size_t) i] = i;
+
+    constexpr int maxPasses = 4096;
+
+    for (int pass = 0; pass < maxPasses; ++pass)
+    {
+        // Fisher-Yates shuffle, reshuffled every pass.
+        for (int i = rows - 1; i > 0; --i)
         {
-            if (columnOccupied[(size_t) column])
+            const int j = random.nextInt (i + 1);
+            std::swap (rowOrder[(size_t) i], rowOrder[(size_t) j]);
+        }
+
+        bool placedAnythingThisPass = false;
+
+        for (const int row : rowOrder)
+        {
+            const int naturalSteps = naturalStepsPerRow[(size_t) row];
+
+            // Randomized starting search position (Step 40) -- searching
+            // from column 0 every time would otherwise bias placements
+            // toward low column indices across the whole grid.
+            const int startColumn = random.nextInt (columns);
+            int foundColumn = -1;
+
+            for (int offset = 0; offset < columns; ++offset)
             {
-                ++column;
-                continue;
+                const int column = (startColumn + offset) % columns;
+                const int spanEnd = juce::jmin (columns, column + naturalSteps);
+
+                bool spanFree = true;
+
+                for (int c = column; c < spanEnd; ++c)
+                {
+                    if (columnOccupied[(size_t) c])
+                    {
+                        spanFree = false;
+                        break;
+                    }
+                }
+
+                if (spanFree)
+                {
+                    foundColumn = column;
+                    break;
+                }
             }
+
+            if (foundColumn < 0)
+                continue; // no free span anywhere for this row right now
 
             if (random.nextFloat() < 0.35f)
             {
-                sequencerGrid[(size_t) (row * columns + column)] = true;
+                sequencerGrid[(size_t) (row * columns + foundColumn)] = true;
 
-                const int spanEnd = juce::jmin (columns, column + naturalSteps);
+                const int spanEnd = juce::jmin (columns, foundColumn + naturalSteps);
 
-                for (int c = column; c < spanEnd; ++c)
+                for (int c = foundColumn; c < spanEnd; ++c)
                     columnOccupied[(size_t) c] = true;
 
-                column += naturalSteps;
-            }
-            else
-            {
-                ++column;
+                placedAnythingThisPass = true;
             }
         }
+
+        if (! placedAnythingThisPass)
+            break;
     }
 }
 
