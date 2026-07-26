@@ -783,9 +783,15 @@ public:
     // set currentPosition/currentEndSample to that row's slice, same
     // "force a fresh start regardless of what's currently playing"
     // mechanic already proven in Clock mode's tick-retriggering and the
-    // mandatory Reset feature). Every note plays as PlaybackStyle::forward
-    // unconditionally -- playback-style-per-step is explicitly deferred
-    // past v1, along with polyphony and more than 32 rows.
+    // mandatory Reset feature). Each step fires as whichever PlaybackStyle
+    // its own cell stores (Step 41) -- the exact same Ping-Pong fold/Tape
+    // Stop decel/forced-granular Stretch/Filter Sweep render code Slice
+    // Length and Clock modes already use, just selected directly from the
+    // cell instead of via a weighted draw. Tape Stop and Filter Sweep
+    // always behave as "Per Tick" here (there's no "Whole Window" concept
+    // in Sequenced mode) -- this needs no extra code since both scope
+    // settings are already gated to clockMode elsewhere in processBlock().
+    // Polyphony and more than 32 rows remain deferred past v1.
     static constexpr int numSequencerRows = 32;
 
     // Defensive cap purely for UI/performance sanity at extreme parameter
@@ -835,22 +841,46 @@ public:
 
     int getStepResolutionIndex() const { return stepResolutionIndex.load(); }
 
-    // Cell state. row/column outside the current grid dimensions are
+    // Cell state (Step 41): each cell stores -1 (empty) or a
+    // PlaybackStyle index (0-5, same ordinal as the enum/
+    // indexToPlaybackStyle() below and playbackStyleProbabilities'
+    // ordering) -- reusing the existing PlaybackStyle enum rather than a
+    // parallel one. row/column outside the current grid dimensions are
     // silently ignored (defensive -- the UI should never ask for an
     // out-of-range cell, but dimensions can shift between a mouse event
     // being queued and processed).
-    bool getSequencerCell (int row, int column) const;
-    void setSequencerCell (int row, int column, bool active);
+    int getSequencerCellStyle (int row, int column) const; // -1 if empty or out-of-range
+    void setSequencerCell (int row, int column, int style); // style -1 clears; 0-5 sets that PlaybackStyle
 
-    // Randomize Sequence (Step 38): clears the pattern, then randomly
-    // activates cells across all available rows/columns. Each placed hit
-    // treats its own row's slice-length-in-steps as an exclusion zone --
-    // no other hit (in any row, since a same-column hit elsewhere would
-    // structurally cut this one off anyway, and a same-row hit shortly
-    // after would just be inaudible/redundant under it) may land in the
-    // columns that slice would still be ringing out in. Simple
-    // constraint-aware placement, not a "smart" generative algorithm --
-    // it just avoids obviously-wrong overlaps.
+    // Currently selected drawing style (Step 41) -- persistent UI state
+    // for the Style Palette: whichever swatch was last clicked is what
+    // subsequent clicks/drags on the grid paint with. Defaults to Forward
+    // (index 0), matching every other style-related default in this
+    // codebase (Forward-only, byte-identical-until-touched).
+    int getSelectedDrawingStyle() const { return selectedDrawingStyle.load(); }
+
+    void setSelectedDrawingStyle (int style)
+    {
+        selectedDrawingStyle.store (juce::jlimit (0, numPlaybackStyleOptions - 1, style));
+    }
+
+    // Clear Sequence (Step 41): wipes the pattern back to all-empty, no
+    // generation afterward -- the same wipe randomizeSequence() itself
+    // starts with, just without anything following it.
+    void clearSequence();
+
+    // Randomize Sequence (Step 38/40/41): clears the pattern, then
+    // randomly activates cells across all available rows/columns via fair
+    // round-robin passes (Step 40 -- see randomizeSequence()'s own
+    // implementation comment for why). Each placed hit treats its own
+    // row's slice-length-in-steps as an exclusion zone -- no other hit may
+    // land in the columns that slice would still be ringing out in --
+    // and its PlaybackStyle is drawn from the same weighted
+    // playbackStyleProbabilities table Slice Length/Clock modes already
+    // use (Step 41), so turning a style's weight down elsewhere also
+    // makes Randomize reach for it less often here. Simple constraint-
+    // aware placement, not a "smart" generative algorithm -- it just
+    // avoids obviously-wrong overlaps.
     void randomizeSequence();
 
     // Lock-free copy of the currently active step column, for the UI's
@@ -1103,14 +1133,20 @@ private:
     // Sequenced Trigger Mode (Step 37) -- stepResolutionIndex indexes the
     // same note-value palette as clockReferenceIndex/quantizeGridIndex.
     // sequencerGrid is the pattern itself: flat-indexed as
-    // row*getSequencerNumSteps()+column, resized (and reset to all-off)
+    // row*getSequencerNumSteps()+column, resized (and reset to all-empty)
     // by resetSequencerGrid() whenever either dimension changes. Guarded
     // by sampleLock, same as slices/manualPoints -- read on the audio
     // thread every sample Sequenced mode is active, written from the UI
-    // thread on every mouse-drawn cell.
+    // thread on every mouse-drawn cell. Each entry is -1 (empty) or a
+    // PlaybackStyle index 0-5 (Step 41) -- an int, not a bool, since a
+    // cell now also remembers WHICH style it should play.
     std::atomic<int> stepResolutionIndex { 7 }; // default: 16n (a sixteenth note)
     std::atomic<int> patternLengthBarsIndex { 0 }; // default: 1 bar
-    std::vector<bool> sequencerGrid;
+    std::vector<int> sequencerGrid;
+
+    // Style Palette's persistent "currently selected drawing style" (Step
+    // 41) -- defaults to Forward (index 0).
+    std::atomic<int> selectedDrawingStyle { 0 };
 
     // Stretch (Step 22) character parameters — deliberately fixed, not
     // exposed in the UI (separate from Pitch Mode's user-facing grain

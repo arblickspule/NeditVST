@@ -6,9 +6,10 @@
 #include "SubdivisionProbabilityGrid.h"
 #include "PlaybackStyleGrid.h"
 #include "SequencerGrid.h"
+#include "PlaybackStylePalette.h"
 
 //==============================================================================
-/** Step-38 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-41 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -82,7 +83,14 @@
     where a next hit in that row may land). Every juce::Slider in this
     editor has scroll-wheel input disabled, so scrolling controlsViewport
     with the cursor over a slider scrolls the view instead of nudging the
-    slider's value. */
+    slider's value. A Clear Sequence button (Step 41) wipes the pattern
+    with no generation, sitting next to Randomize; a Style Palette sidebar
+    beside the grid lets the currently selected PlaybackStyle be chosen by
+    colour swatch, and each sequencer cell now remembers and plays back
+    its own style (Forward/Ping-Pong/Tape Stop/Stretch/Filter Down/Filter
+    Up) rather than always Forward -- Randomize draws each hit's style
+    from the same weighted Playback Style probabilities Slice Length/Clock
+    modes already use. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -267,6 +275,18 @@ private:
     juce::ComboBox patternLengthSelector;
 
     juce::TextButton randomizeSequenceButton { "Randomize Sequence" };
+
+    // Clear Sequence (Step 41) -- wipes the pattern with no generation
+    // afterward, sits next to Randomize Sequence in the same row.
+    juce::TextButton clearSequenceButton { "Clear Sequence" };
+
+    // Style Palette (Step 41) -- a fixed-width sidebar of colour swatches
+    // beside sequencerViewport, one per PlaybackStyle; clicking one sets
+    // the processor's currently selected drawing style. sequencerGrid's
+    // own target width (set in resized()) is reduced by this component's
+    // width so the COMBINED row still lines up with WaveformDisplay's
+    // width, same as it did alone before this existed.
+    PlaybackStylePalette playbackStylePalette;
 
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;

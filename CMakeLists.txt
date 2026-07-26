@@ -67,6 +67,8 @@ target_sources(NeditVST
         Source/PlaybackStyleGrid.h
         Source/SequencerGrid.cpp
         Source/SequencerGrid.h
+        Source/PlaybackStylePalette.cpp
+        Source/PlaybackStylePalette.h
 )
 
 juce_generate_juce_header(NeditVST)

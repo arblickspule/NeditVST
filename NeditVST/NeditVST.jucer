@@ -35,6 +35,10 @@
             file="../Source/SequencerGrid.cpp"/>
       <FILE id="y1Nb9F" name="SequencerGrid.h" compile="0" resource="0"
             file="../Source/SequencerGrid.h"/>
+      <FILE id="AUa00Z" name="PlaybackStylePalette.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStylePalette.cpp"/>
+      <FILE id="t2x7mr" name="PlaybackStylePalette.h" compile="0" resource="0"
+            file="../Source/PlaybackStylePalette.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

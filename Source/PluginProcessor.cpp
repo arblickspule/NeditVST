@@ -673,12 +673,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                     const int numRows = getSequencerNumRows();
                     int activeRow = -1;
+                    int activeStyle = -1;
 
                     for (int row = 0; row < numRows; ++row)
                     {
-                        if (sequencerGrid[(size_t) (row * totalSteps + currentStepIndex)])
+                        const int style = sequencerGrid[(size_t) (row * totalSteps + currentStepIndex)];
+
+                        if (style >= 0)
                         {
                             activeRow = row;
+                            activeStyle = style;
                             break;
                         }
                     }
@@ -696,17 +700,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // start regardless of what's currently playing,
                         // same mechanic already proven in Clock mode's
                         // tick-retriggering and the mandatory Reset
-                        // feature. Every Sequenced note plays as
-                        // PlaybackStyle::forward unconditionally --
-                        // playback-style-per-step is explicitly deferred
-                        // past v1, and the whole point of this mode is
-                        // that nothing here is randomized.
+                        // feature. Each note plays as whichever
+                        // PlaybackStyle its own cell stores (Step 41) --
+                        // selected directly, not via a weighted draw, since
+                        // the whole point of this mode is that everything
+                        // is explicitly placed by the user.
                         const auto& slice = slices[(size_t) activeRow];
-                        currentPlaybackStyle = PlaybackStyle::forward;
+                        currentPlaybackStyle = indexToPlaybackStyle (activeStyle);
+                        const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
+                        const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
+                        const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
+
                         currentSliceStartSample = slice.startSample;
                         currentSliceLength = slice.endSample - slice.startSample;
                         currentPosition = (double) slice.startSample;
-                        currentEndSample = slice.endSample;
+                        currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
+                                         : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                                   : slice.endSample;
                         hasCurrentPick = true;
                         pickJustStarted = true;
                         currentlyPlayingSliceIndexForUI.store (activeRow);
@@ -723,8 +733,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         samplesSincePickStart = 0.0;
                         const double naturalLengthHostSamples =
                             (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                        currentPickMidpointHostSamples = naturalLengthHostSamples; // unused (Forward-only here), harmless
-                        currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless -- same "set unconditionally" convention used elsewhere
+                        const double roundTripLengthHostSamples = pingPong ? (2.0 * naturalLengthHostSamples) : naturalLengthHostSamples;
+                        currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise
 
                         // Anticipatory fade (Step 37): cap this note's
                         // length to whichever comes first -- its own
@@ -746,7 +756,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                             for (int row2 = 0; row2 < numRows; ++row2)
                             {
-                                if (sequencerGrid[(size_t) (row2 * totalSteps + checkColumn)])
+                                if (sequencerGrid[(size_t) (row2 * totalSteps + checkColumn)] >= 0)
                                 {
                                     columnHasActive = true;
                                     break;
@@ -762,7 +772,34 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                         const double samplesUntilNextActiveStep =
                             (double) stepsUntilNextActive * stepBeats * (60.0 / hostBpm) * hostSampleRate;
-                        currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, samplesUntilNextActiveStep);
+
+                        // Style-dependent duration (Step 41) -- mirrors
+                        // Clock mode's own per-tick calc exactly (this
+                        // mode's "next active step" plays the same role as
+                        // Clock's tick/window boundary), since Sequenced
+                        // mode has no "Whole Window" equivalent -- Tape
+                        // Stop and Filter Sweep always behave as Per Tick
+                        // here, which needs no extra code: Filter Sweep's
+                        // own Whole Window check is already gated to
+                        // clockMode elsewhere, and Tape Stop's duration
+                        // below is driven entirely by the schedule, same as
+                        // Clock's own Per Tick branch.
+                        if (tapeStop)
+                        {
+                            currentPickTapeStopDurationHostSamples = samplesUntilNextActiveStep;
+                            currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping
+                        }
+                        else if (stretch)
+                        {
+                            currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
+                            currentPickLengthInHostSamples = juce::jmin (stretchDurationMultiplier * naturalLengthHostSamples,
+                                                                          samplesUntilNextActiveStep);
+                        }
+                        else
+                        {
+                            currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
+                            currentPickLengthInHostSamples = juce::jmin (roundTripLengthHostSamples, samplesUntilNextActiveStep);
+                        }
                     }
                 }
             }
@@ -1439,23 +1476,23 @@ void SlicerAudioProcessor::resetSequencerGrid()
 {
     const int rows = getSequencerNumRows();
     const int columns = getSequencerNumSteps();
-    sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), false);
+    sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), -1);
 }
 
-bool SlicerAudioProcessor::getSequencerCell (int row, int column) const
+int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const
 {
     const juce::ScopedLock sl (sampleLock);
 
     const int columns = getSequencerNumSteps();
 
     if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return false;
+        return -1;
 
     const size_t idx = (size_t) (row * columns + column);
-    return idx < sequencerGrid.size() && sequencerGrid[idx];
+    return idx < sequencerGrid.size() ? sequencerGrid[idx] : -1;
 }
 
-void SlicerAudioProcessor::setSequencerCell (int row, int column, bool active)
+void SlicerAudioProcessor::setSequencerCell (int row, int column, int style)
 {
     const juce::ScopedLock sl (sampleLock);
 
@@ -1468,7 +1505,7 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, bool active)
     if ((int) sequencerGrid.size() != rows * columns)
         resetSequencerGrid(); // defensive -- dimensions drifted out from under us somehow
 
-    if (active)
+    if (style >= 0)
     {
         // Structural monophony (Step 37, v1): clear any other active cell
         // in this SAME COLUMN across every row first, so "only one voice"
@@ -1477,13 +1514,13 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, bool active)
         // afterward -- and it's what avoids needing a tie-break rule
         // entirely at playback time.
         for (int r = 0; r < rows; ++r)
-            sequencerGrid[(size_t) (r * columns + column)] = false;
+            sequencerGrid[(size_t) (r * columns + column)] = -1;
     }
 
-    sequencerGrid[(size_t) (row * columns + column)] = active;
+    sequencerGrid[(size_t) (row * columns + column)] = style;
 }
 
-void SlicerAudioProcessor::randomizeSequence()
+void SlicerAudioProcessor::clearSequence()
 {
     const juce::ScopedLock sl (sampleLock);
 
@@ -1493,7 +1530,17 @@ void SlicerAudioProcessor::randomizeSequence()
     if ((int) sequencerGrid.size() != rows * columns)
         resetSequencerGrid();
 
-    std::fill (sequencerGrid.begin(), sequencerGrid.end(), false);
+    std::fill (sequencerGrid.begin(), sequencerGrid.end(), -1);
+}
+
+void SlicerAudioProcessor::randomizeSequence()
+{
+    clearSequence(); // same wipe Clear Sequence itself uses (Step 41) -- juce::CriticalSection is re-entrant, so re-locking below is safe
+
+    const juce::ScopedLock sl (sampleLock);
+
+    const int rows = getSequencerNumRows();
+    const int columns = getSequencerNumSteps();
 
     if (rows <= 0 || columns <= 0)
         return;
@@ -1594,7 +1641,14 @@ void SlicerAudioProcessor::randomizeSequence()
 
             if (random.nextFloat() < 0.35f)
             {
-                sequencerGrid[(size_t) (row * columns + foundColumn)] = true;
+                // Style (Step 41) is drawn from the same weighted
+                // playbackStyleProbabilities table Slice Length/Clock
+                // modes already use -- NOT flat/uniform chance -- so
+                // turning a style's weight down elsewhere also makes
+                // Randomize reach for it less often here. Default weights
+                // are Forward-only, so this reproduces exactly the old
+                // all-Forward behaviour until those weights are touched.
+                sequencerGrid[(size_t) (row * columns + foundColumn)] = pickWeightedIndex (playbackStyleProbabilities);
 
                 const int spanEnd = juce::jmin (columns, foundColumn + naturalSteps);
 

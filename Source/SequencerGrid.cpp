@@ -110,7 +110,7 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
 
         for (int r = 0; r < numRows; ++r)
         {
-            if (processor.getSequencerCell (r, checkColumn))
+            if (processor.getSequencerCellStyle (r, checkColumn) >= 0)
             {
                 columnHasActive = true;
                 break;
@@ -183,15 +183,18 @@ void SequencerGrid::paint (juce::Graphics& g)
 
         for (int col = 0; col < numColumns; ++col)
         {
-            if (! processor.getSequencerCell (row, col))
+            const int style = processor.getSequencerCellStyle (row, col);
+
+            if (style < 0)
                 continue;
 
             const int barLengthSteps = computeBarLengthInSteps (row, col, numRows, numColumns);
             const juce::Rectangle<int> bar (col * columnWidth, screenY, barLengthSteps * columnWidth, rowHeight);
+            const auto colour = PlaybackStylePalette::getStyleColour (style);
 
-            g.setColour (juce::Colours::orange.withAlpha (0.85f));
+            g.setColour (colour.withAlpha (0.85f));
             g.fillRect (bar.reduced (1));
-            g.setColour (juce::Colours::orange);
+            g.setColour (colour);
             g.drawRect (bar.reduced (1), 1.0f);
         }
     }
@@ -204,13 +207,17 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 
     dragRow = getRowIndexAtY (event.y);
     const int col = getColumnIndexAtX (event.x);
+    const int selectedStyle = processor.getSelectedDrawingStyle();
+    const int existingStyle = processor.getSequencerCellStyle (dragRow, col);
 
-    // A whole drag stroke keeps doing whichever of activate/deactivate
-    // this FIRST cell's own prior state calls for, so dragging across
-    // already-lit cells erases them and dragging across dark ones lights
-    // them, rather than flickering as the cursor crosses cell boundaries.
-    dragIsActivating = ! processor.getSequencerCell (dragRow, col);
-    processor.setSequencerCell (dragRow, col, dragIsActivating);
+    // A whole drag stroke keeps doing whichever this FIRST cell decided
+    // (Step 41): toggle off (-1) if it already showed the currently
+    // selected style, otherwise paint the selected style over it --
+    // whether that cell was empty or showed a DIFFERENT style. Reused for
+    // every subsequent cell the drag passes over, same as the plain
+    // toggle this replaced.
+    dragTargetStyle = (existingStyle == selectedStyle) ? -1 : selectedStyle;
+    processor.setSequencerCell (dragRow, col, dragTargetStyle);
     repaint();
 }
 
@@ -222,7 +229,7 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
     // Row is locked to wherever the drag started -- "click-drag across
     // cells in A row," not a free paint across the whole grid.
     const int col = getColumnIndexAtX (event.x);
-    processor.setSequencerCell (dragRow, col, dragIsActivating);
+    processor.setSequencerCell (dragRow, col, dragTargetStyle);
     repaint();
 }
 

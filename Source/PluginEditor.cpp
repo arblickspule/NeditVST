@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p), playbackStylePalette (p)
 {
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
@@ -386,6 +386,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (randomizeSequenceButton);
     randomizeSequenceButton.addListener (this);
 
+    controlsContent.addAndMakeVisible (clearSequenceButton);
+    clearSequenceButton.addListener (this);
+
+    controlsContent.addAndMakeVisible (playbackStylePalette);
+
     controlsContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
@@ -441,6 +446,7 @@ SlicerAudioProcessorEditor::~SlicerAudioProcessorEditor()
     zoomToTrimsButton.removeListener (this);
     resetZoomButton.removeListener (this);
     randomizeSequenceButton.removeListener (this);
+    clearSequenceButton.removeListener (this);
 }
 
 void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
@@ -449,7 +455,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 38: Sequencer fixes + Randomize",
+    g.drawFittedText ("NeditVST — step 41: Sequencer Clear + Style Palette",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
@@ -504,8 +510,11 @@ void SlicerAudioProcessorEditor::resized()
     // set from the SAME `area` (still full width at this point; only
     // heights have been carved off it above) so the two always line up
     // rather than the grid defaulting to a cramped fixed-pixel-per-column
-    // width.
-    sequencerGrid.setTargetWidth (area.getWidth());
+    // width. Reduced by the Style Palette's own width + the gap beside it
+    // (Step 41), so the COMBINED [palette][grid] row still matches the
+    // waveform's width overall, same as the grid alone did before the
+    // palette existed.
+    sequencerGrid.setTargetWidth (area.getWidth() - PlaybackStylePalette::preferredWidth - 10);
 
     waveformDisplay.setBounds (area); // takes up all remaining space, always fully visible
 }
@@ -640,10 +649,16 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     patternLengthSelector.setBounds (patternLengthRow.removeFromLeft (150));
     area.removeFromTop (10);
 
-    randomizeSequenceButton.setBounds (area.removeFromTop (30));
+    auto randomizeClearRow = area.removeFromTop (30);
+    randomizeSequenceButton.setBounds (randomizeClearRow.removeFromLeft (randomizeClearRow.getWidth() - 110));
+    randomizeClearRow.removeFromLeft (10);
+    clearSequenceButton.setBounds (randomizeClearRow);
     area.removeFromTop (10);
 
-    sequencerViewport.setBounds (area.removeFromTop (sequencerViewportHeight));
+    auto sequencerRow = area.removeFromTop (sequencerViewportHeight);
+    playbackStylePalette.setBounds (sequencerRow.removeFromLeft (PlaybackStylePalette::preferredWidth));
+    sequencerRow.removeFromLeft (10);
+    sequencerViewport.setBounds (sequencerRow);
     area.removeFromTop (20);
 
     auto undoRedoRow = area.removeFromTop (30);
@@ -690,6 +705,11 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
     {
         processor.randomizeSequence();
         sequencerGrid.repaint(); // immediate feedback rather than waiting for the next 30fps timer tick
+    }
+    else if (button == &clearSequenceButton)
+    {
+        processor.clearSequence();
+        sequencerGrid.repaint();
     }
 }
 
@@ -759,12 +779,14 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     playbackStyleLabel.setVisible (! sequenced);
     playbackStyleGrid.setVisible (! sequenced);
 
-    // Sequenced-only controls (Step 37/38).
+    // Sequenced-only controls (Step 37/38/41).
     stepResolutionLabel.setVisible (sequenced);
     stepResolutionSelector.setVisible (sequenced);
     patternLengthLabel.setVisible (sequenced);
     patternLengthSelector.setVisible (sequenced);
     randomizeSequenceButton.setVisible (sequenced);
+    clearSequenceButton.setVisible (sequenced);
+    playbackStylePalette.setVisible (sequenced);
     sequencerViewport.setVisible (sequenced);
 }
 

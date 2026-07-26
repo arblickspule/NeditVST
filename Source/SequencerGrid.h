@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
+#include "PlaybackStylePalette.h"
 
 //==============================================================================
 /** Step-37: mouse-drawable step-sequencer grid for Sequenced Trigger Mode
@@ -25,7 +26,13 @@
     at whichever comes first: that natural length, or the next active
     cell anywhere in the grid (any row) -- monophony means THAT is what
     will actually cut the note off at playback, so the piano roll always
-    shows exactly what will be heard, not just an approximation.
+    shows exactly what will be heard, not just an approximation. Each bar
+    is drawn in its own cell's PlaybackStyle colour (Step 41, see
+    PlaybackStylePalette::getStyleColour()) -- clicking/dragging an empty
+    cell writes the Style Palette's currently selected style; a cell
+    already showing a DIFFERENT style gets painted over with the selected
+    one; a cell already showing the SAME style toggles off, preserving
+    the "click again to remove" behaviour for the common case.
 
     Row 0 (the first slice) renders at the BOTTOM of the grid, standard
     piano-roll convention -- this is purely a rendering/hit-testing choice
@@ -85,12 +92,14 @@ private:
     // first layout call.
     int targetWidth = 400;
 
-    // Drag state (Step 37) -- dragRow is locked for the whole gesture
-    // (-1 when not dragging); dragIsActivating is decided once, from the
-    // FIRST cell's own prior state on mouseDown, and reused for every
-    // subsequent cell the drag passes over.
+    // Drag state -- dragRow is locked for the whole gesture (-1 when not
+    // dragging); dragTargetStyle (Step 41) is decided once on mouseDown --
+    // -1 (clear) if the first cell already showed the currently selected
+    // style, otherwise the selected style index -- and reused for every
+    // subsequent cell the drag passes over, same "whole drag does the same
+    // thing" UX as before, just style-aware now instead of a plain toggle.
     int dragRow = -1;
-    bool dragIsActivating = true;
+    int dragTargetStyle = -1;
 
     // Self-sizing (see class doc comment) -- only calls setSize() when
     // the dimensions actually change, not every tick.
