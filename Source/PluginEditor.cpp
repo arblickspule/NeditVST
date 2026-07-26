@@ -773,11 +773,13 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     resetEveryLabel.setVisible (sliceLength);
     resetEverySelector.setVisible (sliceLength);
 
-    // Playback style (Step 37) — hidden in Sequenced mode; the sequencer
-    // grid replaces it entirely there (each row is a fixed slice, played
-    // forward, no per-pick style roll).
-    playbackStyleLabel.setVisible (! sequenced);
-    playbackStyleGrid.setVisible (! sequenced);
+    // Playback style (Step 37) — visible in ALL THREE trigger modes,
+    // including Sequenced (Step 42 fix): it stays the same control, just
+    // its role shifts there from "live per-note weighted pick" to "what
+    // Randomize Sequence draws each hit's style from" (see
+    // randomizeSequence()'s use of playbackStyleProbabilities).
+    playbackStyleLabel.setVisible (true);
+    playbackStyleGrid.setVisible (true);
 
     // Sequenced-only controls (Step 37/38/41).
     stepResolutionLabel.setVisible (sequenced);
