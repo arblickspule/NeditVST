@@ -707,16 +707,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // is explicitly placed by the user.
                         const auto& slice = slices[(size_t) activeRow];
                         currentPlaybackStyle = indexToPlaybackStyle (activeStyle);
-                        const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
                         const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
                         const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
 
                         currentSliceStartSample = slice.startSample;
                         currentSliceLength = slice.endSample - slice.startSample;
                         currentPosition = (double) slice.startSample;
-                        currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
-                                         : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
-                                                   : slice.endSample;
+
+                        // Ping-Pong here (Step 44) deliberately does NOT
+                        // double currentEndSample the way Slice Length/
+                        // Clock modes' round trip does -- it plays a
+                        // half-content window instead (see the halved
+                        // fold-length in the shared render code below), so
+                        // the full there-and-back cycle only needs to span
+                        // the slice's original raw length once, exactly
+                        // like every other style here.
+                        currentEndSample = stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                                    : slice.endSample;
                         hasCurrentPick = true;
                         pickJustStarted = true;
                         currentlyPlayingSliceIndexForUI.store (activeRow);
@@ -733,7 +740,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         samplesSincePickStart = 0.0;
                         const double naturalLengthHostSamples =
                             (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                        currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; overridden below for Sequenced-mode Ping-Pong (Step 43), unused for other styles
+                        currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise -- same natural-length-based timing as every other trigger mode (Step 44), unchanged by the half-content window below
 
                         // Anticipatory fade (Step 37): cap this note's
                         // length to whichever comes first -- its own
@@ -782,7 +789,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // own Whole Window check is already gated to
                         // clockMode elsewhere, and Tape Stop's duration
                         // below is driven entirely by the schedule, same as
-                        // Clock's own Per Tick branch.
+                        // Clock's own Per Tick branch. Ping-Pong (Step 44)
+                        // needs no special case here at all -- its
+                        // half-content window (see the shared render code
+                        // below) means its total duration is just a normal
+                        // single pick's length, same as Forward/Filter
+                        // Sweep share in the universal clamp below.
                         if (tapeStop)
                         {
                             currentPickTapeStopDurationHostSamples = samplesUntilNextActiveStep;
@@ -794,37 +806,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             currentPickLengthInHostSamples = juce::jmin (stretchDurationMultiplier * naturalLengthHostSamples,
                                                                           samplesUntilNextActiveStep);
                         }
-                        else if (pingPong)
-                        {
-                            // Sequenced-mode Ping-Pong rate compression
-                            // (Step 43): rather than requiring 2x the
-                            // natural length the way Slice Length/Clock
-                            // modes' round trip does, the round trip here
-                            // is sized to fit exactly within the gap to
-                            // the next active step, reversing at its
-                            // midpoint -- the matching 2x rate multiplier
-                            // that actually makes the full slice content
-                            // (both directions) playable in that time
-                            // lives in the per-sample position-advance
-                            // below, gated to sequencedMode so Slice
-                            // Length/Clock modes' own Ping-Pong pace is
-                            // completely unaffected.
-                            currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
-                            currentPickLengthInHostSamples = samplesUntilNextActiveStep;
-                            currentPickMidpointHostSamples = samplesUntilNextActiveStep * 0.5;
-                        }
                         else
                         {
-                            // Universal schedule-clamping (Step 43): Forward
-                            // and Filter Down/Up previously used
+                            // Universal schedule-clamping (Step 43): Forward,
+                            // Ping-Pong, and Filter Down/Up previously used
                             // naturalLengthHostSamples here unclamped -- if
                             // structural monophony ever cuts a note short
                             // before its own natural end (another row's hit
                             // landing inside its span), the fade-out timing
                             // wouldn't have anticipated that early cutoff,
                             // risking a click. Same "whichever comes first"
-                            // pattern Tape Stop/Stretch/Ping-Pong above
-                            // already use.
+                            // pattern Tape Stop/Stretch above already use.
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
                             currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, samplesUntilNextActiveStep);
                         }
@@ -1119,6 +1111,25 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             const GranularStretcher::PlaybackStyle grainPlaybackStyle =
                 pingPongActive ? GranularStretcher::PlaybackStyle::pingPong : GranularStretcher::PlaybackStyle::forward;
 
+            // Sequenced-mode Ping-Pong half-content window (Step 44):
+            // passing HALF the slice's length as the fold boundary (both
+            // to GranularStretcher's own grain-start folding below and to
+            // the direct-read foldPosition() call further down) makes the
+            // round trip reflect within just the first half of the
+            // slice's content, rather than the full slice -- a normal-
+            // rate there-and-back cycle through half the content take
+            // exactly one normal pick's natural length, which is what
+            // lets it fit within a single step without needing any rate
+            // change at all. Irrelevant (and harmless) for every other
+            // style, since foldPosition()'s length argument is only ever
+            // consulted when style == pingPong. Slice Length/Clock modes'
+            // own Ping-Pong pace is completely unaffected since this only
+            // ever differs from the full slice length when sequencedMode
+            // is true.
+            const double pingPongFoldLengthSamples = (sequencedMode && pingPongActive)
+                ? ((double) currentSliceLength * 0.5)
+                : (double) currentSliceLength;
+
             if (timeStretchMode || stretchActive)
             {
                 // Stretch (Step 22) always renders through GranularStretcher,
@@ -1168,7 +1179,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 float channelSums[GranularStretcher::maxChannels] = {};
                 granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
                                                      grainOutputHopSamples, grainSourceHopSamples,
-                                                     (double) currentSliceStartSample, (double) currentSliceLength, grainPlaybackStyle,
+                                                     (double) currentSliceStartSample, pingPongFoldLengthSamples, grainPlaybackStyle,
                                                      grainGrainSizeHostSamples, srConversionRatio, grainPitchRatio,
                                                      grainWindowShapeToUse, channelSums);
 
@@ -1192,7 +1203,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // currentPosition exactly, same as before this existed.
                 const double foldedReadPosition = (double) currentSliceStartSample
                     + GranularStretcher::foldPosition (currentPosition - (double) currentSliceStartSample,
-                                                        (double) currentSliceLength, grainPlaybackStyle);
+                                                        pingPongFoldLengthSamples, grainPlaybackStyle);
 
                 const int idx0 = juce::jlimit (0, sourceLength - 1, (int) foldedReadPosition);
                 const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
@@ -1228,22 +1239,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // the direct-read path below, so the same substitution is what
             // "adjusts the normal repitch-mode rate calculation" -- no
             // further pitch-mode-specific code needed anywhere else.
-            // Sequenced-mode Ping-Pong rate compression (Step 43): the
-            // matching half of the fix started at pick-start above
-            // (currentPickMidpointHostSamples/currentPickLengthInHostSamples
-            // sized to the gap, not 2x natural length) -- doubling the
-            // rate here is what actually lets the full slice content play
-            // in both directions within that halved time, rather than
-            // just cutting the round trip short partway through. Gated to
-            // sequencedMode specifically, so Slice Length/Clock modes'
-            // own Ping-Pong pace (still the correct 2x-natural-length
-            // round trip) is completely unaffected.
-            const double sequencedPingPongRateMultiplier = (sequencedMode && pingPongActive) ? 2.0 : 1.0;
-
-            const double effectivePlaybackRate = (tapeStopActive ? (playbackRate * tapeStopRateMultiplier)
-                                                 : currentPickBeatQuantized ? ((sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
-                                                                            : playbackRate)
-                                                * sequencedPingPongRateMultiplier;
+            // Sequenced-mode Ping-Pong (Step 44) needs no rate change at
+            // all -- position advances at exactly the same rate as every
+            // other style/mode; see the halved fold-length above/below
+            // instead, which is what actually compresses the round trip
+            // into a normal pick's timeframe.
+            const double effectivePlaybackRate = tapeStopActive ? (playbackRate * tapeStopRateMultiplier)
+                                                : currentPickBeatQuantized ? ((sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
+                                                                           : playbackRate;
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
         }
