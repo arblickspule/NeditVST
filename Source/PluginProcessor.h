@@ -984,8 +984,12 @@ public:
     // style is set/changed (including cleared to empty) via
     // setSequencerCell(), and wiped entirely whenever the grid itself
     // resets (dimension change) or Clear/Randomize Sequence runs.
-    static constexpr int numSequencerCellParameters = 5;
-    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed"
+    // Step 47 adds Subdivide (index 5) -- see its own comment below;
+    // unlike every other entry here it's GENERAL (offered on any active
+    // step regardless of style), not gated by
+    // getApplicableSequencerCellParameters()'s per-style table.
+    static constexpr int numSequencerCellParameters = 6;
+    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide"
 
     // Step 46: Resonance/Grain Size/Grain Speed are continuous (drive the
     // existing slider overlay); Filter Type/Curve Shape instead present
@@ -993,14 +997,30 @@ public:
     // SequencerGrid::showParameterMenuForCell) -- no slider makes sense
     // for a handful of named choices. These three describe which is
     // which and, for the list-style ones, what their options are.
+    // Subdivide (Step 47) is also discrete (its options are the shared
+    // note-value palette, plus "Off") but is NOT list-style -- see
+    // isSequencerCellParameterSteppedSlider() just below.
     static bool isSequencerCellParameterDiscrete (int index);
     static int getSequencerCellParameterNumOptions (int index); // only meaningful when isSequencerCellParameterDiscrete() is true
     static juce::String getSequencerCellParameterOptionName (int index, int optionIndex);
 
+    // Subdivide (Step 47) alone: discrete like Filter Type/Curve Shape
+    // (a fixed list of named options, not an arbitrary range), but
+    // presented via the SAME drag-slider overlay Resonance/Grain Size/
+    // Grain Speed use rather than a plain list submenu -- a note-value
+    // rate is naturally ordered (Off, then fastest to slowest, or
+    // vice versa) in a way Filter Type/Curve Shape's options aren't, so
+    // dragging across stops reads naturally. The slider just SNAPS to
+    // one of getSequencerCellParameterNumOptions()'s stops instead of an
+    // arbitrary value -- see SequencerGrid::updateEditingValueFromMouseX().
+    static bool isSequencerCellParameterSteppedSlider (int index);
+
     // Continuous parameters' slider range (Step 46) -- generalizes the
     // slider overlay's value mapping, which used to hardcode Resonance's
     // own range as the only option. Meaningless (returns a harmless 0/1
-    // placeholder) for discrete parameters, which never reach the slider.
+    // placeholder) for discrete parameters, which never reach the slider
+    // (Subdivide is the one exception -- see isSequencerCellParameterSteppedSlider()
+    // above -- but it's stepped by option INDEX, not this min/max range).
     static float getSequencerCellParameterMin (int index);
     static float getSequencerCellParameterMax (int index);
 
@@ -1009,6 +1029,10 @@ public:
     // numbering, and the same ordinal sequencerGrid itself stores) --
     // e.g. a Forward step offers none, Filter Down/Up offers Resonance +
     // Filter Type. An out-of-range/empty-cell style (-1) offers none.
+    // Subdivide (Step 47) is deliberately NOT included here -- it's
+    // appended unconditionally by this function itself for every valid
+    // (non-empty-cell) style, since it's a general retrigger mechanism,
+    // not tied to any one effect the way everything else here is.
     static std::vector<int> getApplicableSequencerCellParameters (int style);
 
     // This parameter's current GLOBAL value (i.e. what applies when no
@@ -1401,6 +1425,31 @@ private:
     bool sequencedModeInitialized = false;
     int sequencedLastStepIndex = -1;
 
+    // Subdivide (Step 47, audio thread only) -- per-step retrigger rate,
+    // Sequenced mode only. Captured once at a step's own pick-start (see
+    // the sequencedMode branch in processBlock) from that cell's
+    // "Subdivide" override; sequencedSubdivisionActive false (the
+    // default -- Off/no override) means nothing here runs and playback
+    // is identical to before this feature existed.
+    // sequencedSubdivisionRow is which slice to restart on each
+    // retrigger -- cached rather than re-read from currentStepIndex,
+    // since currentStepIndex keeps advancing for as long as this note
+    // sustains across later (inactive) step columns, while this note's
+    // own row doesn't change.
+    // sequencedNextSubdivisionOffsetHostSamples/
+    // sequencedSubdivisionTickLengthHostSamples are host-sample-domain
+    // scheduling state measured against samplesSinceWindowStart/
+    // currentWindowLengthHostSamples just below -- reused directly
+    // rather than a separate ppq-based scheduler, since those already
+    // track "how far into this step's own window are we" (and, for
+    // Filter Down/Up, already drive the Whole Window sweep -- see
+    // useWholeWindow in processBlock, generalized to also cover a
+    // subdivided Sequenced step's window).
+    bool sequencedSubdivisionActive = false;
+    int sequencedSubdivisionRow = -1;
+    double sequencedNextSubdivisionOffsetHostSamples = 0.0;
+    double sequencedSubdivisionTickLengthHostSamples = 0.0;
+
     // Lock-free copy of the currently active step column (Step 37),
     // written by the audio thread every time a new step boundary is
     // reached, read by the UI thread for the sequencer grid's playhead
@@ -1414,9 +1463,17 @@ private:
     // samplesSincePickStart), so it stays continuous across every tick
     // inside one window. currentWindowLengthHostSamples is set alongside
     // it, at the same new-window event, from whatever the clock reference
-    // note value resolves to in host samples at that moment — both are
-    // Clock-mode-only and meaningless in Slice Length mode (which has no
-    // concept of a "window").
+    // note value resolves to in host samples at that moment — both were
+    // Clock-mode-only through Step 46 and are meaningless in Slice Length
+    // mode (which has no concept of a "window").
+    // Step 47 (Subdivide) reuses this exact same pair for Sequenced mode
+    // too: "window" there means one currently-playing step's own
+    // (already monophony-clamped) total duration, reset at that step's
+    // pick-start instead of a recurring Clock window -- this is what
+    // lets a subdivided Filter Down/Up step's sweep glide continuously
+    // across the whole step while individual retriggers happen
+    // underneath, and also doubles as the Subdivide retrigger scheduler
+    // itself (see sequencedNextSubdivisionOffsetHostSamples above).
     double samplesSinceWindowStart = 0.0;
     double currentWindowLengthHostSamples = 0.0;
 

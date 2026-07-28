@@ -201,10 +201,26 @@ void SequencerGrid::updateEditingValueFromMouseX (int mouseX, const juce::Rectan
         ? juce::jlimit (0.0f, 1.0f, (float) (mouseX - sliderBounds.getX()) / (float) sliderBounds.getWidth())
         : 0.0f;
 
+    const int paramIndex = findEditingParameterIndex();
+
+    if (SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
+    {
+        // Subdivide (Step 47): same drag gesture as every other slider
+        // overlay, but snapped to one of its named stops (Off + the
+        // shared note-value palette) rather than an arbitrary value --
+        // the stored override is that stop's OPTION INDEX, not a
+        // min/max-mapped float.
+        const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+        const int stepIndex = numOptions > 1
+            ? juce::jlimit (0, numOptions - 1, juce::roundToInt (t * (float) (numOptions - 1)))
+            : 0;
+        processor.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, (float) stepIndex);
+        return;
+    }
+
     // Generalized per-parameter range (Step 46) -- was hardcoded to
     // Resonance's own range back when it was the only continuous
     // parameter this overlay ever showed.
-    const int paramIndex = findEditingParameterIndex();
     const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
     const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
     const float value = minValue + t * (maxValue - minValue);
@@ -232,12 +248,16 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
     {
         const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
 
-        if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex))
+        if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex)
+            && ! SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
         {
             // Discrete parameters (Filter Type, Curve Shape -- Step 46)
             // present as a submenu of their own small option list, picked
             // directly -- a slider overlay doesn't make sense for a
-            // handful of named choices.
+            // handful of named choices. Subdivide (Step 47) is discrete
+            // too but explicitly excluded here -- see
+            // isSequencerCellParameterSteppedSlider()'s doc comment for
+            // why it takes the slider branch below instead.
             juce::PopupMenu submenu;
             const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
 
@@ -249,6 +269,10 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
         }
         else
         {
+            // Continuous parameters (Resonance, Grain Size, Grain Speed)
+            // AND Subdivide (Step 47, stepped-but-slider) both open the
+            // same drag-slider overlay -- updateEditingValueFromMouseX()
+            // is what tells them apart.
             menu.addItem (continuousItemId (paramIndex), name);
         }
     }
@@ -391,12 +415,30 @@ void SequencerGrid::paint (juce::Graphics& g)
             const float currentValue = processor.getSequencerCellParameterOverride (
                 editingRow, editingColumn, editingParameterName, processor.getSequencerCellParameterGlobalValue (paramIndex));
 
-            const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
-            const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
-            const float range = maxValue - minValue;
-            const float t = range > 0.0f
-                ? juce::jlimit (0.0f, 1.0f, (currentValue - minValue) / range)
-                : 0.0f;
+            float t = 0.0f;
+            juce::String valueText;
+
+            if (SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
+            {
+                // Subdivide (Step 47): fill fraction and label come from
+                // the snapped OPTION INDEX (Off, 1/4, 1/8, ...), not a
+                // min/max-mapped float -- same source of truth
+                // updateEditingValueFromMouseX() writes into the override.
+                const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+                const int stepIndex = juce::jlimit (0, juce::jmax (0, numOptions - 1), juce::roundToInt (currentValue));
+                t = numOptions > 1 ? (float) stepIndex / (float) (numOptions - 1) : 0.0f;
+                valueText = SlicerAudioProcessor::getSequencerCellParameterOptionName (paramIndex, stepIndex);
+            }
+            else
+            {
+                const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
+                const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
+                const float range = maxValue - minValue;
+                t = range > 0.0f
+                    ? juce::jlimit (0.0f, 1.0f, (currentValue - minValue) / range)
+                    : 0.0f;
+                valueText = juce::String (currentValue, 2);
+            }
 
             g.setColour (juce::Colours::black.withAlpha (0.9f));
             g.fillRect (sliderBounds);
@@ -408,7 +450,7 @@ void SequencerGrid::paint (juce::Graphics& g)
             g.setColour (juce::Colours::white);
             g.drawRect (sliderBounds, 1);
             g.setFont (10.0f);
-            g.drawFittedText (editingParameterName + ": " + juce::String (currentValue, 2),
+            g.drawFittedText (editingParameterName + ": " + valueText,
                                sliderBounds.reduced (2), juce::Justification::centred, 1);
         }
         else

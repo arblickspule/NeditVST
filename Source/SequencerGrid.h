@@ -70,9 +70,18 @@
     SlicerAudioProcessor::isSequencerCellParameterDiscrete()) instead
     present as a submenu of their own option names; selecting one writes
     straight into the override map with no slider overlay at all, since a
-    handful of named choices doesn't need one. A small triangle marker in
-    the corner of any cell with at least one override (of any parameter)
-    stays visible afterward. While the slider overlay is open, it captures
+    handful of named choices doesn't need one. Subdivide (Step 47) is the
+    one exception to that split: it's discrete (its options are "Off"
+    plus the shared note-value palette) but still uses the drag-slider
+    overlay, snapped to those named stops rather than an arbitrary value
+    -- and, unlike every other entry here, it's offered on EVERY active
+    step regardless of style (a general per-step retrigger rate, not tied
+    to one PlaybackStyle) -- see
+    SlicerAudioProcessor::isSequencerCellParameterSteppedSlider() and the
+    unconditional push_back in getApplicableSequencerCellParameters(). A
+    small triangle marker in the corner of any cell with at least one
+    override (of any parameter) stays visible afterward. While the slider
+    overlay is open, it captures
     the WHOLE next left-click gesture (whether that lands on the slider or
     elsewhere, which just cancels/dismisses it) -- normal cell
     click/drag-to-toggle is otherwise completely unaffected, since

@@ -103,10 +103,13 @@ namespace
         "Linear", "Exponential"
     } };
 
-    // Sequencer step parameter names (Step 45/46), indexed the same way
-    // the per-cell override map's lookups (and the right-click menu) use.
+    // Sequencer step parameter names (Step 45/46/47), indexed the same
+    // way the per-cell override map's lookups (and the right-click menu)
+    // use. Subdivide (index 5, Step 47) is general -- see
+    // SlicerAudioProcessor::getApplicableSequencerCellParameters(), which
+    // appends it unconditionally rather than listing it per-style here.
     const std::array<const char*, SlicerAudioProcessor::numSequencerCellParameters> sequencerCellParameterNames { {
-        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed"
+        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide"
     } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
@@ -517,6 +520,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         {
             sequencedLastStepIndex = -1;
             sequencedModeInitialized = true;
+            sequencedSubdivisionActive = false; // Step 47 -- no stale retrigger schedule carried in from before this mode was (re-)entered
         }
 
         // Defensive: every dimension-changing setter already calls
@@ -913,7 +917,92 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
                             currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, samplesUntilNextActiveStep);
                         }
+
+                        // Subdivide (Step 47): per-step retrigger rate,
+                        // general -- offered (and read) regardless of this
+                        // step's own PlaybackStyle, unlike Resonance/Filter
+                        // Type/Curve Shape/Grain Size/Grain Speed above.
+                        // 0 (Off, the default/fallback) leaves everything
+                        // exactly as it was above this point.
+                        //
+                        // "Whole Window" reuse for Filter Down/Up (Step 30's
+                        // Filter Sweep scope, generalized here): this step's
+                        // OWN total duration -- exactly what was just
+                        // computed above, BEFORE Subdivide slices it into
+                        // individual retrigger ticks below -- becomes the
+                        // window samplesSinceWindowStart/currentWindowLength-
+                        // HostSamples track, the same pair Clock mode's own
+                        // Whole Window scope already uses (see useWholeWindow
+                        // further down). Set unconditionally (not just when
+                        // Subdivide is on): when it's off there's only ever
+                        // one trigger occupying the whole step anyway, so
+                        // Whole Window and Per Tick are numerically identical
+                        // in that case -- no behaviour change for existing,
+                        // non-subdivided steps.
+                        const double stepWindowLengthHostSamples =
+                            tapeStop ? currentPickTapeStopDurationHostSamples : currentPickLengthInHostSamples;
+                        samplesSinceWindowStart = 0.0;
+                        currentWindowLengthHostSamples = stepWindowLengthHostSamples;
+
+                        const int subdivideOption = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Subdivide", 0.0f));
+                        sequencedSubdivisionActive = subdivideOption > 0;
+                        sequencedSubdivisionRow = activeRow;
+
+                        if (sequencedSubdivisionActive)
+                        {
+                            const double subdivisionBeats = getNoteValueBeats (subdivideOption - 1);
+                            sequencedSubdivisionTickLengthHostSamples =
+                                juce::jmax (1.0, subdivisionBeats * (60.0 / hostBpm) * hostSampleRate);
+                            sequencedNextSubdivisionOffsetHostSamples = sequencedSubdivisionTickLengthHostSamples;
+
+                            // This step's own first trigger (just started
+                            // above) IS the first subdivision slot -- cap its
+                            // length/duration to one tick, same jmin pattern
+                            // Clock mode's own ticks already use, so its
+                            // fade-out completes before the next retrigger
+                            // rather than spilling into it.
+                            currentPickLengthInHostSamples =
+                                juce::jmin (currentPickLengthInHostSamples, sequencedSubdivisionTickLengthHostSamples);
+
+                            if (tapeStop)
+                                currentPickTapeStopDurationHostSamples =
+                                    juce::jmin (currentPickTapeStopDurationHostSamples, sequencedSubdivisionTickLengthHostSamples);
+                        }
                     }
+                }
+
+                // Subdivide retrigger (Step 47): runs every SAMPLE,
+                // independent of the step-boundary check above -- same
+                // per-sample discipline as everything else here, so a
+                // retrigger point landing mid-block is never missed.
+                // samplesSinceWindowStart/currentWindowLengthHostSamples are
+                // the exact same pair set at this note's own pick-start
+                // above (and, in Clock mode, already drive the Whole Window
+                // Filter Sweep) -- reusing them here for scheduling too
+                // keeps a subdivided step's retrigger grid and its Filter
+                // Down/Up sweep locked to the same clock, and needs no
+                // separate ppq-based scheduler.
+                if (sequencedSubdivisionActive
+                    && sequencedSubdivisionRow >= 0 && sequencedSubdivisionRow < (int) slices.size()
+                    && samplesSinceWindowStart < currentWindowLengthHostSamples
+                    && samplesSinceWindowStart >= sequencedNextSubdivisionOffsetHostSamples)
+                {
+                    const auto& subdivisionSlice = slices[(size_t) sequencedSubdivisionRow];
+                    currentPosition = (double) subdivisionSlice.startSample;
+                    samplesSincePickStart = 0.0;
+                    hasCurrentPick = true;
+                    pickJustStarted = true;
+
+                    const double remainingWindowHostSamples =
+                        juce::jmax (0.0, currentWindowLengthHostSamples - samplesSinceWindowStart);
+                    currentPickLengthInHostSamples =
+                        juce::jmin (sequencedSubdivisionTickLengthHostSamples, remainingWindowHostSamples);
+
+                    if (currentPlaybackStyle == PlaybackStyle::tapeStop)
+                        currentPickTapeStopDurationHostSamples = currentPickLengthInHostSamples;
+
+                    sequencedNextSubdivisionOffsetHostSamples += sequencedSubdivisionTickLengthHostSamples;
                 }
             }
         }
@@ -1203,11 +1292,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             //     in the window (ticks keep retriggering normally --
             //     unlike Tape Stop's Whole Window, nothing here overrides
             //     that), only resetting when a new window begins.
+            // Sequenced mode's Subdivide (Step 47) forces this same Whole
+            // Window behaviour whenever the currently-playing step has a
+            // subdivision rate set -- its own "window" is that one step's
+            // total duration (see samplesSinceWindowStart/currentWindow-
+            // LengthHostSamples set at that step's pick-start), so the
+            // sweep glides continuously across the whole step while the
+            // subdivision retriggers happen underneath, rather than each
+            // retrigger getting its own reset sweep. A non-subdivided
+            // Sequenced step still falls through to the Per Tick formula
+            // below, but the two are numerically identical there (only one
+            // trigger occupies the whole step either way), so this changes
+            // nothing for existing, non-subdivided steps.
             float filterSweepCutoffHz = filterSweepStartHz;
 
             if (filterSweepActive)
             {
-                const bool useWholeWindow = clockMode && (filterSweepScope.load() == FilterSweepScope::wholeWindow);
+                const bool useWholeWindow = (clockMode && (filterSweepScope.load() == FilterSweepScope::wholeWindow))
+                                             || (sequencedMode && sequencedSubdivisionActive);
 
                 const double progress = useWholeWindow
                     ? ((currentWindowLengthHostSamples > 0.0)
@@ -1384,7 +1486,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // has no concept of a window, so this is simply never consulted
         // there (see the useWholeWindow guard above, which already
         // requires clockMode).
-        if (clockMode)
+        // Sequenced mode (Step 47) also needs this incrementing -- it's
+        // reused there as the Subdivide retrigger scheduler's own clock
+        // (see the sequencedMode branch above), not just the Filter Sweep
+        // Whole Window progress fraction.
+        if (clockMode || sequencedMode)
             samplesSinceWindowStart += 1.0;
     }
 }
@@ -1722,13 +1828,19 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
 {
-    return index == 1 || index == 2; // Filter Type, Curve Shape (Step 46)
+    return index == 1 || index == 2 || index == 5; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47)
+}
+
+bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
+{
+    return index == 5; // Subdivide (Step 47) -- see its declaration in PluginProcessor.h for why
 }
 
 int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
 {
     if (index == 1) return numFilterSweepFilterTypeOptions;
     if (index == 2) return numCurveShapeOptions;
+    if (index == 5) return numNoteValueOptions + 1; // Subdivide (Step 47): "Off" (option 0) + the shared note-value palette
 
     return 0;
 }
@@ -1737,6 +1849,7 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int inde
 {
     if (index == 1) return getFilterSweepFilterTypeName (optionIndex);
     if (index == 2) return getCurveShapeName (optionIndex);
+    if (index == 5) return optionIndex <= 0 ? "Off" : getNoteValueName (optionIndex - 1); // Subdivide (Step 47)
 
     return {};
 }
@@ -1755,6 +1868,7 @@ float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
     if (index == 0) return maxFilterSweepResonance;
     if (index == 3) return maxStretchGrainSizeMs;
     if (index == 4) return maxStretchSpeedMultiplier;
+    if (index == 5) return (float) (numNoteValueOptions + 1 - 1); // Subdivide (Step 47) -- unused by the stepped slider itself (see isSequencerCellParameterSteppedSlider), kept for API symmetry
 
     return 1.0f;
 }
@@ -1769,15 +1883,24 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
     // itself to whichever case(s) it applies to). Style indices match
     // indexToPlaybackStyle()'s ordinals, the same ones sequencerGrid
     // itself stores.
+    std::vector<int> params;
+
     switch (style)
     {
-        case 1: return { 2 };    // Ping-Pong -- Curve Shape (turnaround fade)
-        case 2: return { 2 };    // Tape Stop -- Curve Shape (decel)
-        case 3: return { 3, 4 }; // Stretch -- Grain Size, Grain Speed
-        case 4:                  // Filter Down
-        case 5: return { 0, 1 }; // Filter Up -- Resonance, Filter Type
-        default: return {};      // Forward (0), empty/invalid (-1) -- no per-step parameters
+        case 0: break;             // Forward -- no style-specific params, but Subdivide (below) still applies
+        case 1: params = { 2 }; break;    // Ping-Pong -- Curve Shape (turnaround fade)
+        case 2: params = { 2 }; break;    // Tape Stop -- Curve Shape (decel)
+        case 3: params = { 3, 4 }; break; // Stretch -- Grain Size, Grain Speed
+        case 4:                           // Filter Down
+        case 5: params = { 0, 1 }; break; // Filter Up -- Resonance, Filter Type
+        default: return {};        // empty/invalid cell (-1) -- no menu at all
     }
+
+    // Subdivide (Step 47): general, not style-specific -- appended for
+    // every valid style above (including Forward), unlike everything
+    // else in this function.
+    params.push_back (5);
+    return params;
 }
 
 float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) const
@@ -1789,6 +1912,7 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 2: return (float) getCurveShape();
         case 3: return getStretchGrainSizeMs();
         case 4: return getStretchSpeedMultiplier();
+        case 5: return 0.0f; // Subdivide (Step 47) -- no global dial; Off is always the fallback/default
         default: return 0.0f;
     }
 }
