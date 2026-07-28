@@ -92,6 +92,38 @@ namespace
         "Whole window", "Per tick"
     } };
 
+    // Filter Sweep filter type names (Step 46).
+    const std::array<const char*, SlicerAudioProcessor::numFilterSweepFilterTypeOptions> filterSweepFilterTypeNames { {
+        "Low-pass", "High-pass", "Band-pass"
+    } };
+
+    // Curve shape names (Step 46) -- shared by Tape Stop decel and
+    // Ping-Pong turnaround fade.
+    const std::array<const char*, SlicerAudioProcessor::numCurveShapeOptions> curveShapeNames { {
+        "Linear", "Exponential"
+    } };
+
+    // Sequencer step parameter names (Step 45/46), indexed the same way
+    // the per-cell override map's lookups (and the right-click menu) use.
+    const std::array<const char*, SlicerAudioProcessor::numSequencerCellParameters> sequencerCellParameterNames { {
+        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed"
+    } };
+
+    // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
+    // is the identity (today's behaviour, unchanged); Exponential eases
+    // in (t*t -- slow start, fast finish), which reads as a more natural
+    // "surge before stopping" for Tape Stop's decel and a snappier
+    // turnaround for Ping-Pong, without needing two separate formulas per
+    // style. First-pass curve, not meant to be the only shape ever
+    // offered -- see setCurveShape()'s doc comment in PluginProcessor.h.
+    double applyCurveShape (double t, int curveShapeIndex)
+    {
+        if (curveShapeIndex == 1)
+            return t * t;
+
+        return t;
+    }
+
     // Slice Length periodic reset (Step 34) -- names and their underlying
     // bar counts, held as a parallel pair rather than a NoteValueOption-
     // style struct since bar counts (not beats) are the natural unit
@@ -133,6 +165,22 @@ juce::String SlicerAudioProcessor::getFilterSweepScopeName (int index)
         return {};
 
     return filterSweepScopeNames[(size_t) index];
+}
+
+juce::String SlicerAudioProcessor::getFilterSweepFilterTypeName (int index)
+{
+    if (index < 0 || index >= numFilterSweepFilterTypeOptions)
+        return {};
+
+    return filterSweepFilterTypeNames[(size_t) index];
+}
+
+juce::String SlicerAudioProcessor::getCurveShapeName (int index)
+{
+    if (index < 0 || index >= numCurveShapeOptions)
+        return {};
+
+    return curveShapeNames[(size_t) index];
 }
 
 juce::String SlicerAudioProcessor::getResetBarsName (int index)
@@ -550,12 +598,20 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const bool tapeStop = (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop);
                     const bool stretch = (clockCurrentPlaybackStyle == PlaybackStyle::stretch);
 
+                    // Stretch grain settings (Step 46) -- Clock mode always
+                    // uses the global values; per-step overrides are
+                    // Sequenced-mode-only. Captured here, before
+                    // currentEndSample below, since Grain Speed feeds
+                    // directly into that calculation.
+                    currentPickStretchGrainSizeMs = stretchGrainSizeMsValue.load();
+                    currentPickStretchSpeedMultiplier = stretchSpeedMultiplierValue.load();
+
                     currentPlaybackStyle = clockCurrentPlaybackStyle;
                     currentSliceStartSample = slice.startSample;
                     currentSliceLength = slice.endSample - slice.startSample;
                     currentPosition = (double) slice.startSample;
                     currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
-                                     : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                     : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
                                                : slice.endSample;
                     hasCurrentPick = true;
                     pickJustStarted = true;
@@ -566,10 +622,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // own tick system already enforces beat-alignment.
                     currentPickBeatQuantized = false;
 
-                    // Filter Sweep resonance (Step 45) -- Clock mode always
-                    // uses the global value; per-step overrides are
-                    // Sequenced-mode-only.
+                    // Filter Sweep resonance/filter type + Curve Shape
+                    // (Step 45/46) -- Clock mode always uses the global
+                    // values; per-step overrides are Sequenced-mode-only.
                     currentPickFilterSweepResonance = filterSweepResonanceValue.load();
+                    currentPickFilterSweepType = filterSweepFilterTypeValue.load();
+                    currentPickCurveShape = curveShapeValue.load();
 
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
@@ -608,13 +666,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     {
                         // Stretch always overrides the whole window (no
                         // per-tick option) -- capped by whichever comes
-                        // first: the full stretchDurationMultiplier-x
+                        // first: the full currentPickStretchSpeedMultiplier-x
                         // natural length, or the window's own boundary
                         // (mirrors Forward/Ping-Pong's own "whichever comes
                         // first" clamp against a tick, just against the
                         // window instead, since there's no tick to speak of
                         // here).
-                        currentPickLengthInHostSamples = juce::jmin (stretchDurationMultiplier * naturalLengthHostSamples,
+                        currentPickLengthInHostSamples = juce::jmin ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples,
                                                                       windowLengthHostSamples);
                     }
                     else
@@ -717,6 +775,19 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
                         const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
 
+                        // Stretch grain settings (Step 46) -- this step's
+                        // own overrides if it has them, else the global
+                        // values, same per-step-override pattern as Filter
+                        // Sweep resonance below. Captured here (before
+                        // currentEndSample below), since Grain Speed feeds
+                        // directly into that calculation, unlike Resonance/
+                        // Filter Type/Curve Shape which are render-only and
+                        // can be captured later.
+                        currentPickStretchGrainSizeMs = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Grain Size", stretchGrainSizeMsValue.load());
+                        currentPickStretchSpeedMultiplier = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Grain Speed", stretchSpeedMultiplierValue.load());
+
                         currentSliceStartSample = slice.startSample;
                         currentSliceLength = slice.endSample - slice.startSample;
                         currentPosition = (double) slice.startSample;
@@ -729,21 +800,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // the full there-and-back cycle only needs to span
                         // the slice's original raw length once, exactly
                         // like every other style here.
-                        currentEndSample = stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                        currentEndSample = stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
                                                     : slice.endSample;
                         hasCurrentPick = true;
                         pickJustStarted = true;
                         currentlyPlayingSliceIndexForUI.store (activeRow);
 
-                        // Filter Sweep resonance (Step 45) -- this step's
-                        // own override if it has one, else the global
-                        // value. Looked up unconditionally, harmless for
-                        // non-filter styles (an override is only ever
-                        // populated for cells whose style actually uses
+                        // Filter Sweep resonance/filter type + Curve Shape
+                        // (Step 45/46) -- this step's own override if it
+                        // has one, else the global value. Looked up
+                        // unconditionally, harmless for styles that don't
+                        // use a given parameter (an override is only ever
+                        // populated for cells whose style actually offers
                         // it, so the lookup naturally falls through to the
                         // global default there anyway).
                         currentPickFilterSweepResonance = getSequencerCellParameterOverride (
                             activeRow, currentStepIndex, "Resonance", filterSweepResonanceValue.load());
+                        currentPickFilterSweepType = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Filter Type", (float) filterSweepFilterTypeValue.load()));
+                        currentPickCurveShape = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Curve Shape", (float) curveShapeValue.load()));
 
                         // Sequenced mode's own step grid already enforces
                         // beat-alignment for SCHEDULING (every note starts
@@ -820,7 +896,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         else if (stretch)
                         {
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
-                            currentPickLengthInHostSamples = juce::jmin (stretchDurationMultiplier * naturalLengthHostSamples,
+                            currentPickLengthInHostSamples = juce::jmin ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples,
                                                                           samplesUntilNextActiveStep);
                         }
                         else
@@ -901,28 +977,38 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
                 const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
 
+                // Stretch grain settings (Step 46) -- Slice Length mode
+                // always uses the global values; per-step overrides are
+                // Sequenced-mode-only. Captured here, before currentEndSample
+                // below, since Grain Speed feeds directly into that
+                // calculation.
+                currentPickStretchGrainSizeMs = stretchGrainSizeMsValue.load();
+                currentPickStretchSpeedMultiplier = stretchSpeedMultiplierValue.load();
+
                 const auto& slice = slices[(size_t) currentSliceIndex];
                 currentSliceStartSample = slice.startSample;
                 currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
                 currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
-                                 : stretch ? (int) (slice.startSample + stretchDurationMultiplier * currentSliceLength)
+                                 : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
                                            : slice.endSample;
                 hasCurrentPick = true;
                 pickJustStarted = true;
                 currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
 
-                // Filter Sweep resonance (Step 45) -- Slice Length mode
-                // always uses the global value; per-step overrides are
-                // Sequenced-mode-only.
+                // Filter Sweep resonance/filter type + Curve Shape (Step
+                // 45/46) -- Slice Length mode always uses the global
+                // values; per-step overrides are Sequenced-mode-only.
                 currentPickFilterSweepResonance = filterSweepResonanceValue.load();
+                currentPickFilterSweepType = filterSweepFilterTypeValue.load();
+                currentPickCurveShape = curveShapeValue.load();
 
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
                 currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward
                 currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong/Stretch
                 currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
-                                                : stretch ? (stretchDurationMultiplier * naturalLengthHostSamples)
+                                                : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
                                                           : naturalLengthHostSamples;
 
                 // Beat-quantized slice length (Step 24 for Time-Stretch,
@@ -987,6 +1073,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             granularStretcher.reset (currentPosition); // matches whichever mode's active; harmless if unused this pick
             filterSweepFilter.reset(); // Step 29 -- no bleed from a previous pick; harmless if unused this pick
             filterSweepFilter.setResonance (currentPickFilterSweepResonance); // Step 45 -- this pick's own value (global, or Sequenced mode's per-step override)
+
+            // Filter type (Step 46) -- same per-pick value/override
+            // treatment as resonance just above.
+            filterSweepFilter.setType (currentPickFilterSweepType == 1 ? juce::dsp::StateVariableTPTFilterType::highpass
+                                      : currentPickFilterSweepType == 2 ? juce::dsp::StateVariableTPTFilterType::bandpass
+                                                                        : juce::dsp::StateVariableTPTFilterType::lowpass);
         }
 
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
@@ -1035,20 +1127,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 gain = samplesSincePickStart / fadeInSamples;
 
             // Tape Stop (Step 21): an additional rate multiplier, ramping
-            // linearly from 1.0 to 0.0 across currentPickTapeStopDuration-
-            // HostSamples, layered on top of whatever Pitch Mode already
-            // produces below. Gain rides the SAME curve, REPLACING (not
-            // stacking with) the normal fadeOutMs for this style — if rate
-            // hit exactly 0 while gain stayed at full, the engine would
-            // get stuck holding/repeating a single sample (a buzz) instead
-            // of fading to silence. fadeInMs above is unaffected.
+            // from 1.0 to 0.0 across currentPickTapeStopDurationHostSamples
+            // -- Linear (default) or Exponential per Curve Shape (Step 46,
+            // see applyCurveShape() above), layered on top of whatever
+            // Pitch Mode already produces below. Gain rides the SAME curve,
+            // REPLACING (not stacking with) the normal fadeOutMs for this
+            // style — if rate hit exactly 0 while gain stayed at full, the
+            // engine would get stuck holding/repeating a single sample (a
+            // buzz) instead of fading to silence. fadeInMs above is
+            // unaffected.
             double tapeStopRateMultiplier = 1.0;
 
             if (tapeStopActive)
             {
-                const double progress = (currentPickTapeStopDurationHostSamples > 0.0)
+                const double rawProgress = (currentPickTapeStopDurationHostSamples > 0.0)
                     ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickTapeStopDurationHostSamples)
                     : 1.0; // degenerate zero-length duration -- treat as already fully stopped
+                const double progress = applyCurveShape (rawProgress, currentPickCurveShape);
                 tapeStopRateMultiplier = 1.0 - progress;
 
                 gain = juce::jmin (gain, tapeStopRateMultiplier);
@@ -1067,17 +1162,20 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // the pick's own end-fade) and back in leaving it (mirrors
                 // the start-fade). Layered into the same overall `gain`, so
                 // it wraps whichever render path below produced the dry
-                // sample -- Repitch or Time-Stretch alike.
+                // sample -- Repitch or Time-Stretch alike. Curve Shape
+                // (Step 46) applies here too, sharing applyCurveShape()
+                // with Tape Stop's decel above rather than a separate
+                // formula -- Linear (default) is the original behaviour.
                 if (pingPongActive)
                 {
                     const double distanceBeforeMidpoint = currentPickMidpointHostSamples - samplesSincePickStart;
                     const double distanceAfterMidpoint = samplesSincePickStart - currentPickMidpointHostSamples;
 
                     if (distanceBeforeMidpoint >= 0.0 && distanceBeforeMidpoint < fadeOutSamples)
-                        gain = juce::jmin (gain, distanceBeforeMidpoint / fadeOutSamples);
+                        gain = juce::jmin (gain, applyCurveShape (distanceBeforeMidpoint / fadeOutSamples, currentPickCurveShape));
 
                     if (distanceAfterMidpoint >= 0.0 && distanceAfterMidpoint < fadeInSamples)
-                        gain = juce::jmin (gain, distanceAfterMidpoint / fadeInSamples);
+                        gain = juce::jmin (gain, applyCurveShape (distanceAfterMidpoint / fadeInSamples, currentPickCurveShape));
                 }
             }
 
@@ -1158,14 +1256,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // Stretch (Step 22) always renders through GranularStretcher,
                 // even in Repitch mode -- it's a deliberate character
                 // effect, not something that should vanish depending on an
-                // unrelated global toggle. It gets its OWN small, hard-
-                // edged, fixed grain parameters here (never the user-facing
-                // Pitch Mode Time-Stretch grain size/window shape/pitch
-                // shift, none of which apply): outputHopSamples/grainSize
-                // come from stretchCharacterGrainSizeMs, and sourceHopSamples
-                // is derived from playbackRate/stretchDurationMultiplier --
-                // consuming the whole slice at a quarter the normal rate is
-                // exactly what makes the render last stretchDurationMultiplier
+                // unrelated global toggle. It gets its OWN grain parameters
+                // here (never the user-facing Pitch Mode Time-Stretch grain
+                // size/window shape/pitch shift, none of which apply):
+                // outputHopSamples/grainSize come from
+                // currentPickStretchGrainSizeMs, and sourceHopSamples is
+                // derived from playbackRate/currentPickStretchSpeedMultiplier
+                // (Step 46, per-pick captured -- global by default, or a
+                // Sequenced-mode step's own override) -- consuming the
+                // whole slice at a fraction of the normal rate is exactly
+                // what makes the render last currentPickStretchSpeedMultiplier
                 // times as long. Tape Stop's rate multiplier, by contrast,
                 // is layered onto BOTH each grain's own internal read-rate
                 // (the same slot pitchRatio already multiplies) AND the
@@ -1192,9 +1292,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 if (stretchActive)
                 {
-                    grainGrainSizeHostSamples = (double) stretchCharacterGrainSizeMs / 1000.0 * hostSampleRate;
+                    grainGrainSizeHostSamples = (double) currentPickStretchGrainSizeMs / 1000.0 * hostSampleRate;
                     grainOutputHopSamples = grainGrainSizeHostSamples * 0.5; // same fixed 50% overlap convention
-                    grainSourceHopSamples = grainOutputHopSamples * (playbackRate / stretchDurationMultiplier);
+                    grainSourceHopSamples = grainOutputHopSamples * (playbackRate / (double) currentPickStretchSpeedMultiplier);
                     grainPitchRatio = 1.0; // no user pitch shift for this style -- fully self-contained/hardcoded
                     grainWindowShapeToUse = GranularStretcher::WindowShape::hardEdge;
                 }
@@ -1614,10 +1714,83 @@ void SlicerAudioProcessor::clearSequence()
 
 juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
 {
-    if (index == 0)
-        return "Resonance";
+    if (index < 0 || index >= numSequencerCellParameters)
+        return {};
+
+    return sequencerCellParameterNames[(size_t) index];
+}
+
+bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
+{
+    return index == 1 || index == 2; // Filter Type, Curve Shape (Step 46)
+}
+
+int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
+{
+    if (index == 1) return numFilterSweepFilterTypeOptions;
+    if (index == 2) return numCurveShapeOptions;
+
+    return 0;
+}
+
+juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int index, int optionIndex)
+{
+    if (index == 1) return getFilterSweepFilterTypeName (optionIndex);
+    if (index == 2) return getCurveShapeName (optionIndex);
 
     return {};
+}
+
+float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
+{
+    if (index == 0) return minFilterSweepResonance;
+    if (index == 3) return minStretchGrainSizeMs;
+    if (index == 4) return minStretchSpeedMultiplier;
+
+    return 0.0f;
+}
+
+float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
+{
+    if (index == 0) return maxFilterSweepResonance;
+    if (index == 3) return maxStretchGrainSizeMs;
+    if (index == 4) return maxStretchSpeedMultiplier;
+
+    return 1.0f;
+}
+
+std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int style)
+{
+    // Parameter indices below match getSequencerCellParameterName()'s own
+    // ordering: 0 Resonance, 1 Filter Type, 2 Curve Shape, 3 Grain Size,
+    // 4 Grain Speed (Step 45/46). Table form rather than a single flat
+    // list filtered by style -- keeps "which style offers what" readable
+    // at a glance and trivially extensible (a future parameter just adds
+    // itself to whichever case(s) it applies to). Style indices match
+    // indexToPlaybackStyle()'s ordinals, the same ones sequencerGrid
+    // itself stores.
+    switch (style)
+    {
+        case 1: return { 2 };    // Ping-Pong -- Curve Shape (turnaround fade)
+        case 2: return { 2 };    // Tape Stop -- Curve Shape (decel)
+        case 3: return { 3, 4 }; // Stretch -- Grain Size, Grain Speed
+        case 4:                  // Filter Down
+        case 5: return { 0, 1 }; // Filter Up -- Resonance, Filter Type
+        default: return {};      // Forward (0), empty/invalid (-1) -- no per-step parameters
+    }
+}
+
+float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) const
+{
+    switch (index)
+    {
+        case 0: return getFilterSweepResonance();
+        case 1: return (float) getFilterSweepFilterType();
+        case 2: return (float) getCurveShape();
+        case 3: return getStretchGrainSizeMs();
+        case 4: return getStretchSpeedMultiplier();
+        default: return 0.0f;
+    }
 }
 
 bool SlicerAudioProcessor::getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const

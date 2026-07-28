@@ -54,18 +54,26 @@
     and resizes itself whenever they (or the target width) change. The
     same timer also drives the live playhead column highlight.
 
-    Step parameter editing (Step 45, Flow A, v1): right-click (or
-    Cmd/Ctrl-click) an active Filter Down/Up step to pop up a menu of
-    available parameters (just "Resonance" for now, but the mechanism is
-    generic -- adding more later is just adding entries to
-    SlicerAudioProcessor::getSequencerCellParameterName()). Selecting one
-    replaces the menu with a horizontal slider overlay drawn over that
+    Step parameter editing (Step 45/46, Flow A): right-click (or
+    Cmd/Ctrl-click) an active step to pop up a menu of whichever
+    parameters that step's own PlaybackStyle actually uses (see
+    SlicerAudioProcessor::getApplicableSequencerCellParameters()) -- e.g.
+    Filter Down/Up offers Resonance + Filter Type, Ping-Pong/Tape Stop
+    offers Curve Shape, Stretch offers Grain Size + Grain Speed, Forward
+    offers nothing (no menu at all). Continuous parameters (Resonance,
+    Grain Size, Grain Speed) work exactly as Step 45 established: selecting
+    one replaces the menu with a horizontal slider overlay drawn over that
     step; a left-click-drag on the slider adjusts the value live, writing
     into that cell's parameter-override map, and releasing the mouse
-    closes the slider automatically. A small triangle marker in the
-    corner of any cell with at least one override stays visible
-    afterward. While the slider overlay is open, it captures the WHOLE
-    next left-click gesture (whether that lands on the slider or
+    closes the slider automatically. Discrete parameters (Filter Type,
+    Curve Shape -- a small named list rather than a range, see
+    SlicerAudioProcessor::isSequencerCellParameterDiscrete()) instead
+    present as a submenu of their own option names; selecting one writes
+    straight into the override map with no slider overlay at all, since a
+    handful of named choices doesn't need one. A small triangle marker in
+    the corner of any cell with at least one override (of any parameter)
+    stays visible afterward. While the slider overlay is open, it captures
+    the WHOLE next left-click gesture (whether that lands on the slider or
     elsewhere, which just cancels/dismisses it) -- normal cell
     click/drag-to-toggle is otherwise completely unaffected, since
     right-click is a distinct gesture juce::MouseEvent::mods.isPopupMenu()
@@ -99,10 +107,17 @@ private:
     // `row` should visually span -- see the class doc comment above.
     int computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const;
 
-    // Step parameter editing (Step 45).
+    // Step parameter editing (Step 45/46).
     void showParameterMenuForCell (int row, int column);
     juce::Rectangle<int> getParameterSliderBounds (int row, int column, int numRows, int numColumns) const;
     void updateEditingValueFromMouseX (int mouseX, const juce::Rectangle<int>& sliderBounds);
+
+    // Index (into SlicerAudioProcessor::getSequencerCellParameterName())
+    // of whichever parameter editingParameterName currently names, or -1
+    // if it doesn't match any (shouldn't happen in practice) -- looked up
+    // by name rather than storing the index directly since the override
+    // map itself is keyed by name (Step 46).
+    int findEditingParameterIndex() const;
 
     SlicerAudioProcessor& processor;
 

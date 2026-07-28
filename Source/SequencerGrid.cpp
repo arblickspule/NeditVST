@@ -1,5 +1,46 @@
 #include "SequencerGrid.h"
 
+namespace
+{
+    // Right-click menu item ID encoding (Step 46): PopupMenu::showMenuAsync
+    // hands back a single flat item ID regardless of which submenu (if
+    // any) it came from, so continuous parameters (which open the slider
+    // overlay) and discrete parameters' individual options (which write
+    // straight to the override map) need to be distinguishable from that
+    // one ID alone. Continuous parameter p -> continuousItemIdBase + p;
+    // discrete parameter p's option o -> discreteItemIdBase + p*stride + o.
+    // Ranges never overlap as long as numSequencerCellParameters stays
+    // well under discreteItemStride and no discrete parameter ever gets
+    // anywhere near that many options -- true today and for the
+    // foreseeable future of this menu.
+    constexpr int continuousItemIdBase = 1000;
+    constexpr int discreteItemIdBase = 2000;
+    constexpr int discreteItemStride = 100;
+
+    int continuousItemId (int paramIndex) { return continuousItemIdBase + paramIndex; }
+    int discreteItemId (int paramIndex, int optionIndex) { return discreteItemIdBase + paramIndex * discreteItemStride + optionIndex; }
+
+    bool decodeContinuousItemId (int id, int& paramIndex)
+    {
+        if (id < continuousItemIdBase || id >= discreteItemIdBase)
+            return false;
+
+        paramIndex = id - continuousItemIdBase;
+        return true;
+    }
+
+    bool decodeDiscreteItemId (int id, int& paramIndex, int& optionIndex)
+    {
+        if (id < discreteItemIdBase)
+            return false;
+
+        const int offset = id - discreteItemIdBase;
+        paramIndex = offset / discreteItemStride;
+        optionIndex = offset % discreteItemStride;
+        return true;
+    }
+}
+
 SequencerGrid::SequencerGrid (SlicerAudioProcessor& processorToUse)
     : processor (processorToUse)
 {
@@ -145,19 +186,28 @@ juce::Rectangle<int> SequencerGrid::getParameterSliderBounds (int row, int colum
     return { sliderX, screenY, sliderWidth, rowHeight };
 }
 
+int SequencerGrid::findEditingParameterIndex() const
+{
+    for (int i = 0; i < SlicerAudioProcessor::numSequencerCellParameters; ++i)
+        if (SlicerAudioProcessor::getSequencerCellParameterName (i) == editingParameterName)
+            return i;
+
+    return -1;
+}
+
 void SequencerGrid::updateEditingValueFromMouseX (int mouseX, const juce::Rectangle<int>& sliderBounds)
 {
     const float t = sliderBounds.getWidth() > 0
         ? juce::jlimit (0.0f, 1.0f, (float) (mouseX - sliderBounds.getX()) / (float) sliderBounds.getWidth())
         : 0.0f;
 
-    // v1 simplification (Step 45): with only one parameter (Resonance)
-    // ever offered, its range lives directly on SlicerAudioProcessor.
-    // Generalizing this to a per-parameter range lookup is future work
-    // for whenever a second parameter with a different range actually
-    // gets added.
-    const float value = SlicerAudioProcessor::minFilterSweepResonance
-                       + t * (SlicerAudioProcessor::maxFilterSweepResonance - SlicerAudioProcessor::minFilterSweepResonance);
+    // Generalized per-parameter range (Step 46) -- was hardcoded to
+    // Resonance's own range back when it was the only continuous
+    // parameter this overlay ever showed.
+    const int paramIndex = findEditingParameterIndex();
+    const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
+    const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
+    const float value = minValue + t * (maxValue - minValue);
 
     processor.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, value);
 }
@@ -166,16 +216,42 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
 {
     const int style = processor.getSequencerCellStyle (row, column);
 
-    // Only Filter Down/Up steps offer parameter overrides for now (Step
-    // 45, v1) -- style indices 4/5 match PlaybackStyle's own ordinal (see
-    // PluginProcessor.h). Right-clicking any other cell is a no-op.
-    if (style != 4 && style != 5)
+    // Which parameters (if any) this step's own style actually uses
+    // (Step 46) -- generalizes the v1 "only Filter Down/Up" hardcoded
+    // check into a per-style table (see PluginProcessor.cpp). Empty means
+    // this style has nothing to configure (e.g. Forward, or an empty
+    // cell), so right-clicking it is a no-op, same as before.
+    const auto applicableParams = SlicerAudioProcessor::getApplicableSequencerCellParameters (style);
+
+    if (applicableParams.empty())
         return;
 
     juce::PopupMenu menu;
 
-    for (int i = 0; i < SlicerAudioProcessor::numSequencerCellParameters; ++i)
-        menu.addItem (i + 1, SlicerAudioProcessor::getSequencerCellParameterName (i));
+    for (int paramIndex : applicableParams)
+    {
+        const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
+
+        if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex))
+        {
+            // Discrete parameters (Filter Type, Curve Shape -- Step 46)
+            // present as a submenu of their own small option list, picked
+            // directly -- a slider overlay doesn't make sense for a
+            // handful of named choices.
+            juce::PopupMenu submenu;
+            const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+
+            for (int option = 0; option < numOptions; ++option)
+                submenu.addItem (discreteItemId (paramIndex, option),
+                                  SlicerAudioProcessor::getSequencerCellParameterOptionName (paramIndex, option));
+
+            menu.addSubMenu (name, submenu);
+        }
+        else
+        {
+            menu.addItem (continuousItemId (paramIndex), name);
+        }
+    }
 
     // Async, not the blocking show() -- this is a juce::Component's own
     // mouseDown handler, and a modal menu call there would reenter the
@@ -183,17 +259,33 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
     menu.showMenuAsync (juce::PopupMenu::Options(), [this, row, column] (int result)
     {
         if (result <= 0)
-            return; // dismissed without choosing a parameter
+            return; // dismissed without choosing anything
 
-        // Right-clicking a step that already has a marker re-opens the
-        // slider at its existing override rather than resetting to
-        // default (Step 45) -- this needs no special handling here: the
-        // slider's own paint() below always reads the CURRENT override
-        // (or the global default if none exists) live, every repaint.
-        editingRow = row;
-        editingColumn = column;
-        editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (result - 1);
-        repaint();
+        int paramIndex = -1;
+        int optionIndex = -1;
+
+        if (decodeDiscreteItemId (result, paramIndex, optionIndex))
+        {
+            // Discrete choice (Step 46) -- writes straight into the
+            // override map, no slider overlay involved at all.
+            processor.setSequencerCellParameterOverride (row, column,
+                SlicerAudioProcessor::getSequencerCellParameterName (paramIndex), (float) optionIndex);
+            repaint();
+            return;
+        }
+
+        if (decodeContinuousItemId (result, paramIndex))
+        {
+            // Right-clicking a step that already has a marker re-opens the
+            // slider at its existing override rather than resetting to
+            // default (Step 45) -- this needs no special handling here: the
+            // slider's own paint() below always reads the CURRENT override
+            // (or the global default if none exists) live, every repaint.
+            editingRow = row;
+            editingColumn = column;
+            editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
+            repaint();
+        }
     });
 }
 
@@ -284,21 +376,26 @@ void SequencerGrid::paint (juce::Graphics& g)
         }
     }
 
-    // Parameter-editing slider overlay (Step 45) -- drawn last, on top of
-    // everything else, while a right-click's chosen parameter is being
-    // adjusted (or just sitting there showing its current value, before
-    // any drag has started).
+    // Parameter-editing slider overlay (Step 45/46) -- drawn last, on top
+    // of everything else, while a right-click's chosen CONTINUOUS
+    // parameter is being adjusted (or just sitting there showing its
+    // current value, before any drag has started). Discrete parameters
+    // (Filter Type, Curve Shape) never open this overlay at all -- see
+    // showParameterMenuForCell().
     if (editingRow >= 0)
     {
         if (editingRow < numRows && editingColumn >= 0 && editingColumn < numColumns)
         {
             const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
+            const int paramIndex = findEditingParameterIndex();
             const float currentValue = processor.getSequencerCellParameterOverride (
-                editingRow, editingColumn, editingParameterName, processor.getFilterSweepResonance());
+                editingRow, editingColumn, editingParameterName, processor.getSequencerCellParameterGlobalValue (paramIndex));
 
-            const float range = SlicerAudioProcessor::maxFilterSweepResonance - SlicerAudioProcessor::minFilterSweepResonance;
+            const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
+            const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
+            const float range = maxValue - minValue;
             const float t = range > 0.0f
-                ? juce::jlimit (0.0f, 1.0f, (currentValue - SlicerAudioProcessor::minFilterSweepResonance) / range)
+                ? juce::jlimit (0.0f, 1.0f, (currentValue - minValue) / range)
                 : 0.0f;
 
             g.setColour (juce::Colours::black.withAlpha (0.9f));

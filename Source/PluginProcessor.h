@@ -4,6 +4,7 @@
 #include "TransientDetector.h"
 #include "GranularStretcher.h"
 #include <map>
+#include <vector>
 
 //==============================================================================
 // STEP 6/8: transport-synced generative playback — no MIDI, no keyboard.
@@ -513,11 +514,13 @@ public:
     // Stretch always renders through GranularStretcher regardless of the
     // global Pitch Mode setting — a deliberate character effect, not
     // something that should vanish depending on an unrelated toggle —
-    // using its own small, hardcoded grain size and a hard-edged window
-    // (see stretchCharacterGrainSizeMs/WindowShape::hardEdge), stretching
-    // the pick to stretchDurationMultiplier times its natural length;
+    // using its own adjustable grain size and a hard-edged window (see
+    // setStretchGrainSizeMs()/WindowShape::hardEdge), stretching the pick
+    // to setStretchSpeedMultiplier() times its natural length (Step 46 --
+    // both per-step-overridable in Sequenced mode, see below);
     // Filter Down/Filter Up (Step 29/30) both apply the same resonant
-    // low-pass (see filterSweepFilter) as post-processing on this pick's
+    // filter (see filterSweepFilter, filter type overridable per Step 46)
+    // as post-processing on this pick's
     // rendered output, cutoff swept log-scale across the pick's duration —
     // Down sweeps ~9kHz -> ~250Hz (open to closed, the classic breakbeat/
     // DnB "filter close"), Up is the mirror image, ~250Hz -> ~9kHz. Scope
@@ -645,6 +648,67 @@ public:
     }
 
     float getFilterSweepResonance() const { return filterSweepResonanceValue.load(); }
+
+    //=== Filter Sweep filter type (Step 46) ===
+    // Extends Filter Sweep resonance's per-step-override mechanism (see
+    // sequencer step parameter overrides below) to a second Filter Down/
+    // Up-only parameter: which filter type the shared filterSweepFilter
+    // renders through, not just its resonance. Index-based (0/1/2), same
+    // convention as resetBarsIndex/stepResolutionIndex below rather than
+    // a dedicated enum, since it's stored the same generic way sequencer
+    // step overrides store every other parameter (a plain float, indexed
+    // by name). Default (0 -- lowpass) matches the filter's original
+    // hardcoded setType() call exactly, so nothing changes for existing
+    // users until this or a per-step override actually touches it.
+    static constexpr int numFilterSweepFilterTypeOptions = 3;
+    static juce::String getFilterSweepFilterTypeName (int index); // "Low-pass" / "High-pass" / "Band-pass"
+
+    void setFilterSweepFilterType (int index) { filterSweepFilterTypeValue.store (juce::jlimit (0, numFilterSweepFilterTypeOptions - 1, index)); }
+    int getFilterSweepFilterType() const { return filterSweepFilterTypeValue.load(); }
+
+    //=== Curve shape (Step 46) ===
+    // A per-step-override-capable parameter shared between Tape Stop's
+    // decel and Ping-Pong's turnaround fade (see processBlock) -- both
+    // already computed a 0..1 progress fraction driving a linear ramp, so
+    // "Exponential" is a drop-in substitute for that fraction (see the
+    // applyCurveShape() helper in PluginProcessor.cpp) rather than a
+    // separate code path per style. Default (0 -- Linear) matches both
+    // styles' existing behaviour exactly.
+    static constexpr int numCurveShapeOptions = 2;
+    static juce::String getCurveShapeName (int index); // "Linear" / "Exponential"
+
+    void setCurveShape (int index) { curveShapeValue.store (juce::jlimit (0, numCurveShapeOptions - 1, index)); }
+    int getCurveShape() const { return curveShapeValue.load(); }
+
+    //=== Stretch grain settings (Step 46) ===
+    // Stretch playback style's own grain size/speed -- separate from
+    // Pitch Mode Time-Stretch's grainSizeMs/pitchShiftSemitones above,
+    // neither of which apply to this style (see processBlock's
+    // stretchActive branch). Turns the two values that branch used to
+    // hardcode (stretchCharacterGrainSizeMs/stretchDurationMultiplier,
+    // now stretchGrainSizeMsValue/stretchSpeedMultiplierValue below) into
+    // stored, adjustable values with per-step overrides -- same "was a
+    // compile-time constant, now overridable" treatment Filter Sweep
+    // resonance got in Step 45. Defaults match the original constants
+    // exactly, so nothing changes until either mechanism touches them.
+    static constexpr float defaultStretchGrainSizeMs = 10.0f; // within the ~8-15ms range originally hardcoded
+    static constexpr float minStretchGrainSizeMs = 5.0f;
+    static constexpr float maxStretchGrainSizeMs = 30.0f;
+
+    void setStretchGrainSizeMs (float ms) { stretchGrainSizeMsValue.store (juce::jlimit (minStretchGrainSizeMs, maxStretchGrainSizeMs, ms)); }
+    float getStretchGrainSizeMs() const { return stretchGrainSizeMsValue.load(); }
+
+    // "Speed" here is the duration multiplier -- how many times longer
+    // than its natural length a Stretch pick renders for (originally the
+    // fixed stretchDurationMultiplier = 4.0). Higher values stretch
+    // further (slower-feeling); lower values stay closer to natural
+    // length.
+    static constexpr float defaultStretchSpeedMultiplier = 4.0f;
+    static constexpr float minStretchSpeedMultiplier = 1.0f;
+    static constexpr float maxStretchSpeedMultiplier = 8.0f;
+
+    void setStretchSpeedMultiplier (float multiplier) { stretchSpeedMultiplierValue.store (juce::jlimit (minStretchSpeedMultiplier, maxStretchSpeedMultiplier, multiplier)); }
+    float getStretchSpeedMultiplier() const { return stretchSpeedMultiplierValue.load(); }
 
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
@@ -903,22 +967,56 @@ public:
     // avoids obviously-wrong overlaps.
     void randomizeSequence();
 
-    //=== Sequencer step parameter overrides (Step 45, Sequenced mode only) ===
+    //=== Sequencer step parameter overrides (Step 45/46, Sequenced mode only) ===
     // Each sequencer cell can optionally carry parameter overrides -- a
     // sparse map from parameter name to value, populated only for cells
     // whose style actually uses that parameter. An empty/absent entry
     // means "use the global default," exactly like today. Built
     // generically (a list of parameter names, looked up by index) so
-    // adding more later (filter type, curve shape, Stretch's grain
-    // controls) is just adding entries here, not rebuilding the
-    // mechanism -- v1 exposes only Resonance, and only Filter Down/Up
-    // steps ever actually get a menu offering it (see SequencerGrid).
+    // adding more later is just adding entries here, not rebuilding the
+    // mechanism -- Step 45 proved this with Resonance alone (only Filter
+    // Down/Up steps got a menu offering it); Step 46 adds Filter Type
+    // (Filter Down/Up), Curve Shape (Ping-Pong/Tape Stop), and Grain
+    // Size/Grain Speed (Stretch), each still only offered by the styles
+    // that actually use them -- see getApplicableSequencerCellParameters()
+    // below and SequencerGrid::showParameterMenuForCell().
     // Overrides for a given cell are cleared whenever that cell's own
     // style is set/changed (including cleared to empty) via
     // setSequencerCell(), and wiped entirely whenever the grid itself
     // resets (dimension change) or Clear/Randomize Sequence runs.
-    static constexpr int numSequencerCellParameters = 1;
-    static juce::String getSequencerCellParameterName (int index); // "Resonance"
+    static constexpr int numSequencerCellParameters = 5;
+    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed"
+
+    // Step 46: Resonance/Grain Size/Grain Speed are continuous (drive the
+    // existing slider overlay); Filter Type/Curve Shape instead present
+    // as a small selectable list directly from the right-click menu (see
+    // SequencerGrid::showParameterMenuForCell) -- no slider makes sense
+    // for a handful of named choices. These three describe which is
+    // which and, for the list-style ones, what their options are.
+    static bool isSequencerCellParameterDiscrete (int index);
+    static int getSequencerCellParameterNumOptions (int index); // only meaningful when isSequencerCellParameterDiscrete() is true
+    static juce::String getSequencerCellParameterOptionName (int index, int optionIndex);
+
+    // Continuous parameters' slider range (Step 46) -- generalizes the
+    // slider overlay's value mapping, which used to hardcode Resonance's
+    // own range as the only option. Meaningless (returns a harmless 0/1
+    // placeholder) for discrete parameters, which never reach the slider.
+    static float getSequencerCellParameterMin (int index);
+    static float getSequencerCellParameterMax (int index);
+
+    // Which of the parameters above are relevant to a given cell style
+    // (PlaybackStyle ordinal, matching indexToPlaybackStyle()'s own
+    // numbering, and the same ordinal sequencerGrid itself stores) --
+    // e.g. a Forward step offers none, Filter Down/Up offers Resonance +
+    // Filter Type. An out-of-range/empty-cell style (-1) offers none.
+    static std::vector<int> getApplicableSequencerCellParameters (int style);
+
+    // This parameter's current GLOBAL value (i.e. what applies when no
+    // per-step override exists) -- used as the slider overlay's fallback/
+    // starting value, generalizing the single getFilterSweepResonance()
+    // call Step 45 used directly. Not static (unlike the helpers above)
+    // since it reads live atomic state.
+    float getSequencerCellParameterGlobalValue (int index) const;
 
     bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const;
     float getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const;
@@ -1200,14 +1298,17 @@ private:
     // 41) -- defaults to Forward (index 0).
     std::atomic<int> selectedDrawingStyle { 0 };
 
-    // Stretch (Step 22) character parameters — deliberately fixed, not
-    // exposed in the UI (separate from Pitch Mode's user-facing grain
-    // size/window shape/pitch shift controls, none of which apply here).
-    // Small grains + a hard-edged window make the seams audible; the
-    // duration multiplier is what stretches a pick to 4x its natural
-    // length regardless of tempo, Pitch Mode, or Pitch Shift.
-    static constexpr float stretchCharacterGrainSizeMs = 10.0f; // within the ~8-15ms range asked for
-    static constexpr double stretchDurationMultiplier = 4.0;
+    // Stretch (Step 22) character parameters -- grain size/window shape
+    // stay separate from Pitch Mode's own user-facing grain size/window
+    // shape/pitch shift controls, none of which apply here. Grain size
+    // and the duration multiplier ("speed") were fixed constants until
+    // Step 46 -- see setStretchGrainSizeMs()/getStretchGrainSizeMs() and
+    // setStretchSpeedMultiplier()/getStretchSpeedMultiplier() above, plus
+    // the per-step overrides these feed via currentPickStretchGrainSizeMs/
+    // currentPickStretchSpeedMultiplier below. Small grains + a hard-edged
+    // window (still fixed, not exposed) make the seams audible.
+    std::atomic<float> stretchGrainSizeMsValue { defaultStretchGrainSizeMs };
+    std::atomic<float> stretchSpeedMultiplierValue { defaultStretchSpeedMultiplier };
 
     // Filter Down/Filter Up (Step 29/30) character parameters —
     // filterSweepStartHz/filterSweepEndHz remain deliberately fixed, no
@@ -1233,13 +1334,35 @@ private:
     // character without self-oscillating at this level).
     std::atomic<float> filterSweepResonanceValue { defaultFilterSweepResonance };
 
-    // This pick's own resonance (Step 45), captured once at pick-start by
-    // every trigger mode (Slice Length/Clock always capture the global
-    // value; Sequenced mode captures its step's own override if present,
-    // else the global value) and applied once in the shared pickJustStarted
-    // block below -- audio-thread-only state, same pattern as
-    // currentPickBeatQuantized/currentPickTapeStopDurationHostSamples.
+    // Filter Sweep filter type (Step 46) -- see setFilterSweepFilterType()/
+    // getFilterSweepFilterType() above. 0 = lowpass, matching the filter's
+    // original hardcoded setType() call.
+    std::atomic<int> filterSweepFilterTypeValue { 0 };
+
+    // Curve shape (Step 46) -- see setCurveShape()/getCurveShape() above.
+    // 0 = linear, matching Tape Stop/Ping-Pong's existing behaviour.
+    std::atomic<int> curveShapeValue { 0 };
+
+    // This pick's own resonance/filter type/curve shape (Step 45/46),
+    // captured once at pick-start by every trigger mode (Slice Length/
+    // Clock always capture the global value; Sequenced mode captures its
+    // step's own override if present, else the global value) and applied
+    // once in the shared pickJustStarted block (resonance/filter type) or
+    // consulted directly during rendering (curve shape) below --
+    // audio-thread-only state, same pattern as currentPickBeatQuantized/
+    // currentPickTapeStopDurationHostSamples.
     float currentPickFilterSweepResonance = defaultFilterSweepResonance;
+    int currentPickFilterSweepType = 0;
+    int currentPickCurveShape = 0;
+
+    // This pick's own Stretch grain size/speed (Step 46), same capture
+    // pattern as currentPickFilterSweepResonance just above -- Slice
+    // Length/Clock always capture the global value; Sequenced mode
+    // captures its step's own override if present. Harmless (unused) for
+    // every style but Stretch, same as currentPickTapeStopDurationHostSamples
+    // is for everything but Tape Stop.
+    float currentPickStretchGrainSizeMs = defaultStretchGrainSizeMs;
+    float currentPickStretchSpeedMultiplier = defaultStretchSpeedMultiplier;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision
