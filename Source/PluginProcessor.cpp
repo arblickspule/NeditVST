@@ -282,13 +282,15 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     // added so far.)
     playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
-    // Filter Down/Filter Up (Step 29/30): fixed type/resonance, set once
-    // here rather than per-sample -- only the cutoff frequency needs to
-    // change during playback (see processBlock()). Sample rate/channel
-    // count get set properly in prepareToPlay(); the defaults here are
-    // harmless placeholders until then.
+    // Filter Down/Filter Up (Step 29/30): fixed type, set once here rather
+    // than per-sample -- only the cutoff frequency needs to change during
+    // playback (see processBlock()). Resonance is no longer fixed (Step
+    // 45) -- see currentPickFilterSweepResonance, captured once per pick
+    // and applied in the shared pickJustStarted block instead of here.
+    // Sample rate/channel count get set properly in prepareToPlay(); the
+    // defaults here are harmless placeholders until then.
     filterSweepFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
-    filterSweepFilter.setResonance (filterSweepResonance);
+    filterSweepFilter.setResonance (defaultFilterSweepResonance);
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor() = default;
@@ -564,6 +566,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // own tick system already enforces beat-alignment.
                     currentPickBeatQuantized = false;
 
+                    // Filter Sweep resonance (Step 45) -- Clock mode always
+                    // uses the global value; per-step overrides are
+                    // Sequenced-mode-only.
+                    currentPickFilterSweepResonance = filterSweepResonanceValue.load();
+
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
                         (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
@@ -727,6 +734,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         hasCurrentPick = true;
                         pickJustStarted = true;
                         currentlyPlayingSliceIndexForUI.store (activeRow);
+
+                        // Filter Sweep resonance (Step 45) -- this step's
+                        // own override if it has one, else the global
+                        // value. Looked up unconditionally, harmless for
+                        // non-filter styles (an override is only ever
+                        // populated for cells whose style actually uses
+                        // it, so the lookup naturally falls through to the
+                        // global default there anyway).
+                        currentPickFilterSweepResonance = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Resonance", filterSweepResonanceValue.load());
 
                         // Sequenced mode's own step grid already enforces
                         // beat-alignment for SCHEDULING (every note starts
@@ -895,6 +912,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 pickJustStarted = true;
                 currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
 
+                // Filter Sweep resonance (Step 45) -- Slice Length mode
+                // always uses the global value; per-step overrides are
+                // Sequenced-mode-only.
+                currentPickFilterSweepResonance = filterSweepResonanceValue.load();
+
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
                 currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward
@@ -964,6 +986,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         {
             granularStretcher.reset (currentPosition); // matches whichever mode's active; harmless if unused this pick
             filterSweepFilter.reset(); // Step 29 -- no bleed from a previous pick; harmless if unused this pick
+            filterSweepFilter.setResonance (currentPickFilterSweepResonance); // Step 45 -- this pick's own value (global, or Sequenced mode's per-step override)
         }
 
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
@@ -1521,6 +1544,7 @@ void SlicerAudioProcessor::resetSequencerGrid()
     const int rows = getSequencerNumRows();
     const int columns = getSequencerNumSteps();
     sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), -1);
+    sequencerCellParameterOverrides.clear(); // Step 45 -- dimensions just changed, old flat indices are meaningless now
 }
 
 int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const
@@ -1556,11 +1580,21 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, int style)
         // is true at the INPUT level the instant a pattern is drawn, not
         // just something the playback engine happens to enforce
         // afterward -- and it's what avoids needing a tie-break rule
-        // entirely at playback time.
+        // entirely at playback time. Their parameter overrides go with
+        // them (Step 45) -- a cell that's no longer active has no
+        // meaningful style-specific parameters left to override.
         for (int r = 0; r < rows; ++r)
+        {
             sequencerGrid[(size_t) (r * columns + column)] = -1;
+            sequencerCellParameterOverrides.erase (r * columns + column);
+        }
     }
 
+    // This cell's own style is changing (or clearing) too (Step 45) --
+    // always drop its overrides first, so re-painting the same physical
+    // cell later never resurrects a stale override left over from a
+    // completely different style.
+    sequencerCellParameterOverrides.erase (row * columns + column);
     sequencerGrid[(size_t) (row * columns + column)] = style;
 }
 
@@ -1575,6 +1609,71 @@ void SlicerAudioProcessor::clearSequence()
         resetSequencerGrid();
 
     std::fill (sequencerGrid.begin(), sequencerGrid.end(), -1);
+    sequencerCellParameterOverrides.clear(); // Step 45
+}
+
+juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
+{
+    if (index == 0)
+        return "Resonance";
+
+    return {};
+}
+
+bool SlicerAudioProcessor::getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return false;
+
+    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
+    return it != sequencerCellParameterOverrides.end() && it->second.count (parameterName) > 0;
+}
+
+float SlicerAudioProcessor::getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return fallbackValue;
+
+    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
+
+    if (it == sequencerCellParameterOverrides.end())
+        return fallbackValue;
+
+    const auto valueIt = it->second.find (parameterName);
+    return valueIt != it->second.end() ? valueIt->second : fallbackValue;
+}
+
+void SlicerAudioProcessor::setSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float value)
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return;
+
+    sequencerCellParameterOverrides[row * columns + column][parameterName] = value;
+}
+
+bool SlicerAudioProcessor::getSequencerCellHasAnyParameterOverride (int row, int column) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return false;
+
+    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
+    return it != sequencerCellParameterOverrides.end() && ! it->second.empty();
 }
 
 void SlicerAudioProcessor::randomizeSequence()

@@ -3,6 +3,7 @@
 #include <JuceHeader.h>
 #include "TransientDetector.h"
 #include "GranularStretcher.h"
+#include <map>
 
 //==============================================================================
 // STEP 6/8: transport-synced generative playback — no MIDI, no keyboard.
@@ -626,6 +627,25 @@ public:
     void setFilterSweepScope (FilterSweepScope scope) { filterSweepScope.store (scope); }
     FilterSweepScope getFilterSweepScope() const { return filterSweepScope.load(); }
 
+    //=== Filter Sweep resonance (Step 45) ===
+    // Was a compile-time constant (filterSweepResonance = 2.0) until now
+    // -- turned into a stored, adjustable value so Sequenced mode's
+    // per-step overrides (see the sequencer step parameter section below)
+    // have something to override, and so a future global slider for
+    // Slice Length/Clock modes can read/write the same value. Default
+    // matches the original hardcoded constant exactly, so nothing changes
+    // for existing behavior until either mechanism actually touches it.
+    static constexpr float defaultFilterSweepResonance = 2.0f;
+    static constexpr float minFilterSweepResonance = 0.5f;
+    static constexpr float maxFilterSweepResonance = 10.0f;
+
+    void setFilterSweepResonance (float resonance)
+    {
+        filterSweepResonanceValue.store (juce::jlimit (minFilterSweepResonance, maxFilterSweepResonance, resonance));
+    }
+
+    float getFilterSweepResonance() const { return filterSweepResonanceValue.load(); }
+
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
     // rendered, never when slices get picked/retriggered or how they're
@@ -882,6 +902,31 @@ public:
     // aware placement, not a "smart" generative algorithm -- it just
     // avoids obviously-wrong overlaps.
     void randomizeSequence();
+
+    //=== Sequencer step parameter overrides (Step 45, Sequenced mode only) ===
+    // Each sequencer cell can optionally carry parameter overrides -- a
+    // sparse map from parameter name to value, populated only for cells
+    // whose style actually uses that parameter. An empty/absent entry
+    // means "use the global default," exactly like today. Built
+    // generically (a list of parameter names, looked up by index) so
+    // adding more later (filter type, curve shape, Stretch's grain
+    // controls) is just adding entries here, not rebuilding the
+    // mechanism -- v1 exposes only Resonance, and only Filter Down/Up
+    // steps ever actually get a menu offering it (see SequencerGrid).
+    // Overrides for a given cell are cleared whenever that cell's own
+    // style is set/changed (including cleared to empty) via
+    // setSequencerCell(), and wiped entirely whenever the grid itself
+    // resets (dimension change) or Clear/Randomize Sequence runs.
+    static constexpr int numSequencerCellParameters = 1;
+    static juce::String getSequencerCellParameterName (int index); // "Resonance"
+
+    bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const;
+    float getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const;
+    void setSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float value);
+
+    // True if the cell has ANY parameter override at all -- drives the
+    // small corner marker SequencerGrid draws on customized steps.
+    bool getSequencerCellHasAnyParameterOverride (int row, int column) const;
 
     // Lock-free copy of the currently active step column, for the UI's
     // playhead indicator on the sequencer grid -- same pattern as
@@ -1144,6 +1189,13 @@ private:
     std::atomic<int> patternLengthBarsIndex { 0 }; // default: 1 bar
     std::vector<int> sequencerGrid;
 
+    // Sequencer step parameter overrides (Step 45) -- sparse, keyed by the
+    // same flat index (row*getSequencerNumSteps()+column) sequencerGrid
+    // itself uses. A cell only appears here at all once it has at least
+    // one override; absent means "use the global default" for every
+    // parameter. Guarded by sampleLock, same lifecycle as sequencerGrid.
+    std::map<int, std::map<juce::String, float>> sequencerCellParameterOverrides;
+
     // Style Palette's persistent "currently selected drawing style" (Step
     // 41) -- defaults to Forward (index 0).
     std::atomic<int> selectedDrawingStyle { 0 };
@@ -1158,23 +1210,36 @@ private:
     static constexpr double stretchDurationMultiplier = 4.0;
 
     // Filter Down/Filter Up (Step 29/30) character parameters —
-    // deliberately fixed, no exposed controls, same "defer the knob until
-    // proven necessary" pattern as Stretch's grain size above.
-    // filterSweepStartHz/filterSweepEndHz are Filter Down's open->closed
-    // endpoints (the classic breakbeat/DnB "filter close"); Filter Up
-    // just swaps which endpoint it starts/ends at (see processBlock()) --
-    // no separate constants needed. Resonance ~2.0 approximates the
-    // requested Q~2-3 range in this filter class's own "resonance"
-    // parameter (per juce::dsp::StateVariableTPTFilter's docs, standard
-    // 12dB/octave — i.e. no added resonance — is 1/sqrt(2); higher values
-    // add character without self-oscillating at this level). One shared
-    // filter instance is fine — Playback Style is a single mutually-
-    // exclusive pick per pick, so it's never touched by more than one
-    // pick's processing at a time.
+    // filterSweepStartHz/filterSweepEndHz remain deliberately fixed, no
+    // exposed controls, same "defer the knob until proven necessary"
+    // pattern as Stretch's grain size above. filterSweepStartHz/
+    // filterSweepEndHz are Filter Down's open->closed endpoints (the
+    // classic breakbeat/DnB "filter close"); Filter Up just swaps which
+    // endpoint it starts/ends at (see processBlock()) -- no separate
+    // constants needed. Resonance is no longer fixed -- see
+    // filterSweepResonanceValue below (Step 45). One shared filter
+    // instance is fine — Playback Style is a single mutually-exclusive
+    // pick per pick, so it's never touched by more than one pick's
+    // processing at a time.
     static constexpr float filterSweepStartHz = 9000.0f;
     static constexpr float filterSweepEndHz = 250.0f;
-    static constexpr float filterSweepResonance = 2.0f;
     juce::dsp::StateVariableTPTFilter<float> filterSweepFilter;
+
+    // Filter Sweep resonance (Step 45) -- see setFilterSweepResonance()/
+    // getFilterSweepResonance() above. ~2.0 approximates the requested
+    // Q~2-3 range in this filter class's own "resonance" parameter (per
+    // juce::dsp::StateVariableTPTFilter's docs, standard 12dB/octave --
+    // i.e. no added resonance -- is 1/sqrt(2); higher values add
+    // character without self-oscillating at this level).
+    std::atomic<float> filterSweepResonanceValue { defaultFilterSweepResonance };
+
+    // This pick's own resonance (Step 45), captured once at pick-start by
+    // every trigger mode (Slice Length/Clock always capture the global
+    // value; Sequenced mode captures its step's own override if present,
+    // else the global value) and applied once in the shared pickJustStarted
+    // block below -- audio-thread-only state, same pattern as
+    // currentPickBeatQuantized/currentPickTapeStopDurationHostSamples.
+    float currentPickFilterSweepResonance = defaultFilterSweepResonance;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision

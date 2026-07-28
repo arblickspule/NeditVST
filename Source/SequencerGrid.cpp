@@ -127,6 +127,76 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
     return juce::jmin (barLength, numColumns - startColumn);
 }
 
+juce::Rectangle<int> SequencerGrid::getParameterSliderBounds (int row, int column, int numRows, int numColumns) const
+{
+    const int columnWidth = getColumnWidth();
+    const int screenY = (numRows - 1 - row) * rowHeight;
+    const int cellCenterX = column * columnWidth + columnWidth / 2;
+
+    // Fixed pixel width regardless of columnWidth (Step 45) -- a single
+    // step is usually far too narrow to drag precisely, especially at
+    // higher step resolutions/pattern lengths, so this is drawn "over
+    // that step" in the sense of being centred there, not literally
+    // constrained to its own cell width.
+    constexpr int sliderWidth = 120;
+    const int maxX = juce::jmax (0, numColumns * columnWidth - sliderWidth);
+    const int sliderX = juce::jlimit (0, maxX, cellCenterX - sliderWidth / 2);
+
+    return { sliderX, screenY, sliderWidth, rowHeight };
+}
+
+void SequencerGrid::updateEditingValueFromMouseX (int mouseX, const juce::Rectangle<int>& sliderBounds)
+{
+    const float t = sliderBounds.getWidth() > 0
+        ? juce::jlimit (0.0f, 1.0f, (float) (mouseX - sliderBounds.getX()) / (float) sliderBounds.getWidth())
+        : 0.0f;
+
+    // v1 simplification (Step 45): with only one parameter (Resonance)
+    // ever offered, its range lives directly on SlicerAudioProcessor.
+    // Generalizing this to a per-parameter range lookup is future work
+    // for whenever a second parameter with a different range actually
+    // gets added.
+    const float value = SlicerAudioProcessor::minFilterSweepResonance
+                       + t * (SlicerAudioProcessor::maxFilterSweepResonance - SlicerAudioProcessor::minFilterSweepResonance);
+
+    processor.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, value);
+}
+
+void SequencerGrid::showParameterMenuForCell (int row, int column)
+{
+    const int style = processor.getSequencerCellStyle (row, column);
+
+    // Only Filter Down/Up steps offer parameter overrides for now (Step
+    // 45, v1) -- style indices 4/5 match PlaybackStyle's own ordinal (see
+    // PluginProcessor.h). Right-clicking any other cell is a no-op.
+    if (style != 4 && style != 5)
+        return;
+
+    juce::PopupMenu menu;
+
+    for (int i = 0; i < SlicerAudioProcessor::numSequencerCellParameters; ++i)
+        menu.addItem (i + 1, SlicerAudioProcessor::getSequencerCellParameterName (i));
+
+    // Async, not the blocking show() -- this is a juce::Component's own
+    // mouseDown handler, and a modal menu call there would reenter the
+    // message loop from inside event dispatch.
+    menu.showMenuAsync (juce::PopupMenu::Options(), [this, row, column] (int result)
+    {
+        if (result <= 0)
+            return; // dismissed without choosing a parameter
+
+        // Right-clicking a step that already has a marker re-opens the
+        // slider at its existing override rather than resetting to
+        // default (Step 45) -- this needs no special handling here: the
+        // slider's own paint() below always reads the CURRENT override
+        // (or the global default if none exists) live, every repaint.
+        editingRow = row;
+        editingColumn = column;
+        editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (result - 1);
+        repaint();
+    });
+}
+
 void SequencerGrid::paint (juce::Graphics& g)
 {
     const int numRows = processor.getSequencerNumRows();
@@ -196,6 +266,62 @@ void SequencerGrid::paint (juce::Graphics& g)
             g.fillRect (bar.reduced (1));
             g.setColour (colour);
             g.drawRect (bar.reduced (1), 1.0f);
+
+            // Small triangle marker (Step 45) in the cell's own top-right
+            // corner -- the STARTING cell, not smeared across the whole
+            // bar -- whenever it has at least one parameter override.
+            if (processor.getSequencerCellHasAnyParameterOverride (row, col))
+            {
+                const float markerSize = (float) juce::jmin (columnWidth, rowHeight) * 0.4f;
+                const float right = (float) (col * columnWidth + columnWidth) - 1.0f;
+                const float top = (float) screenY + 1.0f;
+
+                juce::Path marker;
+                marker.addTriangle (right - markerSize, top, right, top, right, top + markerSize);
+                g.setColour (juce::Colours::white);
+                g.fillPath (marker);
+            }
+        }
+    }
+
+    // Parameter-editing slider overlay (Step 45) -- drawn last, on top of
+    // everything else, while a right-click's chosen parameter is being
+    // adjusted (or just sitting there showing its current value, before
+    // any drag has started).
+    if (editingRow >= 0)
+    {
+        if (editingRow < numRows && editingColumn >= 0 && editingColumn < numColumns)
+        {
+            const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
+            const float currentValue = processor.getSequencerCellParameterOverride (
+                editingRow, editingColumn, editingParameterName, processor.getFilterSweepResonance());
+
+            const float range = SlicerAudioProcessor::maxFilterSweepResonance - SlicerAudioProcessor::minFilterSweepResonance;
+            const float t = range > 0.0f
+                ? juce::jlimit (0.0f, 1.0f, (currentValue - SlicerAudioProcessor::minFilterSweepResonance) / range)
+                : 0.0f;
+
+            g.setColour (juce::Colours::black.withAlpha (0.9f));
+            g.fillRect (sliderBounds);
+
+            const auto fillBounds = sliderBounds.withWidth ((int) ((float) sliderBounds.getWidth() * t)).reduced (2);
+            g.setColour (juce::Colours::cyan);
+            g.fillRect (fillBounds);
+
+            g.setColour (juce::Colours::white);
+            g.drawRect (sliderBounds, 1);
+            g.setFont (10.0f);
+            g.drawFittedText (editingParameterName + ": " + juce::String (currentValue, 2),
+                               sliderBounds.reduced (2), juce::Justification::centred, 1);
+        }
+        else
+        {
+            // Defensive -- grid dimensions shrank out from under the
+            // editor (e.g. Step resolution/Pattern length changed while
+            // the slider was open). Can't repaint() from inside paint()
+            // itself; the next timer tick's own repaint will simply stop
+            // drawing an out-of-range overlay from here on.
+            editingRow = -1;
         }
     }
 }
@@ -204,6 +330,40 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 {
     if (processor.getSequencerNumRows() <= 0 || processor.getSequencerNumSteps() <= 0)
         return;
+
+    // Right-click / Cmd-Ctrl-click (Step 45) -- a completely separate
+    // gesture from ordinary left-click toggling, checked first so it
+    // never falls through to the toggle logic below.
+    if (event.mods.isPopupMenu())
+    {
+        showParameterMenuForCell (getRowIndexAtY (event.y), getColumnIndexAtX (event.x));
+        return;
+    }
+
+    // While the parameter slider overlay is open (Step 45), this whole
+    // gesture belongs to it: a click inside its bounds starts adjusting
+    // the value; a click anywhere else just dismisses the overlay without
+    // changing anything, rather than also toggling whatever cell was
+    // underneath it.
+    if (editingRow >= 0)
+    {
+        const int numRows = processor.getSequencerNumRows();
+        const int numColumns = processor.getSequencerNumSteps();
+        const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
+
+        if (sliderBounds.contains (event.x, event.y))
+        {
+            updateEditingValueFromMouseX (event.x, sliderBounds);
+            sliderDragging = true;
+        }
+        else
+        {
+            editingRow = -1;
+        }
+
+        repaint();
+        return;
+    }
 
     dragRow = getRowIndexAtY (event.y);
     const int col = getColumnIndexAtX (event.x);
@@ -223,6 +383,16 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 
 void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 {
+    if (sliderDragging)
+    {
+        const int numRows = processor.getSequencerNumRows();
+        const int numColumns = processor.getSequencerNumSteps();
+        const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
+        updateEditingValueFromMouseX (event.x, sliderBounds);
+        repaint();
+        return;
+    }
+
     if (dragRow < 0)
         return;
 
@@ -235,5 +405,12 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 
 void SequencerGrid::mouseUp (const juce::MouseEvent&)
 {
+    if (sliderDragging)
+    {
+        sliderDragging = false;
+        editingRow = -1; // Step 45 -- slider closes automatically on release
+        repaint();
+    }
+
     dragRow = -1;
 }

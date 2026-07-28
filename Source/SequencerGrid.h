@@ -52,7 +52,24 @@
     Self-sizing: polls the processor's current row/column counts on a
     timer (same 30fps live-update pattern WaveformDisplay already uses)
     and resizes itself whenever they (or the target width) change. The
-    same timer also drives the live playhead column highlight. */
+    same timer also drives the live playhead column highlight.
+
+    Step parameter editing (Step 45, Flow A, v1): right-click (or
+    Cmd/Ctrl-click) an active Filter Down/Up step to pop up a menu of
+    available parameters (just "Resonance" for now, but the mechanism is
+    generic -- adding more later is just adding entries to
+    SlicerAudioProcessor::getSequencerCellParameterName()). Selecting one
+    replaces the menu with a horizontal slider overlay drawn over that
+    step; a left-click-drag on the slider adjusts the value live, writing
+    into that cell's parameter-override map, and releasing the mouse
+    closes the slider automatically. A small triangle marker in the
+    corner of any cell with at least one override stays visible
+    afterward. While the slider overlay is open, it captures the WHOLE
+    next left-click gesture (whether that lands on the slider or
+    elsewhere, which just cancels/dismisses it) -- normal cell
+    click/drag-to-toggle is otherwise completely unaffected, since
+    right-click is a distinct gesture juce::MouseEvent::mods.isPopupMenu()
+    identifies before any of the ordinary toggle logic runs. */
 class SequencerGrid : public juce::Component,
                        private juce::Timer
 {
@@ -82,6 +99,11 @@ private:
     // `row` should visually span -- see the class doc comment above.
     int computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const;
 
+    // Step parameter editing (Step 45).
+    void showParameterMenuForCell (int row, int column);
+    juce::Rectangle<int> getParameterSliderBounds (int row, int column, int numRows, int numColumns) const;
+    void updateEditingValueFromMouseX (int mouseX, const juce::Rectangle<int>& sliderBounds);
+
     SlicerAudioProcessor& processor;
 
     static constexpr int rowHeight = 16;
@@ -100,6 +122,15 @@ private:
     // thing" UX as before, just style-aware now instead of a plain toggle.
     int dragRow = -1;
     int dragTargetStyle = -1;
+
+    // Step parameter editing state (Step 45) -- editingRow is -1 when no
+    // slider overlay is showing. Set once a parameter is chosen from the
+    // right-click menu; cleared (closing the overlay) on mouse release or
+    // a click that misses the slider's own bounds.
+    int editingRow = -1;
+    int editingColumn = -1;
+    juce::String editingParameterName;
+    bool sliderDragging = false;
 
     // Self-sizing (see class doc comment) -- only calls setSize() when
     // the dimensions actually change, not every tick.
