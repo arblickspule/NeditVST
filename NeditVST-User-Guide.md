@@ -152,10 +152,97 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
   loops and breaks. Non-rhythmic material (vocals, arbitrary sound
   collages) isn't what the tempo-sync engine is designed for yet.
 - VST3 only — no AU.
-- Builds are unsigned — expect a Gatekeeper (Mac) or SmartScreen
-  (Windows) warning on first open. Safe to proceed past it.
+- Builds are unsigned (see troubleshooting below if it doesn't show up
+  in your DAW).
 - Sequencer currently supports up to 32 rows (slices) and is
   single-voice (one thing plays at a time, even across rows).
+
+## 9. Troubleshooting: plugin doesn't show up (Mac)
+
+This build isn't code-signed yet, so macOS often blocks it silently
+rather than showing a clear warning — the plugin just won't appear in
+your DAW's plugin list at all, with no obvious explanation. If that's
+what's happening:
+
+1. **Check the file actually made it to the right place.** The download
+   comes as a `.zip` — make sure you've actually unzipped it, and that
+   the resulting `NeditVST.vst3` (not the zip itself, and not an extra
+   folder from unzipping) is sitting directly inside:
+   `~/Library/Audio/Plug-Ins/VST3/`
+2. **Clear the quarantine flag.** Open **Terminal** (Spotlight search
+   "Terminal") and paste this exactly, then press Return:
+   ```
+   xattr -cr ~/Library/Audio/Plug-Ins/VST3/NeditVST.vst3
+   ```
+3. **Fully quit and reopen your DAW** — not just a plugin rescan, an
+   actual quit and relaunch.
+4. Still not showing? Trigger a manual plugin rescan in your DAW's
+   preferences (in Ableton Live: Preferences → Plug-Ins).
+
+If it *does* show a warning dialog when you first try to load it rather
+than just not appearing, that's Gatekeeper — just confirm you trust it
+and proceed; that's expected for an unsigned build and isn't harmful.
+
+## 10. Building from source
+
+If you'd rather build it yourself than trust a downloaded binary — or if
+the fixes above didn't work — the repo builds the same way on all three
+platforms. **Building locally on Mac also sidesteps the Gatekeeper issue
+entirely**, since a plugin built on your own machine is automatically
+trusted by that same machine.
+
+**You'll need first:** [Git](https://git-scm.com), [CMake](https://cmake.org/download)
+(3.22+), and a C++ compiler for your platform (see below). The first
+build downloads and compiles JUCE itself from scratch, so expect it to
+take 10–20 minutes — later builds are much faster.
+
+### Mac
+
+```
+xcode-select --install          # if you don't already have Xcode's command-line tools
+
+git clone https://github.com/nedrush/NeditVST.git
+cd NeditVST
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+The built plugin lands at `build/NeditVST_artefacts/Release/VST3/NeditVST.vst3`
+— copy that into `~/Library/Audio/Plug-Ins/VST3/`.
+
+### Windows
+
+Install **Visual Studio Community** (free) with the **"Desktop
+development with C++"** workload selected during setup, plus Git and
+CMake.
+
+```
+git clone https://github.com/nedrush/NeditVST.git
+cd NeditVST
+cmake -B build
+cmake --build build --config Release
+```
+
+Copy the resulting `NeditVST.vst3` from `build\NeditVST_artefacts\Release\VST3\`
+into `C:\Program Files\Common Files\VST3\`.
+
+### Linux
+
+```
+sudo apt-get update
+sudo apt-get install -y build-essential cmake git \
+    libasound2-dev libjack-dev ladspa-sdk libcurl4-openssl-dev \
+    libfreetype-dev libx11-dev libxcomposite-dev libxcursor-dev \
+    libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
+    libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+git clone https://github.com/nedrush/NeditVST.git
+cd NeditVST
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+Copy the built `NeditVST.vst3` into `~/.vst3/`.
 
 ---
 
