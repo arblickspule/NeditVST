@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 3.22)
 
+# Pin an explicit minimum macOS version (must be set before project()) so
+# CI builds target a consistent baseline regardless of whichever macOS
+# version GitHub's hosted runners happen to default to -- rather than
+# implicitly matching whatever OS the build machine is running, which can
+# silently drift out from under us. macOS 11 (Big Sur) is a reasonably
+# old-but-modern floor; only honoured on Apple platforms, harmless no-op
+# elsewhere. Left overridable via -DCMAKE_OSX_DEPLOYMENT_TARGET=... on the
+# command line.
+if(NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS deployment target")
+endif()
+
 project(NeditVST VERSION 1.0.0)
 
 set(CMAKE_CXX_STANDARD 20)
