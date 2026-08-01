@@ -86,7 +86,29 @@
     elsewhere, which just cancels/dismisses it) -- normal cell
     click/drag-to-toggle is otherwise completely unaffected, since
     right-click is a distinct gesture juce::MouseEvent::mods.isPopupMenu()
-    identifies before any of the ordinary toggle logic runs. */
+    identifies before any of the ordinary toggle logic runs.
+
+    Step-extension (Pass 1, mechanism only): Shift+drag from an active
+    step's own right edge (within edgeGrabPx of it -- findExtendTargetAt())
+    grows it live, purely as a local preview (extendRow/extendStartColumn/
+    extendLiveLengthSteps) until mouseUp commits it via
+    SlicerAudioProcessor::setSequencerCellExtendedLengthSteps(), the same
+    "grab, drag, release commits" shape the parameter slider overlay above
+    already uses. Dragging can't shrink below the step's own natural length
+    (SlicerAudioProcessor::getSequencerNaturalLengthSteps()) -- this pass is
+    growth-only, per its own spec. Committing clears any OTHER row's cells
+    the newly-claimed span now covers, same per-column monophony rule
+    ordinary click-drawing already enforces (see
+    SlicerAudioProcessor::setSequencerCell()). The bar itself just renders
+    across the full extended span in the cell's existing style colour -- no
+    separate visual treatment for the natural-vs-extended portion in this
+    pass. Shift-clicking anywhere that ISN'T near an active step's right
+    edge is a no-op, rather than falling through to the ordinary
+    toggle-draw gesture below. Tape Stop's decel duration in Sequenced mode
+    (PluginProcessor::processBlock()) is driven by this exact same declared
+    length (SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps()),
+    so the bar this class renders and the decel time actually heard can
+    never disagree. */
 class SequencerGrid : public juce::Component,
                        private juce::Timer
 {
@@ -113,8 +135,18 @@ private:
     int getColumnWidth() const; // targetWidth / numColumns, clamped to a sane minimum
 
     // How many subsequent columns (from startColumn, inclusive) a note in
-    // `row` should visually span -- see the class doc comment above.
+    // `row` should visually span -- see the class doc comment above. Reads
+    // its desired (pre-conflict-clamp) length via
+    // SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps(), shared
+    // with the audio thread's Tape Stop duration calculation so the two
+    // can never disagree.
     int computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const;
+
+    // Step-extension (Pass 1) -- true (with outRow/outStartColumn set) if
+    // (x, y) lands within edgeGrabPx of an active step's own right edge
+    // (its CURRENT rendered bar, natural or already-extended) in whichever
+    // row y falls in.
+    bool findExtendTargetAt (int x, int y, int& outRow, int& outStartColumn) const;
 
     // Step parameter editing (Step 45/46).
     void showParameterMenuForCell (int row, int column);
@@ -155,6 +187,23 @@ private:
     int editingColumn = -1;
     juce::String editingParameterName;
     bool sliderDragging = false;
+
+    // Step-extension drag state (Pass 1) -- extendRow is -1 when no
+    // extension gesture is in progress. extendStartColumn is the step
+    // being grown (its style/starting column never change during the
+    // gesture); extendLiveLengthSteps is the live, uncommitted preview
+    // length paint() renders for that one cell in place of the normal
+    // computeBarLengthInSteps() result, committed to the processor only on
+    // mouseUp.
+    int extendRow = -1;
+    int extendStartColumn = -1;
+    int extendLiveLengthSteps = 1;
+
+    // Pixel tolerance for grabbing an active step's right edge to start a
+    // Shift+drag extension -- generous enough to grab reliably without
+    // needing pixel-perfect precision, small enough not to eat into
+    // ordinary click-drawing right next to it.
+    static constexpr int edgeGrabPx = 6;
 
     // Self-sizing (see class doc comment) -- only calls setSize() when
     // the dimensions actually change, not every tick.

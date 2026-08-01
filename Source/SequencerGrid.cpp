@@ -115,32 +115,22 @@ int SequencerGrid::getColumnIndexAtX (int x) const
 
 int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const
 {
-    const Slice slice = processor.getSlice (row);
-    const int sliceLength = slice.lengthInSamples();
-    const double sampleRate = processor.getSampleSampleRate();
-    const double originalBpm = processor.getCalculatedOriginalBpm();
+    // Natural (Step-resolution-quantized) length, or the Step-extension
+    // override if longer -- read from the processor rather than computed
+    // locally, so this bar and Tape Stop's decel duration in Sequenced
+    // mode (PluginProcessor::processBlock(), via the same
+    // getSequencerCellDeclaredLengthSteps()) can never disagree.
+    const int desiredSteps = processor.getSequencerCellDeclaredLengthSteps (row, startColumn);
 
-    int naturalSteps = 1;
-
-    if (sliceLength > 0 && sampleRate > 0.0 && originalBpm > 0.0)
-    {
-        const double sliceSeconds = (double) sliceLength / sampleRate;
-        const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
-        const double stepBeats = SlicerAudioProcessor::getNoteValueBeats (processor.getStepResolutionIndex());
-
-        if (stepBeats > 0.0)
-            naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
-    }
-
-    // Cut short at whichever comes first: the natural length above, or
+    // Cut short at whichever comes first: the desired length above, or
     // the next active cell anywhere in the grid (any row, not just this
     // one) -- structural monophony means THAT is what will actually cut
     // this note off at playback, so the piano roll always shows exactly
     // what will be heard. No visual wrap-around past the grid's right
     // edge for v1 -- simply clamped there instead.
-    int barLength = naturalSteps;
+    int barLength = desiredSteps;
 
-    for (int offset = 1; offset < naturalSteps; ++offset)
+    for (int offset = 1; offset < desiredSteps; ++offset)
     {
         const int checkColumn = startColumn + offset;
 
@@ -166,6 +156,37 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
     }
 
     return juce::jmin (barLength, numColumns - startColumn);
+}
+
+bool SequencerGrid::findExtendTargetAt (int x, int y, int& outRow, int& outStartColumn) const
+{
+    const int numRows = processor.getSequencerNumRows();
+    const int numColumns = processor.getSequencerNumSteps();
+
+    if (numRows <= 0 || numColumns <= 0)
+        return false;
+
+    const int row = getRowIndexAtY (y);
+    const int columnWidth = getColumnWidth();
+
+    for (int col = 0; col < numColumns; ++col)
+    {
+        if (processor.getSequencerCellStyle (row, col) < 0)
+            continue;
+
+        const int barLength = computeBarLengthInSteps (row, col, numRows, numColumns);
+        const int rightEdgeX = (col + barLength) * columnWidth;
+        const int dx = x - rightEdgeX;
+
+        if ((dx < 0 ? -dx : dx) <= edgeGrabPx)
+        {
+            outRow = row;
+            outStartColumn = col;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 juce::Rectangle<int> SequencerGrid::getParameterSliderBounds (int row, int column, int numRows, int numColumns) const
@@ -374,7 +395,13 @@ void SequencerGrid::paint (juce::Graphics& g)
             if (style < 0)
                 continue;
 
-            const int barLengthSteps = computeBarLengthInSteps (row, col, numRows, numColumns);
+            // Step-extension (Pass 1): while this exact cell is the target
+            // of an in-progress Shift+drag, show the live uncommitted
+            // preview length instead of the processor's still-unchanged
+            // stored value.
+            const int barLengthSteps = (row == extendRow && col == extendStartColumn)
+                ? extendLiveLengthSteps
+                : computeBarLengthInSteps (row, col, numRows, numColumns);
             const juce::Rectangle<int> bar (col * columnWidth, screenY, barLengthSteps * columnWidth, rowHeight);
             const auto colour = PlaybackStylePalette::getStyleColour (style);
 
@@ -504,6 +531,25 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
         return;
     }
 
+    // Step-extension (shift+drag, Pass 1) -- a completely separate gesture
+    // from ordinary click-drag toggling, same "checked first, never falls
+    // through" pattern the right-click/slider-overlay branches above
+    // already use. Missing the edge is a no-op rather than falling through
+    // to an accidental toggle underneath the grab attempt.
+    if (event.mods.isShiftDown())
+    {
+        int row = -1, startColumn = -1;
+
+        if (findExtendTargetAt (event.x, event.y, row, startColumn))
+        {
+            extendRow = row;
+            extendStartColumn = startColumn;
+            extendLiveLengthSteps = computeBarLengthInSteps (row, startColumn, processor.getSequencerNumRows(), processor.getSequencerNumSteps());
+        }
+
+        return;
+    }
+
     dragRow = getRowIndexAtY (event.y);
     const int col = getColumnIndexAtX (event.x);
     const int selectedStyle = processor.getSelectedDrawingStyle();
@@ -522,6 +568,24 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 
 void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 {
+    if (extendRow >= 0)
+    {
+        const int numColumns = processor.getSequencerNumSteps();
+        const int columnWidth = getColumnWidth();
+        const int naturalSteps = processor.getSequencerNaturalLengthSteps (extendRow);
+
+        // Growth-only for this pass (per its own spec) -- dragging left of
+        // the step's own natural length just holds it there rather than
+        // shrinking below it.
+        const int rawColumn = event.x / columnWidth;
+        const int endColumnInclusive = juce::jlimit (extendStartColumn, numColumns - 1, rawColumn);
+        const int draggedLength = endColumnInclusive - extendStartColumn + 1;
+        extendLiveLengthSteps = juce::jmax (naturalSteps, draggedLength);
+
+        repaint();
+        return;
+    }
+
     if (sliderDragging)
     {
         const int numRows = processor.getSequencerNumRows();
@@ -544,6 +608,19 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 
 void SequencerGrid::mouseUp (const juce::MouseEvent&)
 {
+    if (extendRow >= 0)
+    {
+        // Release commits (Pass 1) -- the whole gesture up to now was a
+        // local, uncommitted preview only; this is the one point it
+        // actually reaches the processor (and, in turn, clears any other
+        // row's conflicting cells the newly-claimed span now covers).
+        processor.setSequencerCellExtendedLengthSteps (extendRow, extendStartColumn, extendLiveLengthSteps);
+        extendRow = -1;
+        extendStartColumn = -1;
+        repaint();
+        return;
+    }
+
     if (sliderDragging)
     {
         sliderDragging = false;

@@ -936,6 +936,41 @@ public:
     int getSequencerCellStyle (int row, int column) const; // -1 if empty or out-of-range
     void setSequencerCell (int row, int column, int style); // style -1 clears; 0-5 sets that PlaybackStyle
 
+    // Step-extension (Pass 1, mechanism only) -- an optional per-cell
+    // "extended length in steps" override, on top of the style set by
+    // setSequencerCell() above. Unset (0) means "use today's behaviour" --
+    // the step's natural slice length, exactly as if this feature didn't
+    // exist. Set via Shift+drag from an active step's own right edge in
+    // SequencerGrid (see its class doc comment); growing into columns
+    // another row already occupies clears those conflicting cells, the
+    // exact same per-column monophony rule setSequencerCell() already
+    // enforces for a plain single-cell draw (see its own implementation
+    // just below) -- just applied across the whole newly-claimed span
+    // instead of one column. Only an already-active cell can be extended;
+    // a no-op on an empty one. Cleared automatically whenever this cell's
+    // own style changes (including cleared) via setSequencerCell(), or the
+    // grid resets/wipes -- same lifecycle as the parameter-override map
+    // above.
+    int getSequencerCellExtendedLengthSteps (int row, int column) const; // 0 if unset/empty/out-of-range
+    void setSequencerCellExtendedLengthSteps (int row, int column, int lengthSteps); // clamped into [1, numSteps - column]; no-op on an empty cell
+
+    // `row`'s slice, expressed in steps at the current Step-resolution --
+    // i.e. its natural playback length quantized to the sequencer grid,
+    // the same calculation SequencerGrid's piano-roll bar has always
+    // started from. Shared here (not just computed in the UI) so the audio
+    // thread can read the exact same value -- see
+    // getSequencerCellDeclaredLengthSteps() below.
+    int getSequencerNaturalLengthSteps (int row) const;
+
+    // This cell's own declared length in steps: its Step-extension
+    // override if longer than natural, else natural -- the SAME value
+    // SequencerGrid's piano-roll bar starts from before that bar gets cut
+    // short for monophony (the next active cell elsewhere in the grid).
+    // Tape Stop's decel duration in Sequenced mode is driven directly by
+    // this (converted to host samples), deliberately NOT by how much
+    // pattern happens to follow the step -- see its use in processBlock().
+    int getSequencerCellDeclaredLengthSteps (int row, int column) const;
+
     // Currently selected drawing style (Step 41) -- persistent UI state
     // for the Style Palette: whichever swatch was last clicked is what
     // subsequent clicks/drags on the grid paint with. Defaults to Forward
@@ -1317,6 +1352,13 @@ private:
     // one override; absent means "use the global default" for every
     // parameter. Guarded by sampleLock, same lifecycle as sequencerGrid.
     std::map<int, std::map<juce::String, float>> sequencerCellParameterOverrides;
+
+    // Step-extension (Pass 1) -- sparse, same flat-index key
+    // (row*getSequencerNumSteps()+column) and lifecycle as the map above:
+    // absent means "unset" (natural slice length). See
+    // getSequencerCellExtendedLengthSteps()/setSequencerCellExtendedLengthSteps()
+    // above for how it's read/written.
+    std::map<int, int> sequencerCellExtendedLengthSteps;
 
     // Style Palette's persistent "currently selected drawing style" (Step
     // 41) -- defaults to Forward (index 0).

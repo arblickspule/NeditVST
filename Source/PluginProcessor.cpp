@@ -894,7 +894,26 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // Sweep share in the universal clamp below.
                         if (tapeStop)
                         {
-                            currentPickTapeStopDurationHostSamples = samplesUntilNextActiveStep;
+                            // Step-extension fix: Tape Stop's decel spans
+                            // exactly THIS step's own declared length --
+                            // natural (Step-resolution-quantized) slice
+                            // length, or its Step-extension override if
+                            // Shift+drag set one -- the identical value
+                            // SequencerGrid's piano-roll bar renders (see
+                            // getSequencerCellDeclaredLengthSteps()),
+                            // converted from steps to host samples via the
+                            // same stepBeats/hostBpm/hostSampleRate used
+                            // for samplesUntilNextActiveStep above.
+                            // Deliberately NOT samplesUntilNextActiveStep:
+                            // an unextended step decays across its own
+                            // natural length regardless of how much empty
+                            // pattern follows it, and an extended step
+                            // decays across exactly its extended length --
+                            // neither borrows time from whatever gap
+                            // happens to come next.
+                            const int declaredLengthSteps = getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
+                            currentPickTapeStopDurationHostSamples =
+                                (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
                             currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping
                         }
                         else if (stretch)
@@ -1751,6 +1770,7 @@ void SlicerAudioProcessor::resetSequencerGrid()
     const int columns = getSequencerNumSteps();
     sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), -1);
     sequencerCellParameterOverrides.clear(); // Step 45 -- dimensions just changed, old flat indices are meaningless now
+    sequencerCellExtendedLengthSteps.clear(); // Step-extension (Pass 1) -- same reasoning
 }
 
 int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const
@@ -1793,6 +1813,7 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, int style)
         {
             sequencerGrid[(size_t) (r * columns + column)] = -1;
             sequencerCellParameterOverrides.erase (r * columns + column);
+            sequencerCellExtendedLengthSteps.erase (r * columns + column); // Step-extension (Pass 1) -- a cleared cell's own extension goes with it too
         }
     }
 
@@ -1801,7 +1822,111 @@ void SlicerAudioProcessor::setSequencerCell (int row, int column, int style)
     // cell later never resurrects a stale override left over from a
     // completely different style.
     sequencerCellParameterOverrides.erase (row * columns + column);
+    sequencerCellExtendedLengthSteps.erase (row * columns + column); // Step-extension (Pass 1) -- same reasoning
     sequencerGrid[(size_t) (row * columns + column)] = style;
+}
+
+int SlicerAudioProcessor::getSequencerCellExtendedLengthSteps (int row, int column) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return 0;
+
+    const auto it = sequencerCellExtendedLengthSteps.find (row * columns + column);
+    return it != sequencerCellExtendedLengthSteps.end() ? it->second : 0;
+}
+
+void SlicerAudioProcessor::setSequencerCellExtendedLengthSteps (int row, int column, int lengthSteps)
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int rows = getSequencerNumRows();
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= rows || column < 0 || column >= columns)
+        return;
+
+    if ((int) sequencerGrid.size() != rows * columns)
+        resetSequencerGrid(); // defensive -- dimensions drifted out from under us somehow, mirrors setSequencerCell()
+
+    const int idx = row * columns + column;
+
+    if (sequencerGrid[(size_t) idx] < 0)
+        return; // only an already-active cell can be extended
+
+    const int clampedLength = juce::jlimit (1, columns - column, lengthSteps);
+
+    // Growing into columns another row already occupies clears those
+    // conflicting cells -- the exact same per-column monophony rule
+    // setSequencerCell() enforces above for a plain single-cell draw, just
+    // applied across the whole newly-claimed span instead of one column.
+    // This row's OWN later cells (if any) are deliberately left alone --
+    // only ANOTHER row's occupancy counts as a conflict here.
+    for (int offset = 1; offset < clampedLength; ++offset)
+    {
+        const int col = column + offset;
+
+        for (int r = 0; r < rows; ++r)
+        {
+            if (r == row)
+                continue;
+
+            const int otherIdx = r * columns + col;
+
+            if (sequencerGrid[(size_t) otherIdx] >= 0)
+            {
+                sequencerGrid[(size_t) otherIdx] = -1;
+                sequencerCellParameterOverrides.erase (otherIdx);
+                sequencerCellExtendedLengthSteps.erase (otherIdx);
+            }
+        }
+    }
+
+    sequencerCellExtendedLengthSteps[idx] = clampedLength;
+}
+
+int SlicerAudioProcessor::getSequencerNaturalLengthSteps (int row) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    if (row < 0 || row >= (int) slices.size())
+        return 1;
+
+    const auto& slice = slices[(size_t) row];
+    const int sliceLength = slice.endSample - slice.startSample;
+    const double originalBpm = getCalculatedOriginalBpm();
+
+    int naturalSteps = 1;
+
+    if (sliceLength > 0 && sampleSampleRate > 0.0 && originalBpm > 0.0)
+    {
+        const double sliceSeconds = (double) sliceLength / sampleSampleRate;
+        const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
+        const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+
+        if (stepBeats > 0.0)
+            naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
+    }
+
+    return naturalSteps;
+}
+
+int SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps (int row, int column) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    const int columns = getSequencerNumSteps();
+
+    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
+        return 1;
+
+    const int naturalSteps = getSequencerNaturalLengthSteps (row);
+    const int extendedOverride = getSequencerCellExtendedLengthSteps (row, column);
+
+    return juce::jmax (naturalSteps, extendedOverride);
 }
 
 void SlicerAudioProcessor::clearSequence()
@@ -1816,6 +1941,7 @@ void SlicerAudioProcessor::clearSequence()
 
     std::fill (sequencerGrid.begin(), sequencerGrid.end(), -1);
     sequencerCellParameterOverrides.clear(); // Step 45
+    sequencerCellExtendedLengthSteps.clear(); // Step-extension (Pass 1)
 }
 
 juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
