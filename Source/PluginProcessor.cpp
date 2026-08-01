@@ -894,8 +894,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // Sweep share in the universal clamp below.
                         if (tapeStop)
                         {
-                            // Step-extension fix: Tape Stop's decel spans
-                            // exactly THIS step's own declared length --
+                            // Step-extension fix: Tape Stop's decel is
+                            // capped by THIS step's own declared length --
                             // natural (Step-resolution-quantized) slice
                             // length, or its Step-extension override if
                             // Shift+drag set one -- the identical value
@@ -903,17 +903,19 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             // getSequencerCellDeclaredLengthSteps()),
                             // converted from steps to host samples via the
                             // same stepBeats/hostBpm/hostSampleRate used
-                            // for samplesUntilNextActiveStep above.
-                            // Deliberately NOT samplesUntilNextActiveStep:
-                            // an unextended step decays across its own
-                            // natural length regardless of how much empty
-                            // pattern follows it, and an extended step
-                            // decays across exactly its extended length --
-                            // neither borrows time from whatever gap
-                            // happens to come next.
+                            // for samplesUntilNextActiveStep above. Still
+                            // clamped against samplesUntilNextActiveStep,
+                            // same "whichever comes first" precedence the
+                            // bar's own computeBarLengthInSteps() already
+                            // applies (its next-active-step clamp, run
+                            // AFTER settling on desiredSteps) -- a step's
+                            // own length is the ceiling, but a genuinely
+                            // upcoming step still cuts it off early, same
+                            // as what's actually drawn.
                             const int declaredLengthSteps = getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
-                            currentPickTapeStopDurationHostSamples =
+                            const double declaredLengthHostSamples =
                                 (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
+                            currentPickTapeStopDurationHostSamples = juce::jmin (declaredLengthHostSamples, samplesUntilNextActiveStep);
                             currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping
                         }
                         else if (stretch)

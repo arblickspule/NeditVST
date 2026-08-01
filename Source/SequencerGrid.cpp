@@ -175,10 +175,18 @@ bool SequencerGrid::findExtendTargetAt (int x, int y, int& outRow, int& outStart
             continue;
 
         const int barLength = computeBarLengthInSteps (row, col, numRows, numColumns);
-        const int rightEdgeX = (col + barLength) * columnWidth;
-        const int dx = x - rightEdgeX;
+        const int barStartX = col * columnWidth;
+        const int rightEdgeX = barStartX + barLength * columnWidth;
 
-        if ((dx < 0 ? -dx : dx) <= edgeGrabPx)
+        // Biased inward -- the rightmost extendGrabZonePx pixels of the
+        // bar ITSELF, not centred on the exact edge pixel -- plus a little
+        // outward tolerance for aiming slightly past it. Clamped so a bar
+        // shorter than the zone never reaches back past its own start
+        // (which would otherwise bleed into whatever precedes it).
+        const int zoneStart = juce::jmax (barStartX, rightEdgeX - extendGrabZonePx);
+        const int zoneEnd = rightEdgeX + extendGrabOuterTolerancePx;
+
+        if (x >= zoneStart && x <= zoneEnd)
         {
             outRow = row;
             outStartColumn = col;

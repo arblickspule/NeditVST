@@ -88,9 +88,11 @@
     right-click is a distinct gesture juce::MouseEvent::mods.isPopupMenu()
     identifies before any of the ordinary toggle logic runs.
 
-    Step-extension (Pass 1, mechanism only): Shift+drag from an active
-    step's own right edge (within edgeGrabPx of it -- findExtendTargetAt())
-    grows it live, purely as a local preview (extendRow/extendStartColumn/
+    Step-extension (Pass 1, mechanism only): Shift+drag near an active
+    step's own right edge (findExtendTargetAt() -- the rightmost
+    extendGrabZonePx pixels of the bar itself, biased inward rather than
+    centred on the exact edge pixel) grows it live, purely as a local
+    preview (extendRow/extendStartColumn/
     extendLiveLengthSteps) until mouseUp commits it via
     SlicerAudioProcessor::setSequencerCellExtendedLengthSteps(), the same
     "grab, drag, release commits" shape the parameter slider overlay above
@@ -143,7 +145,8 @@ private:
     int computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const;
 
     // Step-extension (Pass 1) -- true (with outRow/outStartColumn set) if
-    // (x, y) lands within edgeGrabPx of an active step's own right edge
+    // (x, y) lands within the grabbable zone (extendGrabZonePx/
+    // extendGrabOuterTolerancePx) near an active step's own right edge
     // (its CURRENT rendered bar, natural or already-extended) in whichever
     // row y falls in.
     bool findExtendTargetAt (int x, int y, int& outRow, int& outStartColumn) const;
@@ -199,11 +202,18 @@ private:
     int extendStartColumn = -1;
     int extendLiveLengthSteps = 1;
 
-    // Pixel tolerance for grabbing an active step's right edge to start a
-    // Shift+drag extension -- generous enough to grab reliably without
-    // needing pixel-perfect precision, small enough not to eat into
-    // ordinary click-drawing right next to it.
-    static constexpr int edgeGrabPx = 6;
+    // Grabbable hit-zone for starting a Shift+drag extension, matching
+    // Step 45's precedent of a generous, FIXED-pixel hit target rather
+    // than pixel-perfect precision on one exact edge line (columns can get
+    // very thin at high step counts, same reasoning the parameter slider
+    // overlay's own fixed sliderWidth already applies). Biased INWARD --
+    // the rightmost extendGrabZonePx pixels of the bar ITSELF, not
+    // centred on the edge -- since "grab near the end of the bar" is more
+    // intuitive to land than hunting for one exact pixel; a small amount
+    // of extendGrabOuterTolerancePx lets aiming slightly past the edge
+    // still count too. See findExtendTargetAt().
+    static constexpr int extendGrabZonePx = 18;
+    static constexpr int extendGrabOuterTolerancePx = 4;
 
     // Self-sizing (see class doc comment) -- only calls setSize() when
     // the dimensions actually change, not every tick.
