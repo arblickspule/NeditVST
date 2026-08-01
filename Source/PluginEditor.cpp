@@ -455,7 +455,7 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
 
     g.setColour (juce::Colours::white.withAlpha (0.6f));
     g.setFont (14.0f);
-    g.drawFittedText ("NeditVST — step 46: Filter Type, Curve Shape, Stretch Grain step editing",
+    g.drawFittedText ("NeditVST - step 46: Filter Type, Curve Shape, Stretch Grain step editing",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
     // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider

@@ -917,6 +917,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                 (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
                             currentPickTapeStopDurationHostSamples = juce::jmin (declaredLengthHostSamples, samplesUntilNextActiveStep);
                             currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping
+
+#if JUCE_DEBUG
+                            // TEMPORARY DEBUG -- remove once step-extension
+                            // Tape Stop testing is done. Cheap atomic
+                            // stores only (real-time-safe) -- the UI-thread
+                            // drainDebugTapeStopEvents() does the actual
+                            // DBG()/console I/O, off the audio thread. See
+                            // the mailbox members' own doc comment in
+                            // PluginProcessor.h for why this isn't a direct
+                            // DBG() call here.
+                            debugTapeStopPickStartRow.store (activeRow);
+                            debugTapeStopPickStartStep.store (currentStepIndex);
+                            debugTapeStopPickStartDeclaredLengthSteps.store (declaredLengthSteps);
+                            debugTapeStopPickStartDeclaredLengthHostSamples.store (declaredLengthHostSamples);
+                            debugTapeStopPickStartSamplesUntilNextActiveStep.store (samplesUntilNextActiveStep);
+                            debugTapeStopPickStartDurationHostSamples.store (currentPickTapeStopDurationHostSamples);
+                            debugTapeStopPickStartEventPending.store (true);
+#endif
                         }
                         else if (stretch)
                         {
@@ -1189,6 +1207,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             filterSweepFilter.setType (currentPickFilterSweepType == 1 ? juce::dsp::StateVariableTPTFilterType::highpass
                                       : currentPickFilterSweepType == 2 ? juce::dsp::StateVariableTPTFilterType::bandpass
                                                                         : juce::dsp::StateVariableTPTFilterType::lowpass);
+
+#if JUCE_DEBUG
+            // TEMPORARY DEBUG -- remove once step-extension Tape Stop
+            // testing is done. Fresh pick, fresh edges to detect below --
+            // a brand new pick always starts within its own schedule and
+            // not yet position-exhausted, regardless of style (harmless
+            // when the new pick isn't Tape Stop at all).
+            debugTapeStopPrevWithinSchedule = true;
+            debugTapeStopPrevExhausted = false;
+#endif
         }
 
         const bool pingPongActive = (currentPlaybackStyle == PlaybackStyle::pingPong);
@@ -1209,17 +1237,72 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const bool extendedRangeActive = pingPongActive || stretchActive;
         const int schedulingEndSample = extendedRangeActive ? currentEndSample : juce::jmin (currentEndSample, sourceLength);
 
+        // Tape Stop position-exhaustion fix: a step-extended (or Whole
+        // Window/long-tick Clock) decel can now legitimately ask for more
+        // real time than the slice has actual source samples for -- the
+        // ramping tapeStopRateMultiplier only covers HALF that time's
+        // worth of source distance on average (a linear 1.0->0.0 ramp),
+        // but even that can exceed the slice's own length once the
+        // requested duration is more than roughly 2x its natural length.
+        // Once currentPosition would run past the slice's real content,
+        // freeze it right there (hold the last sample/grain position)
+        // rather than either reading into whatever audio happens to follow
+        // it in the buffer or, as this used to do, cutting the whole pick
+        // to silence outright while the gain envelope was still very much
+        // audible. See its use below (positionForRead, and the granular
+        // path's grainSourceHopSamples override).
+        const bool tapeStopPositionExhausted = tapeStopActive && currentPosition >= (double) (schedulingEndSample - 1);
+
         // Shared render step for both modes: only output a sample while
         // we're within the current pick's bounds. In Clock mode, once a
         // short slice naturally finishes before the next tick, this
         // condition goes false and we correctly render silence until the
-        // next forced retrigger resets currentPosition. For Tape Stop,
-        // this condition normally stays true for the pick's whole life —
-        // by design, position crawls toward but never reaches
-        // schedulingEndSample before the rate hits zero (see
-        // currentPickTapeStopDurationHostSamples, which is what actually
-        // ends the pick in Slice Length mode instead).
-        if (hasCurrentPick && currentPosition < (double) (schedulingEndSample - 1))
+        // next forced retrigger resets currentPosition. Tape Stop is
+        // gated on its own decel timer instead (currentPickTapeStop-
+        // DurationHostSamples/samplesSincePickStart) rather than position
+        // -- see tapeStopPositionExhausted above for why position alone
+        // can no longer be trusted to reach the timer's own end at the
+        // same moment.
+        const bool pickWithinSchedule = tapeStopActive
+            ? (samplesSincePickStart < currentPickTapeStopDurationHostSamples)
+            : (currentPosition < (double) (schedulingEndSample - 1));
+
+#if JUCE_DEBUG
+        // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing
+        // is done. Edge-detected (once per occurrence, not every sample)
+        // exactly as before: (a) the exact sample the position-exhaustion
+        // freeze first kicks in for this pick, (b) the exact sample this
+        // pick's render gate closes, i.e. samplesSincePickStart at the
+        // moment rendering actually stops. Only the OUTPUT changed --
+        // cheap atomic stores into the mailbox instead of calling DBG()
+        // directly here; drainDebugTapeStopEvents() (UI thread) does the
+        // actual printing. See the mailbox members' own doc comment in
+        // PluginProcessor.h for why.
+        if (tapeStopActive)
+        {
+            if (tapeStopPositionExhausted && ! debugTapeStopPrevExhausted)
+            {
+                debugTapeStopFreezeSamplesSincePickStart.store (samplesSincePickStart);
+                debugTapeStopFreezeDurationHostSamples.store (currentPickTapeStopDurationHostSamples);
+                debugTapeStopFreezePosition.store (currentPosition);
+                debugTapeStopFreezeSchedulingEndSample.store (schedulingEndSample);
+                debugTapeStopFreezeEventPending.store (true);
+            }
+
+            if (! pickWithinSchedule && debugTapeStopPrevWithinSchedule)
+            {
+                debugTapeStopStopSamplesSincePickStart.store (samplesSincePickStart);
+                debugTapeStopStopDurationHostSamples.store (currentPickTapeStopDurationHostSamples);
+                debugTapeStopStopEverFroze.store (debugTapeStopPrevExhausted || tapeStopPositionExhausted);
+                debugTapeStopStopEventPending.store (true);
+            }
+
+            debugTapeStopPrevExhausted = tapeStopPositionExhausted;
+            debugTapeStopPrevWithinSchedule = pickWithinSchedule;
+        }
+#endif
+
+        if (hasCurrentPick && pickWithinSchedule)
         {
             // Fade gain: clamp each fade to at most half this pick's own
             // (effective) length, so a very short slice/tick can't have
@@ -1406,7 +1489,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // below -- currentPickBeatQuantized is only ever true for
                 // Forward/Ping-Pong Slice-Length picks (never alongside
                 // tapeStopActive), so these two overrides can't collide.
-                double grainSourceHopSamples = tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier)
+                // Position-exhaustion fix: once tapeStopPositionExhausted,
+                // grain spawns stop marching forward entirely (0, rather
+                // than the still-decaying-but-nonzero
+                // sourceHopSamples * tapeStopRateMultiplier) -- new grains
+                // keep spawning at outputHopSamples' normal real-time
+                // cadence (that's untouched), but always at the SAME
+                // (frozen) source position, holding that content while
+                // gain keeps fading, instead of continuing to march the
+                // grain engine's own internal position into whatever
+                // audio follows the slice in the buffer.
+                double grainSourceHopSamples = tapeStopPositionExhausted ? 0.0
+                                              : tapeStopActive ? (sourceHopSamples * tapeStopRateMultiplier)
                                               : currentPickBeatQuantized ? (outputHopSamples * srConversionRatio * currentPickQuantizedStretchRatio)
                                                                          : sourceHopSamples;
                 double grainGrainSizeHostSamples = grainSizeHostSamples;
@@ -1442,13 +1536,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
             else
             {
+                // Position-exhaustion fix: once tapeStopPositionExhausted,
+                // read from the frozen boundary position instead of
+                // currentPosition's own (still-growing) value -- holds the
+                // last real sample of the slice's content rather than
+                // reading into whatever follows it in the buffer. A no-op
+                // for every other style/case, where this is just
+                // currentPosition itself, unchanged.
+                const double positionForRead = tapeStopPositionExhausted
+                    ? (double) (schedulingEndSample - 1)
+                    : currentPosition;
+
                 // Shared position-mapping (Step 19): the same foldPosition()
                 // GranularStretcher uses for its own grain-start scheduling,
                 // so Ping-Pong behaves identically regardless of pitch mode.
                 // For Forward this is the identity — foldedReadPosition ==
-                // currentPosition exactly, same as before this existed.
+                // positionForRead exactly, same as before this existed.
                 const double foldedReadPosition = (double) currentSliceStartSample
-                    + GranularStretcher::foldPosition (currentPosition - (double) currentSliceStartSample,
+                    + GranularStretcher::foldPosition (positionForRead - (double) currentSliceStartSample,
                                                         pingPongFoldLengthSamples, grainPlaybackStyle);
 
                 const int idx0 = juce::jlimit (0, sourceLength - 1, (int) foldedReadPosition);
@@ -1930,6 +2035,42 @@ int SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps (int row, int colu
 
     return juce::jmax (naturalSteps, extendedOverride);
 }
+
+#if JUCE_DEBUG
+void SlicerAudioProcessor::drainDebugTapeStopEvents()
+{
+    // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
+    // done. UI-thread only: does the actual DBG()/console I/O the audio
+    // thread itself never does (see the mailbox members' own doc comment
+    // in PluginProcessor.h). No lock taken here at all -- every field
+    // below is its own atomic, and nothing here touches sampleLock or any
+    // audio-thread-only state.
+    if (debugTapeStopPickStartEventPending.exchange (false))
+    {
+        DBG ("TapeStop pick-start: row=" << debugTapeStopPickStartRow.load()
+             << " step=" << debugTapeStopPickStartStep.load()
+             << " declaredLengthSteps=" << debugTapeStopPickStartDeclaredLengthSteps.load()
+             << " declaredLengthHostSamples=" << debugTapeStopPickStartDeclaredLengthHostSamples.load()
+             << " samplesUntilNextActiveStep=" << debugTapeStopPickStartSamplesUntilNextActiveStep.load()
+             << " => durationHostSamples=" << debugTapeStopPickStartDurationHostSamples.load());
+    }
+
+    if (debugTapeStopFreezeEventPending.exchange (false))
+    {
+        DBG ("TapeStop FREEZE activated: samplesSincePickStart=" << debugTapeStopFreezeSamplesSincePickStart.load()
+             << " durationHostSamples=" << debugTapeStopFreezeDurationHostSamples.load()
+             << " currentPosition=" << debugTapeStopFreezePosition.load()
+             << " schedulingEndSample=" << debugTapeStopFreezeSchedulingEndSample.load());
+    }
+
+    if (debugTapeStopStopEventPending.exchange (false))
+    {
+        DBG ("TapeStop render STOPPED: samplesSincePickStart=" << debugTapeStopStopSamplesSincePickStart.load()
+             << " durationHostSamples=" << debugTapeStopStopDurationHostSamples.load()
+             << " everFroze=" << (debugTapeStopStopEverFroze.load() ? "yes" : "no"));
+    }
+}
+#endif
 
 void SlicerAudioProcessor::clearSequence()
 {

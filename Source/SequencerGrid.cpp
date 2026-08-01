@@ -86,6 +86,15 @@ void SequencerGrid::timerCallback()
 {
     updateSizeIfNeeded();
     repaint(); // cheap enough at this grid's typical size to just always repaint, same as WaveformDisplay's own timer
+
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
+    // done. This UI-thread timer is where the audio thread's Tape Stop
+    // diagnostic mailbox actually gets printed -- see
+    // SlicerAudioProcessor::drainDebugTapeStopEvents()'s own doc comment
+    // for why the printing itself can't happen on the audio thread.
+    processor.drainDebugTapeStopEvents();
+#endif
 }
 
 int SequencerGrid::getRowIndexAtY (int y) const

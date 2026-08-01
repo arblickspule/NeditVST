@@ -1091,6 +1091,17 @@ public:
     // Sequenced mode isn't active (or transport stopped).
     int getCurrentlyPlayingStepIndex() const { return currentlyPlayingStepIndexForUI.load(); }
 
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
+    // done. Call from a UI-thread timer (SequencerGrid's own 30fps poll)
+    // to drain and print whatever Tape Stop diagnostic events the audio
+    // thread queued up since the last call. Does the actual DBG()/console
+    // I/O itself -- entirely off the audio thread, never touches
+    // sampleLock -- see the mailbox members' own doc comment for why this
+    // exists instead of calling DBG() directly from processBlock().
+    void drainDebugTapeStopEvents();
+#endif
+
 private:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
@@ -1558,6 +1569,49 @@ private:
     // reach the slice's actual end before the rate hits zero. Meaningless
     // /unused for Forward/Ping-Pong.
     double currentPickTapeStopDurationHostSamples = 0.0;
+
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG (Tape Stop position-exhaustion verification) --
+    // remove once step-extension Tape Stop testing is done.
+    //
+    // Edge-detection state for processBlock()'s Tape Stop render path --
+    // plain (non-atomic) since it's only ever touched from the audio
+    // thread itself, same as every other processBlock()-only member here.
+    // Reset at every pick-start so each pick's own transitions are
+    // detected fresh rather than carrying over stale state from whatever
+    // played before it.
+    bool debugTapeStopPrevWithinSchedule = false;
+    bool debugTapeStopPrevExhausted = false;
+
+    // Lock-free "mailbox" -- the audio thread only ever does cheap atomic
+    // stores into these (real-time-safe), never calls DBG()/console I/O
+    // itself. drainDebugTapeStopEvents() (called from a UI-thread timer --
+    // see SequencerGrid's) polls the *Pending flags and does the actual
+    // printing off the audio thread entirely. Calling DBG() directly from
+    // inside processBlock() -- which this replaces -- did string
+    // formatting and a blocking console-I/O syscall while sampleLock was
+    // held, which could stall the audio callback long enough that every
+    // UI-thread call needing that same lock (SequencerGrid's own 30fps
+    // poll among them) blocked too, freezing the whole app.
+    std::atomic<bool> debugTapeStopPickStartEventPending { false };
+    std::atomic<int> debugTapeStopPickStartRow { -1 };
+    std::atomic<int> debugTapeStopPickStartStep { -1 };
+    std::atomic<int> debugTapeStopPickStartDeclaredLengthSteps { 0 };
+    std::atomic<double> debugTapeStopPickStartDeclaredLengthHostSamples { 0.0 };
+    std::atomic<double> debugTapeStopPickStartSamplesUntilNextActiveStep { 0.0 };
+    std::atomic<double> debugTapeStopPickStartDurationHostSamples { 0.0 };
+
+    std::atomic<bool> debugTapeStopFreezeEventPending { false };
+    std::atomic<double> debugTapeStopFreezeSamplesSincePickStart { 0.0 };
+    std::atomic<double> debugTapeStopFreezeDurationHostSamples { 0.0 };
+    std::atomic<double> debugTapeStopFreezePosition { 0.0 };
+    std::atomic<int> debugTapeStopFreezeSchedulingEndSample { 0 };
+
+    std::atomic<bool> debugTapeStopStopEventPending { false };
+    std::atomic<double> debugTapeStopStopSamplesSincePickStart { 0.0 };
+    std::atomic<double> debugTapeStopStopDurationHostSamples { 0.0 };
+    std::atomic<bool> debugTapeStopStopEverFroze { false };
+#endif
 
     // Lock-free copy of currentSliceIndex, written by the audio thread
     // whenever a new pick begins, read by the UI thread for the playhead
