@@ -6,6 +6,16 @@ double GranularStretcher::foldPosition (double elapsedSourceSamples, double slic
     if (style == PlaybackStyle::forward || sliceLength <= 0.0)
         return elapsedSourceSamples;
 
+    if (style == PlaybackStyle::loop)
+    {
+        double cycle = std::fmod (elapsedSourceSamples, sliceLength);
+
+        if (cycle < 0.0) // defensive -- elapsedSourceSamples should never go negative in practice
+            cycle += sliceLength;
+
+        return cycle;
+    }
+
     const double period = 2.0 * sliceLength;
     double cycle = std::fmod (elapsedSourceSamples, period);
 

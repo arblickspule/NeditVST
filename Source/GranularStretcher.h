@@ -33,7 +33,19 @@ public:
     // Time-Stretch window-shape control — Stretch is the only style that
     // uses it, always, with its own fixed grain size to match.
     enum class WindowShape { hann, triangular, hardEdge };
-    enum class PlaybackStyle { forward, pingPong };
+
+    // loop (Step-extension fix, Stretch only): plain forward playback that
+    // wraps back to the slice's own start every sliceLength, rather than
+    // marching on unbounded (forward) or bouncing there-and-back
+    // (pingPong) -- "keep actively repeating the same stretched pass"
+    // rather than either running off the end or reversing direction. See
+    // PluginProcessor's Stretch render branch for why this exists: once a
+    // step's declared length exceeds one full stretched pass, the SAME
+    // pass repeats to fill the remainder, and this is what makes that
+    // happen automatically (for as long as the render-continue gate keeps
+    // letting rendering happen) without any separate pass-boundary
+    // bookkeeping in the caller.
+    enum class PlaybackStyle { forward, pingPong, loop };
 
     static constexpr int maxChannels = 2;
 
@@ -44,7 +56,10 @@ public:
     // behaviour, byte-for-byte). Ping-Pong folds an unbounded, ever-
     // increasing "elapsed since slice start" into [0, sliceLength):
     // counting up for the first sliceLength (the forward leg), then back
-    // down for the next sliceLength (the backward leg), repeating.
+    // down for the next sliceLength (the backward leg), repeating. loop
+    // folds the same unbounded input into [0, sliceLength) too, but with a
+    // plain wraparound (modulo) instead of a bounce -- always counting
+    // forward, restarting from 0 every sliceLength.
     static double foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style);
 
     // Call whenever a new pick begins (fresh slice chosen, or a Clock-mode

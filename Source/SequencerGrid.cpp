@@ -94,6 +94,7 @@ void SequencerGrid::timerCallback()
     // SlicerAudioProcessor::drainDebugTapeStopEvents()'s own doc comment
     // for why the printing itself can't happen on the audio thread.
     processor.drainDebugTapeStopEvents();
+    processor.drainDebugStretchEvents();
 #endif
 }
 

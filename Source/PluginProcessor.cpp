@@ -803,9 +803,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // fold-length in the shared render code below), so
                         // the full there-and-back cycle only needs to span
                         // the slice's original raw length once, exactly
-                        // like every other style here.
-                        currentEndSample = stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
-                                                    : slice.endSample;
+                        // like every other style here. Stretch (Step-
+                        // extension fix) no longer gets its own extended
+                        // value here either -- its render-continue gate is
+                        // now duration-based (currentPickLengthInHostSamples,
+                        // set below), the same reasoning Tape Stop's own
+                        // gate switch used, so currentEndSample no longer
+                        // needs to (and, since Grain Speed isn't a duration
+                        // multiplier anymore, no longer sensibly CAN)
+                        // encode Stretch's play length -- just the slice's
+                        // own natural end, like every other style here.
+                        currentEndSample = slice.endSample;
                         hasCurrentPick = true;
                         pickJustStarted = true;
                         currentlyPlayingSliceIndexForUI.store (activeRow);
@@ -938,23 +946,118 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         }
                         else if (stretch)
                         {
+                            // Step-extension fix: Stretch's duration is now
+                            // authoritative from the step's own declared
+                            // length -- natural (Step-resolution-quantized)
+                            // slice length, or its Step-extension override
+                            // if Shift+drag set one -- exactly the same
+                            // mechanism/precedence Tape Stop already uses
+                            // (see its own branch above): the declared
+                            // length is the ceiling, a genuinely upcoming
+                            // step still cuts it off early. Grain Speed
+                            // (currentPickStretchSpeedMultiplier) plays NO
+                            // part in this -- it stays a fixed character
+                            // constant (how fast ONE pass sweeps the
+                            // slice), untouched by duration; if the
+                            // declared length outlasts one pass, the SAME
+                            // pass repeats to fill the remainder instead
+                            // (see grainPlaybackStyle's loop mode in the
+                            // granular render section below).
+                            const int stretchDeclaredLengthSteps = getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
+                            const double stretchDeclaredLengthHostSamples =
+                                (double) stretchDeclaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
-                            currentPickLengthInHostSamples = juce::jmin ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples,
-                                                                          samplesUntilNextActiveStep);
+                            currentPickLengthInHostSamples = juce::jmin (stretchDeclaredLengthHostSamples, samplesUntilNextActiveStep);
+
+#if JUCE_DEBUG
+                            // TEMPORARY DEBUG -- remove once Stretch
+                            // step-extension investigation is done. Same
+                            // cheap-atomic-stores-only pattern as the Tape
+                            // Stop pick-start log -- see its own doc
+                            // comment for why this isn't a direct DBG()
+                            // call here. Mirrors Tape Stop's own pick-start
+                            // log shape now that the calculation itself
+                            // does too; speedMultiplier/passLengthHostSamples
+                            // are still logged for context even though
+                            // neither drives duration -- passLength vs
+                            // finalLength shows whether this particular
+                            // pick actually needed the loop-to-repeat
+                            // behaviour or was covered by one pass.
+                            debugStretchPickStartRow.store (activeRow);
+                            debugStretchPickStartStep.store (currentStepIndex);
+                            debugStretchPickStartDeclaredLengthSteps.store (stretchDeclaredLengthSteps);
+                            debugStretchPickStartDeclaredLengthHostSamples.store (stretchDeclaredLengthHostSamples);
+                            debugStretchPickStartNaturalLengthHostSamples.store (naturalLengthHostSamples);
+                            debugStretchPickStartSpeedMultiplier.store ((double) currentPickStretchSpeedMultiplier);
+                            debugStretchPickStartPassLengthHostSamples.store ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples);
+                            debugStretchPickStartSamplesUntilNextActiveStep.store (samplesUntilNextActiveStep);
+                            debugStretchPickStartFinalLengthHostSamples.store (currentPickLengthInHostSamples);
+                            debugStretchPickStartEventPending.store (true);
+#endif
                         }
                         else
                         {
-                            // Universal schedule-clamping (Step 43): Forward,
-                            // Ping-Pong, and Filter Down/Up previously used
-                            // naturalLengthHostSamples here unclamped -- if
-                            // structural monophony ever cuts a note short
-                            // before its own natural end (another row's hit
-                            // landing inside its span), the fade-out timing
-                            // wouldn't have anticipated that early cutoff,
-                            // risking a click. Same "whichever comes first"
-                            // pattern Tape Stop/Stretch above already use.
+                            // Step-extension fix: Forward/Ping-Pong/Filter
+                            // Down/Up's duration is now authoritative from
+                            // the step's own declared length, same
+                            // mechanism/precedence Tape Stop and Stretch
+                            // above already use -- the declared length is
+                            // the ceiling, a genuinely upcoming step still
+                            // cuts it off early (samplesUntilNextActiveStep,
+                            // same "whichever comes first" pattern as
+                            // Step 43's original schedule-clamping, which
+                            // this supersedes).
+                            //
+                            // When the declared length exceeds the natural
+                            // unit -- one raw slice playthrough for Forward
+                            // and Filter Down/Up, one round trip for
+                            // Ping-Pong (its half-content window, see
+                            // pingPongFoldLengthSamples below, makes one
+                            // round trip exactly naturalLengthHostSamples
+                            // long here) -- that unit LOOPS to fill the
+                            // remainder, the same "repeat the natural unit"
+                            // principle already built for Stretch, just
+                            // with the raw slice/round-trip as the
+                            // repeating unit instead of a stretched pass.
+                            // No extra code needed for the loop itself:
+                            // grainPlaybackStyle (loop for Forward/Filter
+                            // Down/Up, the existing pingPong fold for
+                            // Ping-Pong -- see below) already wraps
+                            // unconditionally, a no-op whenever this
+                            // duration never actually exceeds one natural
+                            // unit in the first place. Filter Down/Up's
+                            // sweep timeline (currentWindowLengthHostSamples,
+                            // set below from this same value, BEFORE
+                            // Subdivide slices currentPickLengthInHostSamples
+                            // into individual ticks) rides along for free
+                            // too -- one continuous glide across the whole
+                            // declared length regardless of how many times
+                            // the underlying audio loops underneath it, or
+                            // how many Subdivide retriggers happen, exactly
+                            // the same Whole Window principle Clock mode's
+                            // own scope setting already proved.
+                            const int declaredLengthSteps = getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
+                            const double declaredLengthHostSamples =
+                                (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
-                            currentPickLengthInHostSamples = juce::jmin (naturalLengthHostSamples, samplesUntilNextActiveStep);
+                            currentPickLengthInHostSamples = juce::jmin (declaredLengthHostSamples, samplesUntilNextActiveStep);
+
+#if JUCE_DEBUG
+                            // TEMPORARY DEBUG -- remove once Forward/
+                            // Ping-Pong/Filter Down/Up step-extension
+                            // verification is done. Same cheap-atomic-
+                            // stores-only pattern as the Tape Stop/Stretch
+                            // pick-start logs above.
+                            debugLoopStylePickStartRow.store (activeRow);
+                            debugLoopStylePickStartStep.store (currentStepIndex);
+                            debugLoopStylePickStartStyleIndex.store ((int) currentPlaybackStyle);
+                            debugLoopStylePickStartDeclaredLengthSteps.store (declaredLengthSteps);
+                            debugLoopStylePickStartDeclaredLengthHostSamples.store (declaredLengthHostSamples);
+                            debugLoopStylePickStartNaturalLengthHostSamples.store (naturalLengthHostSamples);
+                            debugLoopStylePickStartSamplesUntilNextActiveStep.store (samplesUntilNextActiveStep);
+                            debugLoopStylePickStartFinalLengthHostSamples.store (currentPickLengthInHostSamples);
+                            debugLoopStylePickStartEventPending.store (true);
+#endif
                         }
 
                         // Subdivide (Step 47): per-step retrigger rate,
@@ -1216,6 +1319,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // when the new pick isn't Tape Stop at all).
             debugTapeStopPrevWithinSchedule = true;
             debugTapeStopPrevExhausted = false;
+            debugTapeStopPrevGainNearZero = false;
 #endif
         }
 
@@ -1262,10 +1366,31 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // DurationHostSamples/samplesSincePickStart) rather than position
         // -- see tapeStopPositionExhausted above for why position alone
         // can no longer be trusted to reach the timer's own end at the
-        // same moment.
+        // same moment. Stretch is gated on currentPickLengthInHostSamples
+        // the same way, always (harmless/numerically identical to the old
+        // position-based gate for Clock/Slice Length modes' own Stretch,
+        // whose currentEndSample still encodes the same multiplier-based
+        // length those modes have always used -- position advancing at
+        // the plain playbackRate reaches that boundary at exactly
+        // currentPickLengthInHostSamples there too, so this was always a
+        // like-for-like swap, not a behaviour change, there).
+        //
+        // Step-extension fix: Sequenced mode's Forward/Ping-Pong/Filter
+        // Down/Up now need the same duration-based gate too -- their
+        // duration is authoritative from the step's own declared length
+        // there (see the pick-start branch above), decoupled from
+        // currentEndSample/position entirely once a step is extended
+        // past its natural unit. Scoped to sequencedMode specifically
+        // (rather than applied unconditionally, the way Stretch's swap
+        // safely was) since Clock mode's own tick-forced retriggering
+        // makes the equivalence argument above murkier there -- this
+        // avoids touching Clock/Slice Length mode behaviour at all,
+        // which nothing here was asked to change.
         const bool pickWithinSchedule = tapeStopActive
             ? (samplesSincePickStart < currentPickTapeStopDurationHostSamples)
-            : (currentPosition < (double) (schedulingEndSample - 1));
+            : (stretchActive || sequencedMode)
+                ? (samplesSincePickStart < currentPickLengthInHostSamples)
+                : (currentPosition < (double) (schedulingEndSample - 1));
 
 #if JUCE_DEBUG
         // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing
@@ -1340,6 +1465,35 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 tapeStopRateMultiplier = 1.0 - progress;
 
                 gain = juce::jmin (gain, tapeStopRateMultiplier);
+
+#if JUCE_DEBUG
+                // TEMPORARY DEBUG -- remove once step-extension Tape Stop
+                // testing is done. Edge-detects the sample the FINAL gain
+                // (what actually multiplies the output sample -- not just
+                // tapeStopRateMultiplier alone, which fadeIn could in
+                // principle also clamp below) first drops under
+                // debugTapeStopGainNearZeroThreshold, so its
+                // samplesSincePickStart can be checked against
+                // currentPickTapeStopDurationHostSamples directly -- proves
+                // (or disproves) whether the ramp's own ~zero point lines
+                // up with the pick's full declared duration, independent
+                // of whatever the render path/freeze logic is doing with
+                // read position.
+                const bool debugGainNearZeroNow = gain < debugTapeStopGainNearZeroThreshold;
+
+                if (debugGainNearZeroNow && ! debugTapeStopPrevGainNearZero)
+                {
+                    debugTapeStopGainNearZeroSamplesSincePickStart.store (samplesSincePickStart);
+                    debugTapeStopGainNearZeroDurationHostSamples.store (currentPickTapeStopDurationHostSamples);
+                    debugTapeStopGainNearZeroGainValue.store (gain);
+                    debugTapeStopGainNearZeroRateMultiplier.store (tapeStopRateMultiplier);
+                    debugTapeStopGainNearZeroWasExhausted.store (tapeStopPositionExhausted);
+                    debugTapeStopGainNearZeroWasGranular.store (timeStretchMode || stretchActive);
+                    debugTapeStopGainNearZeroEventPending.store (true);
+                }
+
+                debugTapeStopPrevGainNearZero = debugGainNearZeroNow;
+#endif
             }
             else
             {
@@ -1431,12 +1585,39 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 filterSweepFilter.setCutoffFrequency (filterSweepCutoffHz);
             }
 
-            // Tape Stop doesn't fold position (it decelerates a plain
-            // forward read) -- grainPlaybackStyle naturally comes out as
-            // forward for it, same as it already does for anything that
-            // isn't Ping-Pong.
+            // Tape Stop doesn't fold position at all (it decelerates a
+            // plain forward read, then position-exhaustion freezes/holds
+            // via its own entirely separate mechanism -- see
+            // tapeStopPositionExhausted/positionForRead above) -- always
+            // plain forward for it, deliberately excluded from looping so
+            // Tape Stop's "grinding to a stop" character stays exactly
+            // that, never repeating. Ping-Pong keeps its existing pingPong
+            // bounce, which already loops additional round trips for free
+            // once elapsed time exceeds one period -- no change needed
+            // there. Forward and Filter Down/Up (Step-extension fix) get
+            // the loop fold instead of plain forward: once a step's
+            // declared duration exceeds one natural unit (one raw slice
+            // playthrough -- see the shared Forward/Ping-Pong/Filter
+            // Down/Up duration branch above), this is what makes that
+            // unit repeat -- wrapping position back to the slice's own
+            // start every sliceLength rather than marching on unbounded
+            // -- for as long as the render-continue gate keeps letting
+            // rendering happen, with no separate loop-boundary
+            // bookkeeping needed here. Stretch gets the same loop fold,
+            // for the same reason, just with a stretched pass (rather
+            // than the raw slice) as the repeating unit -- see the
+            // stretchActive branch below for how that pass itself is
+            // computed. All three are no-ops whenever a pick's actual
+            // duration never reaches a full natural unit/pass in the
+            // first place (mathematically identical to plain forward for
+            // that shorter span) -- true always in Clock/Slice Length
+            // modes (their own duration formulas never let position
+            // exceed one natural unit), and in Sequenced mode whenever a
+            // step isn't extended past its natural length.
             const GranularStretcher::PlaybackStyle grainPlaybackStyle =
-                pingPongActive ? GranularStretcher::PlaybackStyle::pingPong : GranularStretcher::PlaybackStyle::forward;
+                pingPongActive ? GranularStretcher::PlaybackStyle::pingPong
+              : tapeStopActive ? GranularStretcher::PlaybackStyle::forward
+                               : GranularStretcher::PlaybackStyle::loop;
 
             // Sequenced-mode Ping-Pong half-content window (Step 44):
             // passing HALF the slice's length as the fold boundary (both
@@ -1447,12 +1628,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // rate there-and-back cycle through half the content take
             // exactly one normal pick's natural length, which is what
             // lets it fit within a single step without needing any rate
-            // change at all. Irrelevant (and harmless) for every other
-            // style, since foldPosition()'s length argument is only ever
-            // consulted when style == pingPong. Slice Length/Clock modes'
-            // own Ping-Pong pace is completely unaffected since this only
-            // ever differs from the full slice length when sequencedMode
-            // is true.
+            // change at all. Irrelevant (and harmless) for Forward, since
+            // foldPosition()'s length argument is only consulted for
+            // pingPong/loop -- Stretch (loop) DOES consult it, as the
+            // point it wraps back to the slice's own start; unaffected by
+            // this half-length special case since that's Ping-Pong-only.
+            // Slice Length/Clock modes' own Ping-Pong pace is completely
+            // unaffected since this only ever differs from the full slice
+            // length when sequencedMode is true.
             const double pingPongFoldLengthSamples = (sequencedMode && pingPongActive)
                 ? ((double) currentSliceLength * 0.5)
                 : (double) currentSliceLength;
@@ -1468,11 +1651,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // outputHopSamples/grainSize come from
                 // currentPickStretchGrainSizeMs, and sourceHopSamples is
                 // derived from playbackRate/currentPickStretchSpeedMultiplier
-                // (Step 46, per-pick captured -- global by default, or a
-                // Sequenced-mode step's own override) -- consuming the
-                // whole slice at a fraction of the normal rate is exactly
-                // what makes the render last currentPickStretchSpeedMultiplier
-                // times as long. Tape Stop's rate multiplier, by contrast,
+                // -- Grain Speed is a FIXED character constant (Step-
+                // extension fix), unrelated to how long the pick actually
+                // plays. That's governed separately, entirely by the
+                // step's own declared length (currentPickLengthInHost-
+                // Samples, set at pick-start) -- one full traversal of the
+                // slice at Grain Speed's pace is just the "natural unit"
+                // for a Stretch pick, the same role a plain slice playback
+                // is for Forward; if the declared length is longer than
+                // that one pass, grainPlaybackStyle (loop, below) is what
+                // makes the SAME pass repeat to fill the remainder, rather
+                // than this formula trying to stretch a single pass to
+                // fit. Tape Stop's rate multiplier, by contrast,
                 // is layered onto BOTH each grain's own internal read-rate
                 // (the same slot pitchRatio already multiplies) AND the
                 // source-domain distance between grain spawns -- so as the
@@ -1511,7 +1701,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 {
                     grainGrainSizeHostSamples = (double) currentPickStretchGrainSizeMs / 1000.0 * hostSampleRate;
                     grainOutputHopSamples = grainGrainSizeHostSamples * 0.5; // same fixed 50% overlap convention
+
+                    // Grain Speed: a FIXED character constant (Step-
+                    // extension fix reverted this back to its original
+                    // role) -- how fast, relative to normal playback,
+                    // grains march through the source material for ONE
+                    // pass. Completely independent of the step's declared
+                    // length; that's handled separately, entirely by
+                    // grainPlaybackStyle (loop, above) repeating this same
+                    // pass for as long as the render-continue gate keeps
+                    // rendering.
                     grainSourceHopSamples = grainOutputHopSamples * (playbackRate / (double) currentPickStretchSpeedMultiplier);
+
                     grainPitchRatio = 1.0; // no user pitch shift for this style -- fully self-contained/hardcoded
                     grainWindowShapeToUse = GranularStretcher::WindowShape::hardEdge;
                 }
@@ -1536,16 +1737,48 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
             else
             {
-                // Position-exhaustion fix: once tapeStopPositionExhausted,
-                // read from the frozen boundary position instead of
-                // currentPosition's own (still-growing) value -- holds the
-                // last real sample of the slice's content rather than
-                // reading into whatever follows it in the buffer. A no-op
-                // for every other style/case, where this is just
+                // Position-exhaustion fix: once tapeStopPositionExhausted, a
+                // literal frozen SINGLE sample has no waveform variation --
+                // it's inaudible (or a single click, then silence) no
+                // matter what the gain envelope is still doing, which
+                // defeats the whole point of continuing to render (verified
+                // via the debug GAIN-near-zero log: the ramp itself reaches
+                // near-zero right at the pick's real end, ~98% of the way
+                // through, not at the freeze point -- the frozen single
+                // sample was just inaudible for that whole stretch).
+                // Instead, loop a short (freezeLoopLengthMs) window of REAL
+                // audio ending at the slice's own boundary -- genuinely
+                // audible content for the gain envelope to keep fading
+                // through. The loop's own playback position is driven by
+                // currentPosition's continued (still-decaying)
+                // advance past the boundary, not a separate real-time
+                // clock, so the loop itself keeps slowing down right along
+                // with the rest of the decel, consistent with Tape Stop's
+                // character elsewhere. A forward sawtooth loop (jump back
+                // to the window start every freezeWindowLength) rather than
+                // a crossfaded one -- the small periodic click at each wrap
+                // reads as part of the "stuck tape" character rather than a
+                // bug, and keeping it simple matches this pass's own scope
+                // (mechanism verification, not a polished new effect). A
+                // no-op for every other style/case, where this is just
                 // currentPosition itself, unchanged.
-                const double positionForRead = tapeStopPositionExhausted
-                    ? (double) (schedulingEndSample - 1)
-                    : currentPosition;
+                double positionForRead = currentPosition;
+
+                if (tapeStopPositionExhausted)
+                {
+                    constexpr double freezeLoopLengthMs = 25.0;
+                    const double freezeLoopLengthSourceSamples =
+                        juce::jmax (1.0, (freezeLoopLengthMs / 1000.0) * sampleSampleRate);
+
+                    const double freezeWindowEnd = (double) (schedulingEndSample - 1);
+                    const double freezeWindowStart = juce::jmax ((double) currentSliceStartSample,
+                                                                   freezeWindowEnd - freezeLoopLengthSourceSamples);
+                    const double freezeWindowLength = juce::jmax (1.0, freezeWindowEnd - freezeWindowStart);
+
+                    const double elapsedSinceFreeze = juce::jmax (0.0, currentPosition - freezeWindowEnd);
+                    const double loopedOffset = std::fmod (elapsedSinceFreeze, freezeWindowLength);
+                    positionForRead = freezeWindowStart + loopedOffset;
+                }
 
                 // Shared position-mapping (Step 19): the same foldPosition()
                 // GranularStretcher uses for its own grain-start scheduling,
@@ -2068,6 +2301,46 @@ void SlicerAudioProcessor::drainDebugTapeStopEvents()
         DBG ("TapeStop render STOPPED: samplesSincePickStart=" << debugTapeStopStopSamplesSincePickStart.load()
              << " durationHostSamples=" << debugTapeStopStopDurationHostSamples.load()
              << " everFroze=" << (debugTapeStopStopEverFroze.load() ? "yes" : "no"));
+    }
+
+    if (debugTapeStopGainNearZeroEventPending.exchange (false))
+    {
+        DBG ("TapeStop GAIN near zero: samplesSincePickStart=" << debugTapeStopGainNearZeroSamplesSincePickStart.load()
+             << " durationHostSamples=" << debugTapeStopGainNearZeroDurationHostSamples.load()
+             << " gain=" << debugTapeStopGainNearZeroGainValue.load()
+             << " rateMultiplier=" << debugTapeStopGainNearZeroRateMultiplier.load()
+             << " wasExhausted=" << (debugTapeStopGainNearZeroWasExhausted.load() ? "yes" : "no")
+             << " wasGranular=" << (debugTapeStopGainNearZeroWasGranular.load() ? "yes" : "no"));
+    }
+}
+
+void SlicerAudioProcessor::drainDebugStretchEvents()
+{
+    // TEMPORARY DEBUG -- remove once Stretch/Forward/Ping-Pong/Filter
+    // Down/Up step-extension investigation is done. Same UI-thread-only,
+    // no-lock pattern as drainDebugTapeStopEvents() above.
+    if (debugStretchPickStartEventPending.exchange (false))
+    {
+        DBG ("Stretch pick-start: row=" << debugStretchPickStartRow.load()
+             << " step=" << debugStretchPickStartStep.load()
+             << " declaredLengthSteps=" << debugStretchPickStartDeclaredLengthSteps.load()
+             << " declaredLengthHostSamples=" << debugStretchPickStartDeclaredLengthHostSamples.load()
+             << " naturalLengthHostSamples=" << debugStretchPickStartNaturalLengthHostSamples.load()
+             << " speedMultiplier=" << debugStretchPickStartSpeedMultiplier.load()
+             << " passLengthHostSamples=" << debugStretchPickStartPassLengthHostSamples.load()
+             << " samplesUntilNextActiveStep=" << debugStretchPickStartSamplesUntilNextActiveStep.load()
+             << " => finalLengthHostSamples=" << debugStretchPickStartFinalLengthHostSamples.load());
+    }
+
+    if (debugLoopStylePickStartEventPending.exchange (false))
+    {
+        DBG (getPlaybackStyleName (debugLoopStylePickStartStyleIndex.load()) << " pick-start: row=" << debugLoopStylePickStartRow.load()
+             << " step=" << debugLoopStylePickStartStep.load()
+             << " declaredLengthSteps=" << debugLoopStylePickStartDeclaredLengthSteps.load()
+             << " declaredLengthHostSamples=" << debugLoopStylePickStartDeclaredLengthHostSamples.load()
+             << " naturalLengthHostSamples=" << debugLoopStylePickStartNaturalLengthHostSamples.load()
+             << " samplesUntilNextActiveStep=" << debugLoopStylePickStartSamplesUntilNextActiveStep.load()
+             << " => finalLengthHostSamples=" << debugLoopStylePickStartFinalLengthHostSamples.load());
     }
 }
 #endif

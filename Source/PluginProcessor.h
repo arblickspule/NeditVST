@@ -698,11 +698,17 @@ public:
     void setStretchGrainSizeMs (float ms) { stretchGrainSizeMsValue.store (juce::jlimit (minStretchGrainSizeMs, maxStretchGrainSizeMs, ms)); }
     float getStretchGrainSizeMs() const { return stretchGrainSizeMsValue.load(); }
 
-    // "Speed" here is the duration multiplier -- how many times longer
-    // than its natural length a Stretch pick renders for (originally the
-    // fixed stretchDurationMultiplier = 4.0). Higher values stretch
-    // further (slower-feeling); lower values stay closer to natural
-    // length.
+    // "Speed" here is a FIXED character constant -- how many times slower
+    // than normal playback grains march through the source material for
+    // ONE pass (originally the fixed stretchDurationMultiplier = 4.0).
+    // Higher values feel more stretched/slower within that one pass;
+    // lower values stay closer to natural pace. Deliberately independent
+    // of how long a pick actually plays (Step-extension fix) -- that's
+    // authoritative from the pick's own declared length instead (see
+    // processBlock()'s stretchActive branches); if the declared length
+    // outlasts one pass, the SAME pass just repeats (GranularStretcher::
+    // PlaybackStyle::loop) to fill the remainder, rather than this value
+    // being stretched further to fit.
     static constexpr float defaultStretchSpeedMultiplier = 4.0f;
     static constexpr float minStretchSpeedMultiplier = 1.0f;
     static constexpr float maxStretchSpeedMultiplier = 8.0f;
@@ -1100,6 +1106,11 @@ public:
     // sampleLock -- see the mailbox members' own doc comment for why this
     // exists instead of calling DBG() directly from processBlock().
     void drainDebugTapeStopEvents();
+
+    // TEMPORARY DEBUG (Stretch step-extension verification) -- same
+    // pattern/lifecycle as drainDebugTapeStopEvents() above, just for the
+    // Stretch pick-start mailbox instead.
+    void drainDebugStretchEvents();
 #endif
 
 private:
@@ -1377,13 +1388,15 @@ private:
 
     // Stretch (Step 22) character parameters -- grain size/window shape
     // stay separate from Pitch Mode's own user-facing grain size/window
-    // shape/pitch shift controls, none of which apply here. Grain size
-    // and the duration multiplier ("speed") were fixed constants until
-    // Step 46 -- see setStretchGrainSizeMs()/getStretchGrainSizeMs() and
-    // setStretchSpeedMultiplier()/getStretchSpeedMultiplier() above, plus
-    // the per-step overrides these feed via currentPickStretchGrainSizeMs/
-    // currentPickStretchSpeedMultiplier below. Small grains + a hard-edged
-    // window (still fixed, not exposed) make the seams audible.
+    // shape/pitch shift controls, none of which apply here. Grain size and
+    // "speed" (a fixed per-pass character constant, independent of how
+    // long the pick actually plays -- see its own doc comment above) were
+    // fixed constants until Step 46 -- see setStretchGrainSizeMs()/
+    // getStretchGrainSizeMs() and setStretchSpeedMultiplier()/
+    // getStretchSpeedMultiplier() above, plus the per-step overrides these
+    // feed via currentPickStretchGrainSizeMs/currentPickStretchSpeedMultiplier
+    // below. Small grains + a hard-edged window (still fixed, not exposed)
+    // make the seams audible.
     std::atomic<float> stretchGrainSizeMsValue { defaultStretchGrainSizeMs };
     std::atomic<float> stretchSpeedMultiplierValue { defaultStretchSpeedMultiplier };
 
@@ -1583,6 +1596,17 @@ private:
     bool debugTapeStopPrevWithinSchedule = false;
     bool debugTapeStopPrevExhausted = false;
 
+    // TEMPORARY DEBUG (gain-ramp-vs-render-gate verification) -- same
+    // reasoning/lifecycle as the two above. Edge-detects the sample the
+    // Tape Stop gain ramp (tapeStopRateMultiplier) first drops below
+    // debugTapeStopGainNearZeroThreshold, so its samplesSincePickStart can
+    // be compared directly against currentPickTapeStopDurationHostSamples
+    // -- confirms (or refutes) whether the ramp's own reach-zero point
+    // actually lines up with the pick's full (possibly extended) duration,
+    // as opposed to some shorter value.
+    bool debugTapeStopPrevGainNearZero = false;
+    static constexpr double debugTapeStopGainNearZeroThreshold = 0.02;
+
     // Lock-free "mailbox" -- the audio thread only ever does cheap atomic
     // stores into these (real-time-safe), never calls DBG()/console I/O
     // itself. drainDebugTapeStopEvents() (called from a UI-thread timer --
@@ -1611,6 +1635,66 @@ private:
     std::atomic<double> debugTapeStopStopSamplesSincePickStart { 0.0 };
     std::atomic<double> debugTapeStopStopDurationHostSamples { 0.0 };
     std::atomic<bool> debugTapeStopStopEverFroze { false };
+
+    // TEMPORARY DEBUG (gain-ramp-vs-render-gate verification) -- see
+    // debugTapeStopPrevGainNearZero's own doc comment above for why this
+    // exists.
+    std::atomic<bool> debugTapeStopGainNearZeroEventPending { false };
+    std::atomic<double> debugTapeStopGainNearZeroSamplesSincePickStart { 0.0 };
+    std::atomic<double> debugTapeStopGainNearZeroDurationHostSamples { 0.0 };
+    std::atomic<double> debugTapeStopGainNearZeroGainValue { 0.0 };
+    std::atomic<double> debugTapeStopGainNearZeroRateMultiplier { 0.0 };
+    std::atomic<bool> debugTapeStopGainNearZeroWasExhausted { false };
+    std::atomic<bool> debugTapeStopGainNearZeroWasGranular { false };
+
+    // TEMPORARY DEBUG (Stretch step-extension verification) -- remove
+    // together with the Tape Stop debug members above once this is done.
+    // Originally added to confirm Stretch's target length had no
+    // relationship to the step's own declared length
+    // (getSequencerCellDeclaredLengthSteps(), the mechanism Tape Stop
+    // already used) -- it didn't, and duration is now authoritative from
+    // that same declared length (see processBlock()'s stretchActive
+    // branches). passLengthHostSamples (speedMultiplier * natural, the
+    // fixed-character length of ONE stretched pass) is logged alongside
+    // finalLengthHostSamples so it's easy to tell, per pick, whether the
+    // declared length actually required the new loop-to-repeat behaviour
+    // (finalLength > passLength) or was covered by a single pass.
+    // Same lock-free mailbox/drain pattern as the Tape Stop members
+    // above -- see their own doc comment for why.
+    std::atomic<bool> debugStretchPickStartEventPending { false };
+    std::atomic<int> debugStretchPickStartRow { -1 };
+    std::atomic<int> debugStretchPickStartStep { -1 };
+    std::atomic<int> debugStretchPickStartDeclaredLengthSteps { 0 };
+    std::atomic<double> debugStretchPickStartDeclaredLengthHostSamples { 0.0 };
+    std::atomic<double> debugStretchPickStartNaturalLengthHostSamples { 0.0 };
+    std::atomic<double> debugStretchPickStartSpeedMultiplier { 0.0 };
+    std::atomic<double> debugStretchPickStartPassLengthHostSamples { 0.0 };
+    std::atomic<double> debugStretchPickStartSamplesUntilNextActiveStep { 0.0 };
+    std::atomic<double> debugStretchPickStartFinalLengthHostSamples { 0.0 };
+
+    // TEMPORARY DEBUG (Forward/Ping-Pong/Filter Down/Up step-extension
+    // verification) -- remove together with the debug members above once
+    // this is done. Same shape/mailbox pattern as the Tape Stop/Stretch
+    // pick-start logs -- styleName distinguishes which of the three fired
+    // (they share one branch in processBlock()). naturalLengthHostSamples
+    // logged alongside finalLengthHostSamples so it's easy to tell, per
+    // pick, whether the declared length actually required looping past
+    // one natural unit (finalLength > natural) or was covered by it.
+    std::atomic<bool> debugLoopStylePickStartEventPending { false };
+    std::atomic<int> debugLoopStylePickStartRow { -1 };
+    std::atomic<int> debugLoopStylePickStartStep { -1 };
+    // PlaybackStyle ordinal (indexToPlaybackStyle()'s own numbering), NOT a
+    // juce::String -- constructing/assigning a String from a literal
+    // allocates, which isn't real-time-safe on the audio thread (the exact
+    // class of bug the DBG()-on-the-audio-thread freeze earlier this
+    // session was). drainDebugStretchEvents() maps this to a name for
+    // printing, on the UI thread where allocating is fine.
+    std::atomic<int> debugLoopStylePickStartStyleIndex { -1 };
+    std::atomic<int> debugLoopStylePickStartDeclaredLengthSteps { 0 };
+    std::atomic<double> debugLoopStylePickStartDeclaredLengthHostSamples { 0.0 };
+    std::atomic<double> debugLoopStylePickStartNaturalLengthHostSamples { 0.0 };
+    std::atomic<double> debugLoopStylePickStartSamplesUntilNextActiveStep { 0.0 };
+    std::atomic<double> debugLoopStylePickStartFinalLengthHostSamples { 0.0 };
 #endif
 
     // Lock-free copy of currentSliceIndex, written by the audio thread
