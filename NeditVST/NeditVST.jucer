@@ -39,6 +39,8 @@
             file="../Source/PlaybackStylePalette.cpp"/>
       <FILE id="t2x7mr" name="PlaybackStylePalette.h" compile="0" resource="0"
             file="../Source/PlaybackStylePalette.h"/>
+      <FILE id="e5Vn8Q" name="EasingCurve.h" compile="0" resource="0"
+            file="../Source/EasingCurve.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

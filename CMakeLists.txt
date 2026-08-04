@@ -81,6 +81,7 @@ target_sources(NeditVST
         Source/SequencerGrid.h
         Source/PlaybackStylePalette.cpp
         Source/PlaybackStylePalette.h
+        Source/EasingCurve.h
 )
 
 juce_generate_juce_header(NeditVST)

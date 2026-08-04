@@ -3,7 +3,12 @@
 PlaybackStylePalette::PlaybackStylePalette (SlicerAudioProcessor& processorToUse)
     : processor (processorToUse)
 {
-    setSize (preferredWidth, SlicerAudioProcessor::numPlaybackStyleOptions * rowHeight);
+    setSize (preferredWidth, getPreferredHeight());
+}
+
+int PlaybackStylePalette::getPreferredHeight()
+{
+    return SlicerAudioProcessor::numPlaybackStyleOptions * rowHeight;
 }
 
 juce::Colour PlaybackStylePalette::getStyleColour (int styleIndex)
@@ -16,6 +21,8 @@ juce::Colour PlaybackStylePalette::getStyleColour (int styleIndex)
         case 3:  return juce::Colours::teal;        // Stretch
         case 4:  return juce::Colours::red;         // Filter Down
         case 5:  return juce::Colours::gold;        // Filter Up
+        case 6:  return juce::Colours::limegreen;   // Bitcrush
+        case 7:  return juce::Colours::hotpink;     // Scratch
         default: return juce::Colours::grey;
     }
 }

@@ -655,8 +655,21 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     clearSequenceButton.setBounds (randomizeClearRow);
     area.removeFromTop (10);
 
-    auto sequencerRow = area.removeFromTop (sequencerViewportHeight);
-    playbackStylePalette.setBounds (sequencerRow.removeFromLeft (PlaybackStylePalette::preferredWidth));
+    // This row's own height must accommodate whichever of the two is
+    // taller: sequencerViewportHeight (the viewport's own fixed, scrolling
+    // height -- unrelated to style count) or playbackStylePalette's
+    // current preferred height (one row per PlaybackStyle, via
+    // PlaybackStylePalette::getPreferredHeight() -- grows automatically as
+    // styles are added, e.g. Scratch's addition already grew it past the
+    // old fixed sequencerViewportHeight, which used to just clip/squash
+    // the palette's own bottom row(s) short since setBounds() overrides
+    // whatever height the palette's constructor gave itself). Not
+    // hardcoded either way, so this needs no revisiting next time another
+    // style is added.
+    const int sequencerRowHeight = juce::jmax (sequencerViewportHeight, PlaybackStylePalette::getPreferredHeight());
+    auto sequencerRow = area.removeFromTop (sequencerRowHeight);
+    playbackStylePalette.setBounds (sequencerRow.removeFromLeft (PlaybackStylePalette::preferredWidth)
+                                                 .removeFromTop (PlaybackStylePalette::getPreferredHeight()));
     sequencerRow.removeFromLeft (10);
     sequencerViewport.setBounds (sequencerRow);
     area.removeFromTop (20);

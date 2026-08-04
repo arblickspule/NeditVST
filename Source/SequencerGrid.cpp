@@ -287,7 +287,29 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
     {
         const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
 
-        if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex)
+        if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex))
+        {
+            // Swept parameters (Step 49): Sample Rate Reduction/Bit Depth
+            // present as a submenu of their own Static/Sweep In/Sweep Out
+            // MODE choices first, reusing the exact same discrete-submenu
+            // machinery as Filter Type/Curve Shape just below -- the mode
+            // is itself an ordinary discrete parameter (paramIndex+1, its
+            // hidden pair index), it's just never listed in applicableParams
+            // directly. Picking a mode writes it via the SAME
+            // decodeDiscreteItemId branch below as any other discrete
+            // choice; that branch additionally opens the slider overlay
+            // for this value index once it detects a swept-mode pick.
+            juce::PopupMenu submenu;
+            const int modeParamIndex = paramIndex + 1;
+            const int numModes = SlicerAudioProcessor::getSequencerCellParameterNumOptions (modeParamIndex);
+
+            for (int option = 0; option < numModes; ++option)
+                submenu.addItem (discreteItemId (modeParamIndex, option),
+                                  SlicerAudioProcessor::getSequencerCellParameterOptionName (modeParamIndex, option));
+
+            menu.addSubMenu (name, submenu);
+        }
+        else if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex)
             && ! SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
         {
             // Discrete parameters (Filter Type, Curve Shape -- Step 46)
@@ -316,10 +338,47 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
         }
     }
 
+    // Positioning: without an explicit parent component, JUCE positions
+    // (and flips up/down, left/right based on available space) this menu
+    // against the whole physical screen/display -- fine for a normal
+    // desktop app, but a plugin editor is only ever a small region of
+    // that display (often embedded, sometimes with a host window whose
+    // true on-screen position JUCE's own display query can't see), so a
+    // menu near an edge could still open "off" the visible/interactive
+    // area even though it's technically still inside SOME monitor. Giving
+    // it the plugin editor's own top-level component as its parent (the
+    // editor's actual on-screen window, 900x780 per PluginEditor.cpp's
+    // setSize()) makes JUCE run that exact same available-space/flip
+    // calculation against THAT area instead of the raw screen (see
+    // calculateWindowPos()/getParentArea() in JUCE's own
+    // juce_PopupMenu.cpp) -- opening upward instead of downward, or
+    // leftward instead of rightward, whenever the default direction
+    // wouldn't fit within the editor window. Deliberately NOT
+    // sequencerViewport/sequencerGrid itself -- the viewport is only
+    // sequencerViewportHeight (200px) tall, and JUCE's own PopupMenu
+    // layout (insertColumnBreaks() in juce_PopupMenu.cpp) reflows any
+    // menu too tall to fit its available height into multiple columns
+    // rather than leaving it as a single scrolling list -- Rate's 20-item
+    // list doesn't remotely fit in 200px, so constraining to the viewport
+    // turned it into a squashed multi-column grid instead of the normal
+    // narrow list every other (2-3 item) menu here still showed
+    // correctly. The full editor window has ample height for that not to
+    // happen, while still keeping the menu inside the plugin's own
+    // visible bounds. getTopLevelComponent() never returns null (it walks
+    // up to the root and returns `this` itself if there's no parent yet),
+    // so no separate fallback is needed here. Every sub-menu added above
+    // (Filter Type/Curve Shape/Rate/the swept-parameter mode pickers)
+    // inherits this same parent/positioning automatically --
+    // PopupMenu::Options::forSubmenu() carries it forward unchanged, only
+    // clearing the target COMPONENT -- so this needs setting in exactly
+    // one place, not once per menu level.
+    const auto menuOptions = juce::PopupMenu::Options()
+        .withParentComponent (getTopLevelComponent());
+
     // Async, not the blocking show() -- this is a juce::Component's own
     // mouseDown handler, and a modal menu call there would reenter the
     // message loop from inside event dispatch.
-    menu.showMenuAsync (juce::PopupMenu::Options(), [this, row, column] (int result)
+    menu.showMenuAsync (menuOptions, [this, row, column] (int result)
     {
         if (result <= 0)
             return; // dismissed without choosing anything
@@ -330,9 +389,24 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
         if (decodeDiscreteItemId (result, paramIndex, optionIndex))
         {
             // Discrete choice (Step 46) -- writes straight into the
-            // override map, no slider overlay involved at all.
+            // override map. Every discrete parameter but swept Mode
+            // indices (Step 49) stops there, no slider overlay involved at
+            // all; a swept Mode choice instead falls through to open the
+            // slider for its paired VALUE index (paramIndex-1, by the same
+            // index+1-is-the-mode convention showParameterMenuForCell()
+            // built the submenu with) -- same "picking a mode configures
+            // its amount next" flow regardless of which mode was picked,
+            // including Static (still needs its fixed value set).
             processor.setSequencerCellParameterOverride (row, column,
                 SlicerAudioProcessor::getSequencerCellParameterName (paramIndex), (float) optionIndex);
+
+            if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex - 1))
+            {
+                editingRow = row;
+                editingColumn = column;
+                editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex - 1);
+            }
+
             repaint();
             return;
         }

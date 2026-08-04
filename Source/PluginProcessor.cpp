@@ -79,7 +79,36 @@ namespace
     // Playback style names (Step 19/21/22/29/30), indexed the same way the
     // weighted table stores them.
     const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up"
+        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up", "Bitcrush", "Scratch"
+    } };
+
+    // Bitcrush character constants (Step 48/49). Defaults match the
+    // original Step 48 fixed constants exactly (12-sample hold, 5-bit
+    // depth), used whenever no per-step override exists (Slice Length/
+    // Clock modes always, Sequenced mode steps that don't customize it) --
+    // same "no global dial, fixed fallback" precedent as Subdivide.
+    // Extremes are Sweep In/Out's fixed far end (Step 49) -- 48 samples is
+    // roughly 1/48th of the original rate (well past the original spec's
+    // 1/8-1/16 default range, deliberately more extreme since a SWEEP
+    // TARGET is meant to read as "maximally crushed," not "typical");
+    // 1 bit is the most crushed a bit-depth quantizer can go.
+    constexpr float bitcrushRateReductionDefault = 12.0f;
+    constexpr float bitcrushRateReductionExtreme = 48.0f;
+    constexpr float bitcrushBitDepthDefault = 5.0f;
+    constexpr float bitcrushBitDepthExtreme = 1.0f;
+
+    // Scratch's default Rate (v1) -- index into the shared note-value
+    // palette below, used whenever no per-step override exists (Slice
+    // Length/Clock modes always; Sequenced mode steps that don't
+    // customize it), same "no global dial, fixed fallback" precedent as
+    // Subdivide/Bitcrush above. Index 7 is 16n -- a fast default, and the
+    // same index stepResolutionIndex itself defaults to.
+    constexpr int scratchDefaultRateIndex = 7;
+
+    // Sweep mode names (Step 49), shared by Sample Rate Reduction Mode and
+    // Bit Depth Mode -- see SlicerAudioProcessor::isSequencerCellParameterSwept().
+    const std::array<const char*, 3> bitcrushSweepModeNames { {
+        "Static", "Sweep In", "Sweep Out"
     } };
 
     // Tape Stop scope names (Step 21).
@@ -109,7 +138,9 @@ namespace
     // SlicerAudioProcessor::getApplicableSequencerCellParameters(), which
     // appends it unconditionally rather than listing it per-style here.
     const std::array<const char*, SlicerAudioProcessor::numSequencerCellParameters> sequencerCellParameterNames { {
-        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide"
+        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide",
+        "Sample Rate Reduction", "Sample Rate Reduction Mode", "Bit Depth", "Bit Depth Mode", "Rate",
+        "Forward Curve", "Backward Curve"
     } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
@@ -314,6 +345,23 @@ SlicerAudioProcessor::BeatQuantizeResult SlicerAudioProcessor::computeBeatQuanti
     return result;
 }
 
+double SlicerAudioProcessor::computeScratchCycleLengthHostSamples (int rateIndex, int sliceLength,
+                                                                     double hostBpm, double hostSampleRate, double playbackRate)
+{
+    if (sliceLength <= 0 || hostBpm <= 0.0 || hostSampleRate <= 0.0 || playbackRate <= 0.0)
+        return 0.0;
+
+    const double rateBeats = getNoteValueBeats (rateIndex);
+    const double desiredCycleHostSamples = rateBeats * (60.0 / hostBpm) * hostSampleRate;
+    const double desiredCycleSourceSamples = desiredCycleHostSamples * playbackRate;
+
+    // One LEG of the cycle (half of it, the "there" or "back" half) is
+    // clamped to the slice's own content length -- see this function's
+    // own doc comment in PluginProcessor.h for why.
+    const double clampedLegSourceSamples = juce::jmin (desiredCycleSourceSamples * 0.5, (double) sliceLength);
+    return 2.0 * clampedLegSourceSamples / playbackRate;
+}
+
 //==============================================================================
 SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -324,14 +372,14 @@ SlicerAudioProcessor::SlicerAudioProcessor()
 
     // Forward-only by default (NOT even odds like the other tables) --
     // guarantees byte-identical default playback, since none of Ping-Pong/
-    // Tape Stop/Stretch/Filter Down/Filter Up is ever drawn unless the
-    // user explicitly turns its weight up. (Step 22's spec described this
-    // as "all other styles at weight 1, Stretch at weight 0," which would
-    // actually break that guarantee for existing users -- kept
-    // Forward-only here instead, since "must sound identical to current
-    // behavior" is the longstanding hard requirement across every style
-    // added so far.)
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    // Tape Stop/Stretch/Filter Down/Filter Up/Bitcrush/Scratch is ever
+    // drawn unless the user explicitly turns its weight up. (Step 22's
+    // spec described this as "all other styles at weight 1, Stretch at
+    // weight 0," which would actually break that guarantee for existing
+    // users -- kept Forward-only here instead, since "must sound identical
+    // to current behavior" is the longstanding hard requirement across
+    // every style added so far.)
+    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
     // Filter Down/Filter Up (Step 29/30): fixed type, set once here rather
     // than per-sample -- only the cutoff frequency needs to change during
@@ -601,6 +649,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     const bool pingPong = (clockCurrentPlaybackStyle == PlaybackStyle::pingPong);
                     const bool tapeStop = (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop);
                     const bool stretch = (clockCurrentPlaybackStyle == PlaybackStyle::stretch);
+                    const bool scratch = (clockCurrentPlaybackStyle == PlaybackStyle::scratch);
 
                     // Stretch grain settings (Step 46) -- Clock mode always
                     // uses the global values; per-step overrides are
@@ -614,8 +663,28 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentSliceStartSample = slice.startSample;
                     currentSliceLength = slice.endSample - slice.startSample;
                     currentPosition = (double) slice.startSample;
+
+                    // Scratch (v1) -- Clock mode always uses the fixed
+                    // default Rate; per-step overrides are Sequenced-mode-
+                    // only, same pattern as Bitcrush above. Captured here,
+                    // before currentEndSample below, since it feeds
+                    // directly into that calculation, same as Grain Speed
+                    // does for Stretch.
+                    currentPickScratchCycleLengthHostSamples = scratch
+                        ? computeScratchCycleLengthHostSamples (scratchDefaultRateIndex, currentSliceLength,
+                                                                 hostBpm, hostSampleRate, playbackRate)
+                        : 0.0;
+
+                    // Forward/Backward Curve (Scratch v2) -- Clock mode
+                    // always uses the fixed Linear/Linear default; per-step
+                    // overrides are Sequenced-mode-only, same pattern as
+                    // Rate just above.
+                    currentPickScratchForwardCurve = EasingCurve::linear;
+                    currentPickScratchBackwardCurve = EasingCurve::linear;
+
                     currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
                                      : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
+                                     : scratch ? (int) (slice.startSample + currentPickScratchCycleLengthHostSamples * playbackRate)
                                                : slice.endSample;
                     hasCurrentPick = true;
                     pickJustStarted = true;
@@ -633,6 +702,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentPickFilterSweepType = filterSweepFilterTypeValue.load();
                     currentPickCurveShape = curveShapeValue.load();
 
+                    // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
+                    // Clock mode always uses the fixed default at Static
+                    // mode; per-step value/mode overrides are Sequenced-
+                    // mode-only, same pattern as Filter Sweep just above.
+                    currentPickBitcrushRateValue = bitcrushRateReductionDefault;
+                    currentPickBitcrushRateMode = 0;
+                    currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
+                    currentPickBitcrushBitDepthMode = 0;
+
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
                         (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
@@ -641,10 +719,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // always one slice's worth of natural playback time,
                     // regardless of whether the tick below ends up cutting
                     // the pick off before ever reaching it. Unused for
-                    // Forward.
-                    currentPickMidpointHostSamples = naturalLengthHostSamples;
+                    // Forward. Scratch (v1) overrides this to half its OWN
+                    // cycle length instead -- see currentPickScratchCycle-
+                    // LengthHostSamples above -- since its bounce has
+                    // nothing to do with the slice's natural length.
+                    currentPickMidpointHostSamples = scratch
+                        ? (currentPickScratchCycleLengthHostSamples * 0.5)
+                        : naturalLengthHostSamples;
 
-                    const double roundTripLengthHostSamples = pingPong ? (2.0 * naturalLengthHostSamples) : naturalLengthHostSamples;
+                    const double roundTripLengthHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
+                                                             : scratch ? currentPickScratchCycleLengthHostSamples
+                                                                       : naturalLengthHostSamples;
 
                     const double tickBeats = getNoteValueBeats (clockCurrentSubdivisionIndex);
                     const double tickLengthHostSamples = tickBeats * (60.0 / hostBpm) * hostSampleRate;
@@ -778,6 +863,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         currentPlaybackStyle = indexToPlaybackStyle (activeStyle);
                         const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
                         const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
+                        const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
 
                         // Stretch grain settings (Step 46) -- this step's
                         // own overrides if it has them, else the global
@@ -833,6 +919,42 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         currentPickCurveShape = juce::roundToInt (getSequencerCellParameterOverride (
                             activeRow, currentStepIndex, "Curve Shape", (float) curveShapeValue.load()));
 
+                        // Bitcrush Sample Rate Reduction/Bit Depth VALUE +
+                        // MODE (Step 49) -- same per-step-override-else-
+                        // global pattern as Filter Sweep just above. Mode
+                        // overrides are stored under "<name> Mode" (see
+                        // SequencerGrid::showParameterMenuForCell()'s swept
+                        // branch), separately from the value itself.
+                        currentPickBitcrushRateValue = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Sample Rate Reduction", bitcrushRateReductionDefault);
+                        currentPickBitcrushRateMode = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Sample Rate Reduction Mode", 0.0f));
+                        currentPickBitcrushBitDepthValue = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Bit Depth", bitcrushBitDepthDefault);
+                        currentPickBitcrushBitDepthMode = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Bit Depth Mode", 0.0f));
+
+                        // Scratch Rate (v1) -- this step's own override if
+                        // it has one, else the fixed default, same per-
+                        // step-override-else-global pattern as Filter
+                        // Sweep/Bitcrush above.
+                        const int scratchRateIndex = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Rate", (float) scratchDefaultRateIndex));
+                        currentPickScratchCycleLengthHostSamples = scratch
+                            ? computeScratchCycleLengthHostSamples (scratchRateIndex, currentSliceLength,
+                                                                     hostBpm, hostSampleRate, playbackRate)
+                            : 0.0;
+
+                        // Forward/Backward Curve (Scratch v2) -- this
+                        // step's own override if it has one, else Linear
+                        // (v1's exact constant-speed behaviour), same
+                        // per-step-override-else-fixed-default pattern as
+                        // Rate just above.
+                        currentPickScratchForwardCurve = easingCurveFromIndex (juce::roundToInt (
+                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Forward Curve", 0.0f)));
+                        currentPickScratchBackwardCurve = easingCurveFromIndex (juce::roundToInt (
+                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Backward Curve", 0.0f)));
+
                         // Sequenced mode's own step grid already enforces
                         // beat-alignment for SCHEDULING (every note starts
                         // exactly on a step boundary already) -- same
@@ -845,7 +967,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         samplesSincePickStart = 0.0;
                         const double naturalLengthHostSamples =
                             (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                        currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise -- same natural-length-based timing as every other trigger mode (Step 44), unchanged by the half-content window below
+                        currentPickMidpointHostSamples = scratch
+                            ? (currentPickScratchCycleLengthHostSamples * 0.5)
+                            : naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise -- same natural-length-based timing as every other trigger mode (Step 44), unchanged by the half-content window below. Scratch (v1) uses half its OWN cycle length instead, same override reasoning as Clock mode's own pick-start.
 
                         // Anticipatory fade (Step 37): cap this note's
                         // length to whichever comes first -- its own
@@ -1192,7 +1316,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                    || (currentPlaybackStyle == PlaybackStyle::tapeStop
                            ? samplesSincePickStart >= currentPickTapeStopDurationHostSamples
                            : currentPosition >= (double) (((currentPlaybackStyle == PlaybackStyle::pingPong
-                                                                 || currentPlaybackStyle == PlaybackStyle::stretch)
+                                                                 || currentPlaybackStyle == PlaybackStyle::stretch
+                                                                 || currentPlaybackStyle == PlaybackStyle::scratch)
                                                                 ? currentEndSample
                                                                 : juce::jmin (currentEndSample, sourceLength)) - 1)))
             {
@@ -1207,6 +1332,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (playbackStyleProbabilities));
                 const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
                 const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
+                const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
 
                 // Stretch grain settings (Step 46) -- Slice Length mode
                 // always uses the global values; per-step overrides are
@@ -1220,8 +1346,27 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentSliceStartSample = slice.startSample;
                 currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
+
+                // Scratch (v1) -- Slice Length mode always uses the fixed
+                // default Rate; per-step overrides are Sequenced-mode-only,
+                // same pattern as Bitcrush above. Captured here, before
+                // currentEndSample below, since it feeds directly into that
+                // calculation, same as Grain Speed does for Stretch.
+                currentPickScratchCycleLengthHostSamples = scratch
+                    ? computeScratchCycleLengthHostSamples (scratchDefaultRateIndex, currentSliceLength,
+                                                             hostBpm, hostSampleRate, playbackRate)
+                    : 0.0;
+
+                // Forward/Backward Curve (Scratch v2) -- Slice Length mode
+                // always uses the fixed Linear/Linear default; per-step
+                // overrides are Sequenced-mode-only, same pattern as Rate
+                // just above.
+                currentPickScratchForwardCurve = EasingCurve::linear;
+                currentPickScratchBackwardCurve = EasingCurve::linear;
+
                 currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
                                  : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
+                                 : scratch ? (int) (slice.startSample + currentPickScratchCycleLengthHostSamples * playbackRate)
                                            : slice.endSample;
                 hasCurrentPick = true;
                 pickJustStarted = true;
@@ -1234,12 +1379,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPickFilterSweepType = filterSweepFilterTypeValue.load();
                 currentPickCurveShape = curveShapeValue.load();
 
+                // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
+                // Slice Length mode always uses the fixed default at
+                // Static mode; per-step value/mode overrides are
+                // Sequenced-mode-only, same pattern as Filter Sweep above.
+                currentPickBitcrushRateValue = bitcrushRateReductionDefault;
+                currentPickBitcrushRateMode = 0;
+                currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
+                currentPickBitcrushBitDepthMode = 0;
+
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                currentPickMidpointHostSamples = naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward
-                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong/Stretch
+                currentPickMidpointHostSamples = scratch
+                    ? (currentPickScratchCycleLengthHostSamples * 0.5)
+                    : naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward. Scratch (v1) uses half its OWN cycle length instead.
+                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong/Stretch/Scratch
                 currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
                                                 : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
+                                                : scratch ? currentPickScratchCycleLengthHostSamples
                                                           : naturalLengthHostSamples;
 
                 // Beat-quantized slice length (Step 24 for Time-Stretch,
@@ -1311,6 +1468,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                       : currentPickFilterSweepType == 2 ? juce::dsp::StateVariableTPTFilterType::bandpass
                                                                         : juce::dsp::StateVariableTPTFilterType::lowpass);
 
+            // Bitcrush (Step 48) -- no bleed from a previous pick, same
+            // reasoning as filterSweepFilter.reset() above: a fresh pick
+            // starts its sample-and-hold phase from scratch (counter at 0
+            // grabs a fresh value on this pick's very first sample) rather
+            // than continuing whatever hold phase/value the previous pick
+            // (of any style) happened to leave behind.
+            bitcrushHoldCounter = 0;
+            std::fill (std::begin (bitcrushHeldSample), std::end (bitcrushHeldSample), 0.0f);
+
 #if JUCE_DEBUG
             // TEMPORARY DEBUG -- remove once step-extension Tape Stop
             // testing is done. Fresh pick, fresh edges to detect below --
@@ -1328,17 +1494,120 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const bool stretchActive = (currentPlaybackStyle == PlaybackStyle::stretch);
         const bool filterSweepActive = (currentPlaybackStyle == PlaybackStyle::filterSweepDown
                                          || currentPlaybackStyle == PlaybackStyle::filterSweepUp);
+        const bool bitcrushActive = (currentPlaybackStyle == PlaybackStyle::bitcrush);
+        const bool scratchActive = (currentPlaybackStyle == PlaybackStyle::scratch);
+
+        // Scratch (v1) reuses Ping-Pong's exact bounce mechanism -- same
+        // foldPosition() fold, same turnaround click-avoidance fade, same
+        // "position marches on unbounded, only folded at render time" gate
+        // -- just with its own Rate-driven cycle length (bounceFoldLength-
+        // Samples below) standing in for pingPongFoldLengthSamples, so
+        // every place that mechanism is consulted below treats the two
+        // styles identically via this one shared flag.
+        const bool bounceActive = pingPongActive || scratchActive;
+
+        // Bitcrush Sweep In/Out (Step 49): plain linear interpolation from
+        // this pick's own set value toward (Sweep In) or away from (Sweep
+        // Out) the parameter's fixed extreme, driven by the SAME
+        // samplesSincePickStart/currentPickLengthInHostSamples progress
+        // fraction the fade envelope and Filter Sweep's own Per Tick
+        // formula already use below -- deliberately NOT Filter Sweep's
+        // log-scale remap, since these are small linear integer counts
+        // (sample-hold length, bit count), not a wide perceptually-
+        // logarithmic frequency range. Reusing that one shared progress
+        // source is also what makes this automatically span a step's full
+        // EXTENDED duration for free when step-extension has stretched
+        // currentPickLengthInHostSamples past the pick's natural length --
+        // no separate step-extension handling needed here, same as base
+        // Bitcrush already required none for its render-continue gate.
+        double bitcrushProgress = 0.0;
+
+        if (bitcrushActive)
+        {
+            bitcrushProgress = (currentPickLengthInHostSamples > 0.0)
+                ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
+                : 1.0;
+        }
+
+        // mode: 0 Static (unchanged), 1 Sweep In (set value -> extreme),
+        // 2 Sweep Out (extreme -> set value) -- see currentPickBitcrushRateMode/
+        // currentPickBitcrushBitDepthMode's own doc comment in PluginProcessor.h.
+        const auto sweptBitcrushValue = [bitcrushProgress] (float setValue, int mode, float extreme) -> float
+        {
+            if (mode == 1)
+                return (float) (setValue + (extreme - setValue) * bitcrushProgress);
+
+            if (mode == 2)
+                return (float) (extreme + (setValue - extreme) * bitcrushProgress);
+
+            return setValue;
+        };
+
+        const int effectiveBitcrushHoldSamples = bitcrushActive
+            ? juce::jmax (1, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushRateValue, currentPickBitcrushRateMode, bitcrushRateReductionExtreme)))
+            : 1;
+        const int effectiveBitcrushBitDepth = bitcrushActive
+            ? juce::jlimit (1, 24, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushBitDepthValue, currentPickBitcrushBitDepthMode, bitcrushBitDepthExtreme)))
+            : 1;
+
+        // Bitcrush sample-and-hold timing (Step 48/49): decided once per
+        // OUTPUT sample here (not per channel below), so a stereo pair
+        // holds/updates in lockstep rather than drifting apart -- counts
+        // down to 0, grabbing a fresh value on the 0 tick and restarting
+        // the count using WHATEVER the swept hold length is AT THAT
+        // MOMENT (Step 49) -- Static's fixed length is just the mode==0
+        // case of this same formula, so grab cadence smoothly follows a
+        // Sweep In/Out's ramp rather than needing a separate code path.
+        bool bitcrushShouldGrab = false;
+
+        if (bitcrushActive)
+        {
+            if (bitcrushHoldCounter <= 0)
+            {
+                bitcrushShouldGrab = true;
+                bitcrushHoldCounter = effectiveBitcrushHoldSamples - 1;
+            }
+            else
+            {
+                --bitcrushHoldCounter;
+            }
+        }
+
+        // Bitcrush post-processing (Step 48): applied in the SAME slot as
+        // Filter Sweep's cutoff filter below -- after the fade-gain
+        // calculation, right before the sample is written to the output
+        // buffer -- so it's a no-op for every other style and, like Filter
+        // Sweep, never needs to know how its input sample was generated
+        // (granular grain sum or direct-read interpolation) or how long
+        // this pick/step will run. Bit-depth quantization happens once per
+        // hold period, on the freshly grabbed sample (at THAT sample's own
+        // effective bit depth, Step 49), and that quantized value is what
+        // repeats for the rest of the period -- the classic stair-stepped
+        // bitcrusher structure, not two independent effects.
+        const auto applyBitcrush = [this, bitcrushShouldGrab, effectiveBitcrushBitDepth] (int channel, float rawSample) -> float
+        {
+            const int ch = juce::jmin (channel, GranularStretcher::maxChannels - 1);
+
+            if (bitcrushShouldGrab)
+            {
+                const float quantStep = 2.0f / (float) (1 << effectiveBitcrushBitDepth);
+                bitcrushHeldSample[ch] = quantStep * std::floor (rawSample / quantStep + 0.5f);
+            }
+
+            return bitcrushHeldSample[ch];
+        };
 
         // Ping-Pong's currentEndSample is a full round trip (2x slice
-        // length), and Stretch's is stretchDurationMultiplier-x — both can
+        // length), Stretch's is stretchDurationMultiplier-x, and Scratch's
+        // (v1) is its own Rate-driven cycle length — all three can
         // legitimately run past sourceLength when the slice sits at the
         // very end of the buffer. That's fine: the actual read position
-        // below is always either the FOLDED one (Ping-Pong) or safely
-        // bounded to the true slice by GranularStretcher itself (Stretch
-        // always renders through it), regardless. The sourceLength clamp
-        // is only needed for Forward/Tape Stop, where the raw (unfolded)
-        // position IS the read position.
-        const bool extendedRangeActive = pingPongActive || stretchActive;
+        // below is always either the FOLDED one (Ping-Pong/Scratch) or
+        // safely bounded to the true slice by GranularStretcher itself
+        // (Stretch always renders through it), regardless. The sourceLength
+        // clamp is only needed for Forward/Tape Stop, where the raw
+        // (unfolded) position IS the read position.
+        const bool extendedRangeActive = bounceActive || stretchActive;
         const int schedulingEndSample = extendedRangeActive ? currentEndSample : juce::jmin (currentEndSample, sourceLength);
 
         // Tape Stop position-exhaustion fix: a step-extended (or Whole
@@ -1500,7 +1769,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 if (fadeOutSamples > 0.0 && samplesRemaining < fadeOutSamples)
                     gain = juce::jmin (gain, samplesRemaining / fadeOutSamples);
 
-                // Ping-Pong (Step 19): the bounce point isn't a true edit --
+                // Ping-Pong (Step 19), and Scratch (v1) via the same
+                // bounceActive flag: the bounce point isn't a true edit --
                 // audio isn't symmetric around any given sample, so
                 // reversing direction there clicks just like the pick's own
                 // start/end would without a fade. Treat the midpoint as an
@@ -1513,7 +1783,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // (Step 46) applies here too, sharing applyCurveShape()
                 // with Tape Stop's decel above rather than a separate
                 // formula -- Linear (default) is the original behaviour.
-                if (pingPongActive)
+                // Only ONE midpoint is faded per pick here, same as
+                // Ping-Pong's own existing step-extension behaviour -- a
+                // multi-cycle extended Scratch step gets this treatment at
+                // its first turnaround only, not every subsequent bounce
+                // (per-turnaround fading is deferred to v2, same as
+                // per-direction curve shaping).
+                if (bounceActive)
                 {
                     const double distanceBeforeMidpoint = currentPickMidpointHostSamples - samplesSincePickStart;
                     const double distanceAfterMidpoint = samplesSincePickStart - currentPickMidpointHostSamples;
@@ -1613,9 +1889,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // that shorter span) -- true always in Clock/Slice Length
             // modes (their own duration formulas never let position
             // exceed one natural unit), and in Sequenced mode whenever a
-            // step isn't extended past its natural length.
+            // step isn't extended past its natural length. Scratch (v1)
+            // shares Ping-Pong's own pingPong fold via bounceActive -- its
+            // "natural unit" is one Rate cycle rather than one round trip
+            // through the slice (see bounceFoldLengthSamples below), but
+            // the looping mechanism itself (foldPosition()'s own modulo,
+            // once elapsed time exceeds one period) is identical.
             const GranularStretcher::PlaybackStyle grainPlaybackStyle =
-                pingPongActive ? GranularStretcher::PlaybackStyle::pingPong
+                bounceActive ? GranularStretcher::PlaybackStyle::pingPong
               : tapeStopActive ? GranularStretcher::PlaybackStyle::forward
                                : GranularStretcher::PlaybackStyle::loop;
 
@@ -1639,6 +1920,33 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             const double pingPongFoldLengthSamples = (sequencedMode && pingPongActive)
                 ? ((double) currentSliceLength * 0.5)
                 : (double) currentSliceLength;
+
+            // Scratch's own fold length (v1, source-domain samples): ONE
+            // LEG of its Rate cycle, already clamped to the slice's own
+            // content by computeScratchCycleLengthHostSamples() at
+            // pick-start -- see currentPickScratchCycleLengthHostSamples's
+            // own doc comment. Converted back from that captured host-
+            // domain length via playbackRate, the same conversion used to
+            // build it in the first place, so the two stay consistent
+            // sample for sample.
+            const double scratchFoldLengthSamples = scratchActive
+                ? (currentPickScratchCycleLengthHostSamples * 0.5 * playbackRate)
+                : 0.0;
+
+            // Shared fold length actually passed to foldPosition()/
+            // renderAndAdvance() below, wherever pingPongFoldLengthSamples
+            // used to be the only such value -- Ping-Pong's own (slice-
+            // content-derived) length, or Scratch's (Rate-cycle-derived)
+            // one, per bounceActive's own style check above.
+            const double bounceFoldLengthSamples = scratchActive ? scratchFoldLengthSamples : pingPongFoldLengthSamples;
+
+            // Forward/Backward Curve (Scratch v2) -- Linear/Linear for
+            // every style but Scratch, which reproduces foldPosition()'s
+            // own default (plain constant-speed bounce, byte-identical to
+            // before this existed) -- Ping-Pong itself never passes
+            // anything else, regardless of bounceActive.
+            const EasingCurve scratchForwardCurveForRender = scratchActive ? currentPickScratchForwardCurve : EasingCurve::linear;
+            const EasingCurve scratchBackwardCurveForRender = scratchActive ? currentPickScratchBackwardCurve : EasingCurve::linear;
 
             if (timeStretchMode || stretchActive)
             {
@@ -1720,9 +2028,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 float channelSums[GranularStretcher::maxChannels] = {};
                 granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
                                                      grainOutputHopSamples, grainSourceHopSamples,
-                                                     (double) currentSliceStartSample, pingPongFoldLengthSamples, grainPlaybackStyle,
+                                                     (double) currentSliceStartSample, bounceFoldLengthSamples, grainPlaybackStyle,
                                                      grainGrainSizeHostSamples, srConversionRatio, grainPitchRatio,
-                                                     grainWindowShapeToUse, channelSums);
+                                                     grainWindowShapeToUse, channelSums,
+                                                     scratchForwardCurveForRender, scratchBackwardCurveForRender);
 
                 for (int outCh = 0; outCh < outChannels; ++outCh)
                 {
@@ -1731,6 +2040,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                     if (filterSweepActive)
                         outputSample = filterSweepFilter.processSample (outCh, outputSample);
+
+                    if (bitcrushActive)
+                        outputSample = applyBitcrush (outCh, outputSample);
 
                     buffer.addSample (outCh, i, outputSample);
                 }
@@ -1787,7 +2099,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // positionForRead exactly, same as before this existed.
                 const double foldedReadPosition = (double) currentSliceStartSample
                     + GranularStretcher::foldPosition (positionForRead - (double) currentSliceStartSample,
-                                                        pingPongFoldLengthSamples, grainPlaybackStyle);
+                                                        bounceFoldLengthSamples, grainPlaybackStyle,
+                                                        scratchForwardCurveForRender, scratchBackwardCurveForRender);
 
                 const int idx0 = juce::jlimit (0, sourceLength - 1, (int) foldedReadPosition);
                 const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
@@ -1802,6 +2115,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                     if (filterSweepActive)
                         sample = filterSweepFilter.processSample (outCh, sample);
+
+                    if (bitcrushActive)
+                        sample = applyBitcrush (outCh, sample);
 
                     buffer.addSample (outCh, i, sample);
                 }
@@ -2370,7 +2686,7 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
 {
-    return index == 1 || index == 2 || index == 5; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47)
+    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2)
 }
 
 bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
@@ -2378,11 +2694,19 @@ bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
     return index == 5; // Subdivide (Step 47) -- see its declaration in PluginProcessor.h for why
 }
 
+bool SlicerAudioProcessor::isSequencerCellParameterSwept (int index)
+{
+    return index == 6 || index == 8; // Sample Rate Reduction, Bit Depth (Step 49) -- see declaration in PluginProcessor.h
+}
+
 int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
 {
     if (index == 1) return numFilterSweepFilterTypeOptions;
     if (index == 2) return numCurveShapeOptions;
     if (index == 5) return numNoteValueOptions + 1; // Subdivide (Step 47): "Off" (option 0) + the shared note-value palette
+    if (index == 7 || index == 9) return (int) bitcrushSweepModeNames.size(); // Sample Rate Reduction Mode, Bit Depth Mode (Step 49)
+    if (index == 10) return numNoteValueOptions; // Rate (Scratch v1) -- the shared note-value palette, no "Off" (Scratch always has a rate)
+    if (index == 11 || index == 12) return numEasingCurveOptions; // Forward Curve, Backward Curve (Scratch v2)
 
     return 0;
 }
@@ -2392,6 +2716,16 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int inde
     if (index == 1) return getFilterSweepFilterTypeName (optionIndex);
     if (index == 2) return getCurveShapeName (optionIndex);
     if (index == 5) return optionIndex <= 0 ? "Off" : getNoteValueName (optionIndex - 1); // Subdivide (Step 47)
+    if (index == 10) return getNoteValueName (optionIndex); // Rate (Scratch v1)
+    if (index == 11 || index == 12) return getEasingCurveName (easingCurveFromIndex (optionIndex)); // Forward Curve, Backward Curve (Scratch v2)
+
+    if (index == 7 || index == 9) // Sample Rate Reduction Mode, Bit Depth Mode (Step 49)
+    {
+        if (optionIndex < 0 || optionIndex >= (int) bitcrushSweepModeNames.size())
+            return {};
+
+        return bitcrushSweepModeNames[(size_t) optionIndex];
+    }
 
     return {};
 }
@@ -2401,6 +2735,8 @@ float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
     if (index == 0) return minFilterSweepResonance;
     if (index == 3) return minStretchGrainSizeMs;
     if (index == 4) return minStretchSpeedMultiplier;
+    if (index == 6) return 1.0f;  // Sample Rate Reduction (Step 49) -- 1 sample hold = no reduction at all
+    if (index == 8) return 1.0f;  // Bit Depth (Step 49) -- 1 bit is the quantizer's own hard floor
 
     return 0.0f;
 }
@@ -2411,6 +2747,8 @@ float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
     if (index == 3) return maxStretchGrainSizeMs;
     if (index == 4) return maxStretchSpeedMultiplier;
     if (index == 5) return (float) (numNoteValueOptions + 1 - 1); // Subdivide (Step 47) -- unused by the stepped slider itself (see isSequencerCellParameterSteppedSlider), kept for API symmetry
+    if (index == 6) return bitcrushRateReductionExtreme; // Sample Rate Reduction (Step 49) -- slider tops out exactly at the Sweep In/Out target, so "Static, maxed out" and "fully swept" read as the same crush amount
+    if (index == 8) return 16.0f; // Bit Depth (Step 49) -- a generous ceiling; the sweep's own extreme (1 bit) sits at the MIN end instead, see getSequencerCellParameterMin()
 
     return 1.0f;
 }
@@ -2419,12 +2757,14 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
 {
     // Parameter indices below match getSequencerCellParameterName()'s own
     // ordering: 0 Resonance, 1 Filter Type, 2 Curve Shape, 3 Grain Size,
-    // 4 Grain Speed (Step 45/46). Table form rather than a single flat
-    // list filtered by style -- keeps "which style offers what" readable
-    // at a glance and trivially extensible (a future parameter just adds
-    // itself to whichever case(s) it applies to). Style indices match
-    // indexToPlaybackStyle()'s ordinals, the same ones sequencerGrid
-    // itself stores.
+    // 4 Grain Speed (Step 45/46), 6 Sample Rate Reduction, 8 Bit Depth
+    // (Step 49 -- their paired Mode indices 7/9 are deliberately never
+    // listed here, see isSequencerCellParameterSwept()). Table form rather
+    // than a single flat list filtered by style -- keeps "which style
+    // offers what" readable at a glance and trivially extensible (a
+    // future parameter just adds itself to whichever case(s) it applies
+    // to). Style indices match indexToPlaybackStyle()'s ordinals, the
+    // same ones sequencerGrid itself stores.
     std::vector<int> params;
 
     switch (style)
@@ -2435,6 +2775,8 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
         case 3: params = { 3, 4 }; break; // Stretch -- Grain Size, Grain Speed
         case 4:                           // Filter Down
         case 5: params = { 0, 1 }; break; // Filter Up -- Resonance, Filter Type
+        case 6: params = { 6, 8 }; break;      // Bitcrush (Step 49) -- Sample Rate Reduction, Bit Depth
+        case 7: params = { 10, 11, 12 }; break; // Scratch (v1/v2) -- Rate, Forward Curve, Backward Curve
         default: return {};        // empty/invalid cell (-1) -- no menu at all
     }
 
@@ -2455,6 +2797,13 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 3: return getStretchGrainSizeMs();
         case 4: return getStretchSpeedMultiplier();
         case 5: return 0.0f; // Subdivide (Step 47) -- no global dial; Off is always the fallback/default
+        case 6: return bitcrushRateReductionDefault; // Sample Rate Reduction (Step 49) -- no global dial; the fixed default is always the fallback
+        case 7: return 0.0f; // Sample Rate Reduction Mode (Step 49) -- no global dial; Static is always the fallback/default
+        case 8: return bitcrushBitDepthDefault; // Bit Depth (Step 49) -- no global dial; the fixed default is always the fallback
+        case 9: return 0.0f; // Bit Depth Mode (Step 49) -- no global dial; Static is always the fallback/default
+        case 10: return (float) scratchDefaultRateIndex; // Rate (Scratch v1) -- no global dial; the fixed default is always the fallback
+        case 11: return 0.0f; // Forward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
+        case 12: return 0.0f; // Backward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
         default: return 0.0f;
     }
 }

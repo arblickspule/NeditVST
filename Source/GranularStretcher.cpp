@@ -1,7 +1,8 @@
 #include "GranularStretcher.h"
 #include <cmath>
 
-double GranularStretcher::foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style)
+double GranularStretcher::foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style,
+                                         EasingCurve forwardCurve, EasingCurve backwardCurve)
 {
     if (style == PlaybackStyle::forward || sliceLength <= 0.0)
         return elapsedSourceSamples;
@@ -22,7 +23,29 @@ double GranularStretcher::foldPosition (double elapsedSourceSamples, double slic
     if (cycle < 0.0) // defensive -- elapsedSourceSamples should never go negative in practice
         cycle += period;
 
-    return (cycle < sliceLength) ? cycle : (period - cycle);
+    const bool isForwardLeg = (cycle < sliceLength);
+
+    // Curve shaping (Scratch v2) -- deliberately a separate branch from
+    // the plain linear one below, rather than always going through the
+    // (mathematically equivalent, when both curves are Linear) shaped
+    // formula: keeps every EXISTING caller's output bit-for-bit identical
+    // to before this existed, rather than trusting that the extra
+    // multiply/divide here never introduces a floating-point difference.
+    // cycle (elapsed TIME since this leg started, folded) is linear in
+    // elapsedSourceSamples, which both this function's own grain-start
+    // caller and PluginProcessor's direct-read caller build from a
+    // constant-per-sample advance -- so legProgress here really is "how
+    // far through this leg's TIME we are," exactly what
+    // applyEasingCurve() expects.
+    if (forwardCurve != EasingCurve::linear || backwardCurve != EasingCurve::linear)
+    {
+        const double legProgress = isForwardLeg ? (cycle / sliceLength) : ((cycle - sliceLength) / sliceLength);
+        const double shaped = applyEasingCurve (legProgress, isForwardLeg ? forwardCurve : backwardCurve);
+
+        return isForwardLeg ? (shaped * sliceLength) : (sliceLength - shaped * sliceLength);
+    }
+
+    return isForwardLeg ? cycle : (period - cycle);
 }
 
 void GranularStretcher::reset (double startSourcePosition)
@@ -98,7 +121,9 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
                                            double srConversionRatio,
                                            double pitchRatio,
                                            WindowShape windowShape,
-                                           float* channelSumsOut)
+                                           float* channelSumsOut,
+                                           EasingCurve forwardCurve,
+                                           EasingCurve backwardCurve)
 {
     sourceChannels = juce::jlimit (0, maxChannels, sourceChannels);
 
@@ -110,10 +135,13 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
     // tracks for its own render path) -- foldPosition() is applied only at
     // the moment a grain actually spawns, so each grain's OWN read still
     // runs forward at its native rate below; only where consecutive grains
-    // START bounces back and forth for Ping-Pong.
+    // START bounces back and forth for Ping-Pong (or, curve-shaped, for
+    // Scratch -- forwardCurve/backwardCurve are Linear/Linear, foldPosition()'s
+    // own defaults, for every style but Scratch).
     const auto spawnAtCurrentMarch = [&]
     {
-        const double folded = sliceStartSample + foldPosition (nextGrainSourceStart - sliceStartSample, sliceLength, style);
+        const double folded = sliceStartSample + foldPosition (nextGrainSourceStart - sliceStartSample, sliceLength, style,
+                                                                 forwardCurve, backwardCurve);
         spawnGrain (folded);
         nextGrainSourceStart += sourceHopSamples;
     };

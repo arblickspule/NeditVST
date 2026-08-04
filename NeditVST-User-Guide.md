@@ -114,10 +114,21 @@ per step (in Sequenced mode):
   timestretch artifacts).
 - **Filter Down / Filter Up** — a resonant filter sweep, closing or
   opening over the duration of the hit.
+- **Scratch** — the same forward/backward bounce as Ping-Pong, but much
+  faster and tempo-synced — a quick flutter near the start of the slice,
+  like a DJ scratch. Its cycle speed (**Rate**) is adjustable per step,
+  and each direction's own **Forward Curve**/**Backward Curve** shapes
+  how the pitch actually bends within that stroke — Linear plays it back
+  at constant speed (no bend); Ease In, Ease Out, and Ease In-Out each
+  give the stroke a different speed profile (slow-building, sharp-and-
+  tapering, or a smooth slow-fast-slow swell), and the two directions can
+  be set differently for an asymmetric scratch (e.g. a sharp flick out,
+  a smoother pull back).
 
 Some styles have their own adjustable character — **resonance** and
-**filter type** for the Filter styles, for example — accessible in
-Sequencer mode by **right-clicking** an active step (see below).
+**filter type** for the Filter styles, **Rate**/**Forward Curve**/
+**Backward Curve** for Scratch, for example — accessible in Sequencer
+mode by **right-clicking** an active step (see below).
 
 ## 7. The Sequencer
 
@@ -141,10 +152,29 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
 - **Clear** — wipes the pattern.
 - **Right-click an active step** (click near the left edge of the step)
   to open its parameter menu — adjust that specific step's resonance,
-  filter type, curve shape, grain settings, or **Subdivide** (retriggers
-  that one step internally at a chosen rate — its own mini roll). Drag
-  the slider that appears, release to confirm — a small triangle marks
+  filter type, curve shape, grain settings, **Rate** (Scratch's own
+  bounce-cycle speed, picked from a note-value list — 1/16 by default),
+  **Forward Curve**/**Backward Curve** (Scratch's own per-direction pitch-
+  bend shape — Linear/Ease In/Ease Out/Ease In-Out, Linear by default),
+  or **Subdivide** (retriggers that one step internally at a chosen
+  rate — its own mini roll). Drag the slider that appears (or pick a
+  value directly from the list, for Rate/Forward Curve/Backward Curve/
+  Filter Type/Curve Shape), release to confirm — a small triangle marks
   any step with a customized value.
+- **Shift+drag a step's right edge to extend it** beyond its slice's
+  natural length. What happens with that extra time depends on the
+  step's playback style:
+  - **Forward / Ping-Pong / Scratch** — loop to fill the extra time
+    (Forward repeats the slice from the top; Ping-Pong repeats
+    additional forward/backward round trips; Scratch repeats additional
+    Rate-length bounce cycles).
+  - **Tape Stop / Stretch / Filter Down / Filter Up** — the effect
+    itself stretches to span the *entire* extended length: Tape Stop's
+    decel takes the full extended time to reach silence, Stretch's
+    mangle runs for the whole duration (looping its output if it
+    finishes early), and a Filter sweep glides continuously across the
+    whole extended step as one motion — even if Subdivide is also
+    retriggering the slice underneath it.
 
 ## 8. Known limitations (this build)
 
@@ -191,10 +221,23 @@ platforms. **Building locally on Mac also sidesteps the Gatekeeper issue
 entirely**, since a plugin built on your own machine is automatically
 trusted by that same machine.
 
-**You'll need first:** [Git](https://git-scm.com), [CMake](https://cmake.org/download)
-(3.22+), and a C++ compiler for your platform (see below). The first
-build downloads and compiles JUCE itself from scratch, so expect it to
-take 10–20 minutes — later builds are much faster.
+**You'll need first:** [CMake](https://cmake.org/download) (3.22+) and a
+C++ compiler for your platform (see below) — Git is optional (see below).
+The first build downloads and compiles JUCE itself from scratch, so
+expect it to take 10–20 minutes — later builds are much faster.
+
+### Getting the source code
+
+Two ways to do this — pick whichever's more comfortable:
+
+- **Easiest, no extra software needed:** go to
+  [github.com/nedrush/NeditVST](https://github.com/nedrush/NeditVST) in
+  your browser, click the green **"Code"** button, then **"Download
+  ZIP"**. Unzip it — that unzipped folder is what you'll `cd` into below,
+  instead of running the `git clone` line.
+- **If you're comfortable with Git:** the `git clone` command in each
+  section below does the same thing from the command line, and makes it
+  easy to grab updates later without re-downloading everything.
 
 ### Mac
 
@@ -213,8 +256,9 @@ The built plugin lands at `build/NeditVST_artefacts/Release/VST3/NeditVST.vst3`
 ### Windows
 
 Install **Visual Studio Community** (free) with the **"Desktop
-development with C++"** workload selected during setup, plus Git and
-CMake.
+development with C++"** workload selected during setup, plus CMake.
+Git is only needed if you're using `git clone` above instead of
+downloading the ZIP.
 
 ```
 git clone https://github.com/nedrush/NeditVST.git

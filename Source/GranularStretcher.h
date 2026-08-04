@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include <array>
+#include "EasingCurve.h"
 
 //==============================================================================
 /** Step-17: lightweight overlap-add granular time-stretcher.
@@ -45,6 +46,14 @@ public:
     // happen automatically (for as long as the render-continue gate keeps
     // letting rendering happen) without any separate pass-boundary
     // bookkeeping in the caller.
+    //
+    // pingPong is also what PluginProcessor's Scratch style (v1) passes
+    // here -- it's the same bounce fold, just with Scratch's own Rate-
+    // driven cycle length standing in for Ping-Pong's slice-derived one
+    // (see PluginProcessor.cpp's bounceFoldLengthSamples). Named for its
+    // first use rather than renamed to something more generic, since it's
+    // an internal implementation detail only PluginProcessor and this
+    // class ever see.
     enum class PlaybackStyle { forward, pingPong, loop };
 
     static constexpr int maxChannels = 2;
@@ -60,7 +69,25 @@ public:
     // folds the same unbounded input into [0, sliceLength) too, but with a
     // plain wraparound (modulo) instead of a bounce -- always counting
     // forward, restarting from 0 every sliceLength.
-    static double foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style);
+    //
+    // forwardCurve/backwardCurve (Scratch v2): optional per-leg easing,
+    // defaulting to EasingCurve::linear for both -- which reproduces
+    // today's exact math (constant speed within each leg), so every
+    // EXISTING caller (Ping-Pong, and this class's own pingPong-style use
+    // for Stretch's loop mode never reaches this branch) is completely
+    // unaffected. When either curve isn't linear, the otherwise-linear
+    // position within whichever leg elapsedSourceSamples currently falls
+    // in gets re-warped by that leg's own curve (forwardCurve for the
+    // counting-up leg, backwardCurve for the counting-down one) -- see
+    // applyEasingCurve()'s own doc comment for what each shape implies
+    // about the resulting speed. Only ever non-default for Scratch, from
+    // both PluginProcessor's own direct-read call and this class's
+    // internal grain-start-scheduling call inside renderAndAdvance(), so
+    // the two pitch modes keep behaving identically the same way they
+    // already always have for every other style.
+    static double foldPosition (double elapsedSourceSamples, double sliceLength, PlaybackStyle style,
+                                 EasingCurve forwardCurve = EasingCurve::linear,
+                                 EasingCurve backwardCurve = EasingCurve::linear);
 
     // Call whenever a new pick begins (fresh slice chosen, or a Clock-mode
     // retrigger) — clears every grain and queues one to spawn immediately
@@ -84,6 +111,11 @@ public:
     // which is what keeps stretch amount and pitch independently
     // controllable. pitchRatio == 1.0 is a complete no-op (matches
     // pre-Step-18 behaviour exactly).
+    // forwardCurve/backwardCurve (Scratch v2): passed straight through to
+    // this call's own internal foldPosition() use (grain-START scheduling
+    // -- see the class doc comment above), defaulting to Linear/Linear
+    // (today's exact behaviour) for every caller but Scratch's own
+    // Time-Stretch-pitch-mode render path.
     void renderAndAdvance (const juce::AudioBuffer<float>& sourceBuffer,
                             int sourceChannels,
                             double outputHopSamples,
@@ -95,7 +127,9 @@ public:
                             double srConversionRatio,
                             double pitchRatio,
                             WindowShape windowShape,
-                            float* channelSumsOut);
+                            float* channelSumsOut,
+                            EasingCurve forwardCurve = EasingCurve::linear,
+                            EasingCurve backwardCurve = EasingCurve::linear);
 
 private:
     struct Grain
