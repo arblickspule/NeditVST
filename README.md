@@ -1,3 +1,6 @@
+![NeditVST](https://static.independent.co.uk/s3fs-public/thumbnails/image/2011/10/03/11/653803.jpg?width=1200)
+
+
 # Generative Slicer — Step 1: plugin shell + sample loading
 
 What this does right now: loads a WAV/AIFF/FLAC file and plays the **whole
