@@ -24,7 +24,7 @@
     trades off pitch accuracy for beat-exact duration; Time-Stretch also
     has grain size/window shape/pitch shift controls), playback style
     (Forward / Ping-Pong / Tape Stop / Stretch / Filter
-    Down / Filter Up / Bitcrush / Scratch, rolled once per pick regardless of trigger mode —
+    Down / Filter Up / Bitcrush / Scratch / Flanger, rolled once per pick regardless of trigger mode —
     Stretch always renders through the granular engine regardless of pitch
     mode, with its own hardcoded small-grain/hard-edged-window character;
     Filter Down/Filter Up both apply a resonant low-pass swept log-scale
@@ -88,7 +88,7 @@
     beside the grid lets the currently selected PlaybackStyle be chosen by
     colour swatch, and each sequencer cell now remembers and plays back
     its own style (Forward/Ping-Pong/Tape Stop/Stretch/Filter Down/Filter
-    Up/Bitcrush/Scratch) rather than always Forward -- Randomize draws each hit's style
+    Up/Bitcrush/Scratch/Flanger) rather than always Forward -- Randomize draws each hit's style
     from the same weighted Playback Style probabilities Slice Length/Clock
     modes already use. */
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,

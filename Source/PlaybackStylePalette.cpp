@@ -23,6 +23,7 @@ juce::Colour PlaybackStylePalette::getStyleColour (int styleIndex)
         case 5:  return juce::Colours::gold;        // Filter Up
         case 6:  return juce::Colours::limegreen;   // Bitcrush
         case 7:  return juce::Colours::hotpink;     // Scratch
+        case 8:  return juce::Colours::cyan;        // Flanger
         default: return juce::Colours::grey;
     }
 }

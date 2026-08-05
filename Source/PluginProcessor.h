@@ -581,10 +581,34 @@ public:
     // curve choices get captured and fed into it. Both default to Linear
     // (index 0) when no override exists -- v1's exact constant-speed
     // sound -- same "no global dial" precedent as Rate itself.
-    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweepDown, filterSweepUp, bitcrush, scratch };
+    // Flanger extends the table with a ninth entry, following the exact
+    // same shape as Bitcrush -- a pure post-processing pass (short
+    // feed-forward delay line mixed with the dry signal, see
+    // processBlock()'s flangerActive branch) layered onto the pick's
+    // rendered output in the SAME slot Bitcrush/Filter Sweep already use,
+    // which is why it needs zero scheduling special-casing either -- it
+    // isn't tapeStop/stretch/pingPong/scratch, so it already falls through
+    // to every duration/looping/beat-quantize branch above exactly the way
+    // Bitcrush does. Slice Length/Clock modes (and any Sequenced step
+    // without its own override) always render it Static at the fixed
+    // default (flangerDelayTimeDefaultMs/flangerMixDefault in
+    // PluginProcessor.cpp) -- Delay Time and Mix are per-step adjustable,
+    // each with an independent Static/Sweep In/Sweep Out mode, via the
+    // same right-click menu mechanism (and the same shared sweep-mode
+    // option list) as Sample Rate Reduction/Bit Depth -- see
+    // getApplicableSequencerCellParameters() and SequencerGrid::
+    // showParameterMenuForCell()'s swept-parameter branch. Unlike
+    // Bitcrush's Sweep In/Out (measured against the individual pick's own
+    // duration), Flanger's sweep is measured against Filter Sweep's Whole
+    // Window progress (samplesSinceWindowStart/currentWindowLengthHost-
+    // Samples) wherever a window exists -- see flangerUseWholeWindow in
+    // processBlock() -- so it glides once across an entire Clock-mode
+    // window or Sequenced-mode step while Subdivide retriggers happen
+    // underneath, rather than resetting on every retrigger.
+    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweepDown, filterSweepUp, bitcrush, scratch, flanger };
 
-    static constexpr int numPlaybackStyleOptions = 8;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up" / "Bitcrush" / "Scratch"
+    static constexpr int numPlaybackStyleOptions = 9;
+    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up" / "Bitcrush" / "Scratch" / "Flanger"
 
     float getPlaybackStyleProbability (int index) const
     {
@@ -977,15 +1001,15 @@ public:
     int getStepResolutionIndex() const { return stepResolutionIndex.load(); }
 
     // Cell state (Step 41): each cell stores -1 (empty) or a
-    // PlaybackStyle index (0-7, same ordinal as the enum/
-    // indexToPlaybackStyle() below and playbackStyleProbabilities'
+    // PlaybackStyle index (0 to numPlaybackStyleOptions-1, same ordinal as
+    // the enum/indexToPlaybackStyle() below and playbackStyleProbabilities'
     // ordering) -- reusing the existing PlaybackStyle enum rather than a
     // parallel one. row/column outside the current grid dimensions are
     // silently ignored (defensive -- the UI should never ask for an
     // out-of-range cell, but dimensions can shift between a mouse event
     // being queued and processed).
     int getSequencerCellStyle (int row, int column) const; // -1 if empty or out-of-range
-    void setSequencerCell (int row, int column, int style); // style -1 clears; 0-7 sets that PlaybackStyle
+    void setSequencerCell (int row, int column, int style); // style -1 clears; 0 to numPlaybackStyleOptions-1 sets that PlaybackStyle
 
     // Step-extension (Pass 1, mechanism only) -- an optional per-cell
     // "extended length in steps" override, on top of the style set by
@@ -1098,15 +1122,21 @@ public:
     // foldPosition()'s forwardCurve/backwardCurve params). Discrete,
     // list-style submenus exactly like Rate -- their options are
     // EasingCurve's own four names, not the note-value palette.
-    static constexpr int numSequencerCellParameters = 13;
-    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve"
+    // Flanger adds Delay Time (index 13) and Mix (index 15), each paired
+    // with its own hidden Mode index (14 and 16 respectively -- always
+    // index+1), same "swept parameter with a paired Mode index" shape as
+    // Bitcrush's Sample Rate Reduction/Bit Depth above -- see
+    // isSequencerCellParameterSwept() and SequencerGrid::
+    // showParameterMenuForCell()'s swept branch.
+    static constexpr int numSequencerCellParameters = 17;
+    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve" / "Delay Time" / "Delay Time Mode" / "Mix" / "Mix Mode"
 
     // Swept parameters (Step 49): true for indices 6 and 8 (Sample Rate
-    // Reduction, Bit Depth) only -- these open a Static/Sweep In/Sweep Out
-    // mode-choice submenu FIRST, rather than going straight to a plain
-    // discrete-options submenu or straight to the slider overlay the way
-    // every other parameter here does. See SequencerGrid::
-    // showParameterMenuForCell().
+    // Reduction, Bit Depth), and 13 and 15 (Flanger's Delay Time, Mix) --
+    // these open a Static/Sweep In/Sweep Out mode-choice submenu FIRST,
+    // rather than going straight to a plain discrete-options submenu or
+    // straight to the slider overlay the way every other parameter here
+    // does. See SequencerGrid::showParameterMenuForCell().
     static bool isSequencerCellParameterSwept (int index);
 
     // Step 46: Resonance/Grain Size/Grain Speed are continuous (drive the
@@ -1238,6 +1268,7 @@ private:
         if (index == 5) return PlaybackStyle::filterSweepUp;
         if (index == 6) return PlaybackStyle::bitcrush;
         if (index == 7) return PlaybackStyle::scratch;
+        if (index == 8) return PlaybackStyle::flanger;
         return PlaybackStyle::forward;
     }
 
@@ -1459,8 +1490,9 @@ private:
     // by sampleLock, same as slices/manualPoints -- read on the audio
     // thread every sample Sequenced mode is active, written from the UI
     // thread on every mouse-drawn cell. Each entry is -1 (empty) or a
-    // PlaybackStyle index 0-7 (Step 41) -- an int, not a bool, since a
-    // cell now also remembers WHICH style it should play.
+    // PlaybackStyle index (0 to numPlaybackStyleOptions-1, Step 41) -- an
+    // int, not a bool, since a cell now also remembers WHICH style it
+    // should play.
     std::atomic<int> stepResolutionIndex { 7 }; // default: 16n (a sixteenth note)
     std::atomic<int> patternLengthBarsIndex { 0 }; // default: 1 bar
     std::vector<int> sequencerGrid;
@@ -1527,6 +1559,21 @@ private:
     float bitcrushHeldSample[GranularStretcher::maxChannels] = {};
     int bitcrushHoldCounter = 0;
 
+    // Flanger delay line -- a short feed-forward (no feedback) circular
+    // buffer per channel, sized in prepareToPlay() to comfortably hold
+    // flangerDelayTimeExtremeMs of audio at the real host sample rate
+    // (sample rate isn't known at construction, same reason
+    // filterSweepFilter itself is only prepare()'d there rather than at
+    // construction). Reset (cleared, write index rewound to 0) alongside
+    // bitcrushHeldSample/bitcrushHoldCounter above in the shared
+    // pickJustStarted block, so a fresh pick's comb character starts from
+    // silence rather than inheriting whatever the previous pick (of any
+    // style) left sitting in the line -- same "self-contained within one
+    // pick's lifetime" contract every other style's per-pick state already
+    // has.
+    juce::AudioBuffer<float> flangerDelayBuffer;
+    int flangerDelayWriteIndex = 0;
+
     // Filter Sweep resonance (Step 45) -- see setFilterSweepResonance()/
     // getFilterSweepResonance() above. ~2.0 approximates the requested
     // Q~2-3 range in this filter class's own "resonance" parameter (per
@@ -1579,6 +1626,16 @@ private:
     int currentPickBitcrushRateMode = 0;
     float currentPickBitcrushBitDepthValue = 0.0f;
     int currentPickBitcrushBitDepthMode = 0;
+
+    // This pick's own Flanger Delay Time/Mix VALUE and MODE, identical
+    // capture pattern to currentPickBitcrushRateValue/Mode above -- Slice
+    // Length/Clock always capture the fixed default value with Static mode
+    // (no global dial for either); Sequenced mode captures its step's own
+    // override if present. Harmless (unused) for every style but Flanger.
+    float currentPickFlangerDelayValue = 0.0f;
+    int currentPickFlangerDelayMode = 0;
+    float currentPickFlangerMixValue = 0.0f;
+    int currentPickFlangerMixMode = 0;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision

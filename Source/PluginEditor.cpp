@@ -506,15 +506,23 @@ void SlicerAudioProcessorEditor::resized()
     resetZoomButton.setBounds (zoomButtonsRow.removeFromLeft (150));
     area.removeFromTop (10);
 
-    // SequencerGrid's own width (Step 38) -- matches WaveformDisplay's,
-    // set from the SAME `area` (still full width at this point; only
-    // heights have been carved off it above) so the two always line up
-    // rather than the grid defaulting to a cramped fixed-pixel-per-column
-    // width. Reduced by the Style Palette's own width + the gap beside it
-    // (Step 41), so the COMBINED [palette][grid] row still matches the
-    // waveform's width overall, same as the grid alone did before the
-    // palette existed.
-    sequencerGrid.setTargetWidth (area.getWidth() - PlaybackStylePalette::preferredWidth - 10);
+    // SequencerGrid's own width (Step 38) -- driven by contentWidth (the
+    // SAME width basis layoutControlsContent()/the palette row above
+    // already used, computed just above at line ~497), NOT the outer
+    // editor's own `area.getWidth()` -- those two differ by exactly
+    // controlsViewport's own vertical scrollbar thickness (visible
+    // whenever the controls list -- which now includes a 9-row style
+    // palette -- is taller than controlsViewportHeight, i.e. essentially
+    // always). Using the wider, un-reduced `area.getWidth()` here sized
+    // the grid a scrollbar's-width too wide for the space sequencerViewport
+    // (nested inside controlsContent, which IS sized to contentWidth)
+    // actually gives it, so the grid's own rightmost sliver spilled past
+    // its container and picked up an unwanted horizontal scrollbar --
+    // this is the palette/grid misalignment. Reduced by the Style
+    // Palette's own width + the gap beside it (Step 41), so the COMBINED
+    // [palette][grid] row still matches contentWidth overall, same as the
+    // grid alone did before the palette existed.
+    sequencerGrid.setTargetWidth (contentWidth - PlaybackStylePalette::preferredWidth - 10);
 
     waveformDisplay.setBounds (area); // takes up all remaining space, always fully visible
 }
