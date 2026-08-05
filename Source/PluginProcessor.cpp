@@ -194,7 +194,7 @@ namespace
     // Playback style names (Step 19/21/22/29/30), indexed the same way the
     // weighted table stores them.
     const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up", "Bitcrush", "Scratch"
+        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up", "Bitcrush", "Scratch", "Flanger"
     } };
 
     // Bitcrush character constants (Step 48/49). Defaults match the
@@ -212,6 +212,20 @@ namespace
     constexpr float bitcrushBitDepthDefault = 5.0f;
     constexpr float bitcrushBitDepthExtreme = 1.0f;
 
+    // Flanger character constants -- same "fixed default, fixed Sweep
+    // In/Out extreme, no global dial" shape as Bitcrush's own constants
+    // just above. Delay Time's extreme sits at the TOP of its range (10ms,
+    // the deepest/most pronounced comb notch) exactly like Sample Rate
+    // Reduction's extreme does -- "Static, maxed out" and "fully swept"
+    // read as the same amount of character. Mix's extreme is fully wet
+    // (1.0) for the same reason -- it's the far end of the 0-100% range
+    // the parameter is already documented against.
+    constexpr float flangerDelayTimeMinMs = 0.5f;
+    constexpr float flangerDelayTimeDefaultMs = 2.0f;
+    constexpr float flangerDelayTimeExtremeMs = 10.0f;
+    constexpr float flangerMixDefault = 0.5f;
+    constexpr float flangerMixExtreme = 1.0f;
+
     // Scratch's default Rate (v1) -- index into the shared note-value
     // palette below, used whenever no per-step override exists (Slice
     // Length/Clock modes always; Sequenced mode steps that don't
@@ -220,9 +234,11 @@ namespace
     // same index stepResolutionIndex itself defaults to.
     constexpr int scratchDefaultRateIndex = 7;
 
-    // Sweep mode names (Step 49), shared by Sample Rate Reduction Mode and
-    // Bit Depth Mode -- see SlicerAudioProcessor::isSequencerCellParameterSwept().
-    const std::array<const char*, 3> bitcrushSweepModeNames { {
+    // Sweep mode names (Step 49), shared by every swept parameter's own
+    // Mode index -- Bitcrush's Sample Rate Reduction Mode/Bit Depth Mode,
+    // and Flanger's Delay Time Mode/Mix Mode -- see SlicerAudioProcessor::
+    // isSequencerCellParameterSwept().
+    const std::array<const char*, 3> sweepModeNames { {
         "Static", "Sweep In", "Sweep Out"
     } };
 
@@ -255,7 +271,7 @@ namespace
     const std::array<const char*, SlicerAudioProcessor::numSequencerCellParameters> sequencerCellParameterNames { {
         "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide",
         "Sample Rate Reduction", "Sample Rate Reduction Mode", "Bit Depth", "Bit Depth Mode", "Rate",
-        "Forward Curve", "Backward Curve"
+        "Forward Curve", "Backward Curve", "Delay Time", "Delay Time Mode", "Mix", "Mix Mode"
     } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
@@ -495,7 +511,7 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     // users -- kept Forward-only here instead, since "must sound identical
     // to current behavior" is the longstanding hard requirement across
     // every style added so far.)
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 
     // Filter Down/Filter Up (Step 29/30): fixed type, set once here rather
     // than per-sample -- only the cutoff frequency needs to change during
@@ -521,6 +537,19 @@ void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     // before setCutoffFrequency() means anything; 2 channels covers this
     // plugin's stereo-only output (isBusesLayoutSupported() requires it).
     filterSweepFilter.prepare ({ sampleRate, (juce::uint32) samplesPerBlock, 2 });
+
+    // Flanger delay line -- same "must be sized against the real sample
+    // rate, not a construction-time guess" reasoning as filterSweepFilter
+    // just above. Sized to comfortably hold flangerDelayTimeExtremeMs (the
+    // Sweep In/Out target, and the slider's own max -- see
+    // getSequencerCellParameterMax()) plus a little headroom, so the
+    // longest delay this style can ever request always fits without
+    // wrapping into not-yet-written buffer content. 2 channels matches
+    // filterSweepFilter's own stereo-only assumption above.
+    const int flangerDelayBufferLength = juce::jmax (4, juce::roundToInt ((flangerDelayTimeExtremeMs / 1000.0) * sampleRate) + 4);
+    flangerDelayBuffer.setSize (GranularStretcher::maxChannels, flangerDelayBufferLength);
+    flangerDelayBuffer.clear();
+    flangerDelayWriteIndex = 0;
 }
 
 void SlicerAudioProcessor::releaseResources() {}
@@ -853,6 +882,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
                     currentPickBitcrushBitDepthMode = 0;
 
+                    // Flanger Delay Time/Mix -- Clock mode always uses the
+                    // fixed default at Static mode; per-step value/mode
+                    // overrides are Sequenced-mode-only, same pattern as
+                    // Bitcrush just above.
+                    currentPickFlangerDelayValue = flangerDelayTimeDefaultMs;
+                    currentPickFlangerDelayMode = 0;
+                    currentPickFlangerMixValue = flangerMixDefault;
+                    currentPickFlangerMixMode = 0;
+
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
                         (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
@@ -1075,6 +1113,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             activeRow, currentStepIndex, "Bit Depth", bitcrushBitDepthDefault);
                         currentPickBitcrushBitDepthMode = juce::roundToInt (getSequencerCellParameterOverride (
                             activeRow, currentStepIndex, "Bit Depth Mode", 0.0f));
+
+                        // Flanger Delay Time/Mix VALUE + MODE -- same
+                        // per-step-override-else-global pattern as
+                        // Bitcrush just above.
+                        currentPickFlangerDelayValue = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Delay Time", flangerDelayTimeDefaultMs);
+                        currentPickFlangerDelayMode = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Delay Time Mode", 0.0f));
+                        currentPickFlangerMixValue = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Mix", flangerMixDefault);
+                        currentPickFlangerMixMode = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Mix Mode", 0.0f));
 
                         // Scratch Rate (v1) -- this step's own override if
                         // it has one, else the fixed default, same per-
@@ -1530,6 +1580,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
                 currentPickBitcrushBitDepthMode = 0;
 
+                // Flanger Delay Time/Mix -- Slice Length mode always uses
+                // the fixed default at Static mode; per-step value/mode
+                // overrides are Sequenced-mode-only, same pattern as
+                // Bitcrush just above.
+                currentPickFlangerDelayValue = flangerDelayTimeDefaultMs;
+                currentPickFlangerDelayMode = 0;
+                currentPickFlangerMixValue = flangerMixDefault;
+                currentPickFlangerMixMode = 0;
+
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
                 currentPickMidpointHostSamples = scratch
@@ -1619,6 +1678,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             bitcrushHoldCounter = 0;
             std::fill (std::begin (bitcrushHeldSample), std::end (bitcrushHeldSample), 0.0f);
 
+            // Flanger -- same "no bleed from a previous pick" reasoning as
+            // bitcrushHoldCounter/bitcrushHeldSample just above: a fresh
+            // pick's comb character starts from a silent delay line rather
+            // than continuing whatever content the previous pick (of any
+            // style) happened to leave behind.
+            flangerDelayBuffer.clear();
+            flangerDelayWriteIndex = 0;
+
 #if JUCE_DEBUG
             // TEMPORARY DEBUG -- remove once step-extension Tape Stop
             // testing is done. Fresh pick, fresh edges to detect below --
@@ -1638,6 +1705,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                          || currentPlaybackStyle == PlaybackStyle::filterSweepUp);
         const bool bitcrushActive = (currentPlaybackStyle == PlaybackStyle::bitcrush);
         const bool scratchActive = (currentPlaybackStyle == PlaybackStyle::scratch);
+        const bool flangerActive = (currentPlaybackStyle == PlaybackStyle::flanger);
 
         // Scratch (v1) reuses Ping-Pong's exact bounce mechanism -- same
         // foldPosition() fold, same turnaround click-avoidance fade, same
@@ -1737,6 +1805,99 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
 
             return bitcrushHeldSample[ch];
+        };
+
+        // Flanger Sweep In/Out: plain linear interpolation from this
+        // pick's own set value toward/away from the parameter's fixed
+        // extreme (same interpolation shape as Bitcrush's own Sweep
+        // In/Out above), but driven by Filter Sweep's Whole Window
+        // progress fraction rather than Bitcrush's per-pick one --
+        // samplesSinceWindowStart/currentWindowLengthHostSamples,
+        // continuous across an entire Clock-mode window or Sequenced-mode
+        // step regardless of how many Subdivide retriggers happen
+        // underneath, exactly the mechanism documented alongside
+        // useWholeWindow further below. Unlike Filter Sweep, Flanger has
+        // no Per Tick/Whole Window user toggle -- it always PREFERS whole-
+        // window timing wherever a window exists (Clock mode
+        // unconditionally; Sequenced mode whenever the active step has
+        // Subdivide on), and only falls back to the per-pick formula where
+        // there genuinely is no window to measure against (Slice Length
+        // mode, and non-subdivided Sequenced steps -- numerically
+        // identical to whole-window there anyway, per Filter Sweep's own
+        // comment below, since only one trigger occupies the whole window/
+        // step either way). This is what makes a Flanger step's sweep
+        // glide once across the WHOLE step while Subdivide's retriggers
+        // happen underneath, rather than resetting on every retrigger.
+        const bool flangerUseWholeWindow = clockMode || (sequencedMode && sequencedSubdivisionActive);
+
+        double flangerProgress = 0.0;
+
+        if (flangerActive)
+        {
+            flangerProgress = flangerUseWholeWindow
+                ? ((currentWindowLengthHostSamples > 0.0)
+                       ? juce::jlimit (0.0, 1.0, samplesSinceWindowStart / currentWindowLengthHostSamples)
+                       : 1.0)
+                : ((currentPickLengthInHostSamples > 0.0)
+                       ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
+                       : 1.0);
+        }
+
+        // mode: 0 Static (unchanged), 1 Sweep In (set value -> extreme),
+        // 2 Sweep Out (extreme -> set value) -- see currentPickFlangerDelayMode/
+        // currentPickFlangerMixMode's own doc comment in PluginProcessor.h.
+        const auto sweptFlangerValue = [flangerProgress] (float setValue, int mode, float extreme) -> float
+        {
+            if (mode == 1)
+                return (float) (setValue + (extreme - setValue) * flangerProgress);
+
+            if (mode == 2)
+                return (float) (extreme + (setValue - extreme) * flangerProgress);
+
+            return setValue;
+        };
+
+        const int flangerDelayBufferLength = flangerDelayBuffer.getNumSamples();
+        const int effectiveFlangerDelaySamples = (flangerActive && flangerDelayBufferLength > 2)
+            ? juce::jlimit (1, flangerDelayBufferLength - 2, juce::roundToInt (
+                  (sweptFlangerValue (currentPickFlangerDelayValue, currentPickFlangerDelayMode, flangerDelayTimeExtremeMs) / 1000.0) * hostSampleRate))
+            : 1;
+        const float effectiveFlangerMix = flangerActive
+            ? juce::jlimit (0.0f, 1.0f, sweptFlangerValue (currentPickFlangerMixValue, currentPickFlangerMixMode, flangerMixExtreme))
+            : 0.0f;
+
+        // Read position decided once per OUTPUT sample here (not per
+        // channel below), same "stereo pair stays in lockstep" reasoning
+        // as Bitcrush's shared hold counter above -- both channels read
+        // the delay line the same number of samples back, they just carry
+        // different content there.
+        const int flangerReadIndex = (flangerActive && flangerDelayBufferLength > 0)
+            ? (((flangerDelayWriteIndex - effectiveFlangerDelaySamples) % flangerDelayBufferLength + flangerDelayBufferLength) % flangerDelayBufferLength)
+            : 0;
+
+        // Flanger post-processing: applied in the SAME slot as Bitcrush/
+        // Filter Sweep just above -- after the fade-gain calculation,
+        // right before the sample is written to the output buffer -- so
+        // it's a no-op for every other style. Feed-forward only (no
+        // feedback): the freshly rendered DRY sample is what gets written
+        // into the delay line, and the output is a plain wet/dry crossfade
+        // between that dry sample and whatever this channel's line held
+        // effectiveFlangerDelaySamples ago -- the classic short-delay comb-
+        // filter character, not a resonant/feedback flanger.
+        const auto applyFlanger = [this, flangerReadIndex, effectiveFlangerMix] (int channel, float drySample) -> float
+        {
+            const int ch = juce::jmin (channel, GranularStretcher::maxChannels - 1);
+            const int bufLen = flangerDelayBuffer.getNumSamples();
+
+            if (bufLen <= 0)
+                return drySample;
+
+            float* delayData = flangerDelayBuffer.getWritePointer (ch);
+            const float delayed = delayData[flangerReadIndex];
+
+            delayData[flangerDelayWriteIndex % bufLen] = drySample;
+
+            return drySample + effectiveFlangerMix * (delayed - drySample);
         };
 
         // Ping-Pong's currentEndSample is a full round trip (2x slice
@@ -2186,6 +2347,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     if (bitcrushActive)
                         outputSample = applyBitcrush (outCh, outputSample);
 
+                    if (flangerActive)
+                        outputSample = applyFlanger (outCh, outputSample);
+
                     buffer.addSample (outCh, i, outputSample);
                 }
             }
@@ -2261,9 +2425,22 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     if (bitcrushActive)
                         sample = applyBitcrush (outCh, sample);
 
+                    if (flangerActive)
+                        sample = applyFlanger (outCh, sample);
+
                     buffer.addSample (outCh, i, sample);
                 }
             }
+
+            // Flanger delay line write position: advanced once per OUTPUT
+            // sample here (not per channel above), same lockstep reasoning
+            // as the read index computed alongside effectiveFlangerDelay-
+            // Samples earlier -- both channels' applyFlanger() calls above
+            // already wrote this sample's dry content at the PRE-advance
+            // index, so this just moves the line forward one slot for the
+            // next sample to read/write against.
+            if (flangerActive && flangerDelayBuffer.getNumSamples() > 0)
+                flangerDelayWriteIndex = (flangerDelayWriteIndex + 1) % flangerDelayBuffer.getNumSamples();
 
             // Tape Stop layers its rate multiplier onto the SAME shared
             // advance both pitch modes' scheduling position relies on --
@@ -2841,7 +3018,7 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
 {
-    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2)
+    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12 || index == 14 || index == 16; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2); Delay Time Mode, Mix Mode (Flanger)
 }
 
 bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
@@ -2851,7 +3028,7 @@ bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterSwept (int index)
 {
-    return index == 6 || index == 8; // Sample Rate Reduction, Bit Depth (Step 49) -- see declaration in PluginProcessor.h
+    return index == 6 || index == 8 || index == 13 || index == 15; // Sample Rate Reduction, Bit Depth (Step 49); Delay Time, Mix (Flanger) -- see declaration in PluginProcessor.h
 }
 
 int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
@@ -2859,7 +3036,7 @@ int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
     if (index == 1) return numFilterSweepFilterTypeOptions;
     if (index == 2) return numCurveShapeOptions;
     if (index == 5) return numNoteValueOptions + 1; // Subdivide (Step 47): "Off" (option 0) + the shared note-value palette
-    if (index == 7 || index == 9) return (int) bitcrushSweepModeNames.size(); // Sample Rate Reduction Mode, Bit Depth Mode (Step 49)
+    if (index == 7 || index == 9 || index == 14 || index == 16) return (int) sweepModeNames.size(); // Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Delay Time Mode, Mix Mode (Flanger)
     if (index == 10) return numNoteValueOptions; // Rate (Scratch v1) -- the shared note-value palette, no "Off" (Scratch always has a rate)
     if (index == 11 || index == 12) return numEasingCurveOptions; // Forward Curve, Backward Curve (Scratch v2)
 
@@ -2874,12 +3051,12 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int inde
     if (index == 10) return getNoteValueName (optionIndex); // Rate (Scratch v1)
     if (index == 11 || index == 12) return getEasingCurveName (easingCurveFromIndex (optionIndex)); // Forward Curve, Backward Curve (Scratch v2)
 
-    if (index == 7 || index == 9) // Sample Rate Reduction Mode, Bit Depth Mode (Step 49)
+    if (index == 7 || index == 9 || index == 14 || index == 16) // Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Delay Time Mode, Mix Mode (Flanger)
     {
-        if (optionIndex < 0 || optionIndex >= (int) bitcrushSweepModeNames.size())
+        if (optionIndex < 0 || optionIndex >= (int) sweepModeNames.size())
             return {};
 
-        return bitcrushSweepModeNames[(size_t) optionIndex];
+        return sweepModeNames[(size_t) optionIndex];
     }
 
     return {};
@@ -2892,6 +3069,8 @@ float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
     if (index == 4) return minStretchSpeedMultiplier;
     if (index == 6) return 1.0f;  // Sample Rate Reduction (Step 49) -- 1 sample hold = no reduction at all
     if (index == 8) return 1.0f;  // Bit Depth (Step 49) -- 1 bit is the quantizer's own hard floor
+    if (index == 13) return flangerDelayTimeMinMs; // Delay Time (Flanger) -- least pronounced comb character
+    if (index == 15) return 0.0f; // Mix (Flanger) -- fully dry
 
     return 0.0f;
 }
@@ -2904,6 +3083,8 @@ float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
     if (index == 5) return (float) (numNoteValueOptions + 1 - 1); // Subdivide (Step 47) -- unused by the stepped slider itself (see isSequencerCellParameterSteppedSlider), kept for API symmetry
     if (index == 6) return bitcrushRateReductionExtreme; // Sample Rate Reduction (Step 49) -- slider tops out exactly at the Sweep In/Out target, so "Static, maxed out" and "fully swept" read as the same crush amount
     if (index == 8) return 16.0f; // Bit Depth (Step 49) -- a generous ceiling; the sweep's own extreme (1 bit) sits at the MIN end instead, see getSequencerCellParameterMin()
+    if (index == 13) return flangerDelayTimeExtremeMs; // Delay Time (Flanger) -- slider tops out exactly at the Sweep In/Out target, same "Static maxed out == fully swept" convention as Sample Rate Reduction
+    if (index == 15) return flangerMixExtreme; // Mix (Flanger) -- fully wet, same convention
 
     return 1.0f;
 }
@@ -2913,8 +3094,9 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
     // Parameter indices below match getSequencerCellParameterName()'s own
     // ordering: 0 Resonance, 1 Filter Type, 2 Curve Shape, 3 Grain Size,
     // 4 Grain Speed (Step 45/46), 6 Sample Rate Reduction, 8 Bit Depth
-    // (Step 49 -- their paired Mode indices 7/9 are deliberately never
-    // listed here, see isSequencerCellParameterSwept()). Table form rather
+    // (Step 49), 13 Delay Time, 15 Mix (Flanger -- their paired Mode
+    // indices 7/9/14/16 are deliberately never listed here, see
+    // isSequencerCellParameterSwept()). Table form rather
     // than a single flat list filtered by style -- keeps "which style
     // offers what" readable at a glance and trivially extensible (a
     // future parameter just adds itself to whichever case(s) it applies
@@ -2932,6 +3114,7 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
         case 5: params = { 0, 1 }; break; // Filter Up -- Resonance, Filter Type
         case 6: params = { 6, 8 }; break;      // Bitcrush (Step 49) -- Sample Rate Reduction, Bit Depth
         case 7: params = { 10, 11, 12 }; break; // Scratch (v1/v2) -- Rate, Forward Curve, Backward Curve
+        case 8: params = { 13, 15 }; break;    // Flanger -- Delay Time, Mix
         default: return {};        // empty/invalid cell (-1) -- no menu at all
     }
 
@@ -2959,6 +3142,10 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 10: return (float) scratchDefaultRateIndex; // Rate (Scratch v1) -- no global dial; the fixed default is always the fallback
         case 11: return 0.0f; // Forward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
         case 12: return 0.0f; // Backward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
+        case 13: return flangerDelayTimeDefaultMs; // Delay Time (Flanger) -- no global dial; the fixed default is always the fallback
+        case 14: return 0.0f; // Delay Time Mode (Flanger) -- no global dial; Static is always the fallback/default
+        case 15: return flangerMixDefault; // Mix (Flanger) -- no global dial; the fixed default is always the fallback
+        case 16: return 0.0f; // Mix Mode (Flanger) -- no global dial; Static is always the fallback/default
         default: return 0.0f;
     }
 }
