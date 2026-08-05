@@ -5,8 +5,10 @@
 
 //==============================================================================
 /** Draws the loaded sample's waveform, a vertical line at each slice
-    boundary (bright magenta = manually placed, white = auto-detected),
-    one draggable probability "fader" per slice, a live highlight over
+    boundary (bright magenta = manually placed, white = Peak-detected, gold
+    = Onset-detected -- see the TEMPORARY Onset vs. Peak comparison tool in
+    paint(), PluginProcessor's getUseOnsetDetection()/getPeakDetectionMarkers()/
+    getOnsetDetectionMarkers()), one draggable probability "fader" per slice, a live highlight over
     whichever slice is currently sounding, two draggable Trim Start /
     Trim End handles (Step 23) — distinct yellow flagged lines, with
     everything outside them dimmed to make the excluded region obvious —

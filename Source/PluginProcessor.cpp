@@ -2496,7 +2496,12 @@ void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sens
 {
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
-    auto autoSlices = transientDetector.detectSlices (sensitivity, holdoffMs, trimStart, trimEnd);
+
+    // TEMPORARY (Onset vs. Peak comparison tool): this is the ONE place the
+    // toggle actually decides what gets played -- see setUseOnsetDetection().
+    const auto method = useOnsetDetectionForPlayback.load() ? DetectionMethod::onset
+                                                             : DetectionMethod::peak;
+    auto autoSlices = transientDetector.detectSlices (sensitivity, holdoffMs, trimStart, trimEnd, method);
 
     const juce::ScopedLock sl (sampleLock);
 
@@ -2512,10 +2517,47 @@ std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensi
 {
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
-    auto autoSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs, trimStart, trimEnd);
+
+    // TEMPORARY (Onset vs. Peak comparison tool): preview whichever method
+    // is actually driving playback, so a live sensitivity drag matches what
+    // will get committed. See rebuildSlicesFromDetectionAndManualPoints().
+    const auto method = useOnsetDetectionForPlayback.load() ? DetectionMethod::onset
+                                                             : DetectionMethod::peak;
+    auto autoSlices = transientDetector.detectSlices (sensitivity, defaultHoldoffMs, trimStart, trimEnd, method);
 
     const juce::ScopedLock sl (sampleLock);
     return mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
+}
+
+// TEMPORARY (Onset vs. Peak comparison tool -- see the public section this
+// pairs with in PluginProcessor.h). Raw, unmerged detector output for the
+// waveform's comparison overlay only.
+std::vector<int> SlicerAudioProcessor::getPeakDetectionMarkers() const
+{
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    auto rawSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd,
+                                                      DetectionMethod::peak);
+
+    std::vector<int> markers;
+    markers.reserve (rawSlices.size());
+    for (const auto& s : rawSlices)
+        markers.push_back (s.startSample);
+    return markers;
+}
+
+std::vector<int> SlicerAudioProcessor::getOnsetDetectionMarkers() const
+{
+    const int trimStart = trimStartSample.load();
+    const int trimEnd = trimEndSample.load();
+    auto rawSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd,
+                                                      DetectionMethod::onset);
+
+    std::vector<int> markers;
+    markers.reserve (rawSlices.size());
+    for (const auto& s : rawSlices)
+        markers.push_back (s.startSample);
+    return markers;
 }
 
 std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const
@@ -3302,7 +3344,13 @@ int SlicerAudioProcessor::excludeNearestAutoPoint (int targetSample)
     // Search the raw current auto-detection result (not the merged
     // `slices`) for the nearest boundary to targetSample — the trim start
     // is never a candidate, it can't be excluded.
-    auto autoSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd);
+    //
+    // TEMPORARY (Onset vs. Peak comparison tool): search whichever method is
+    // actually driving playback, so exclusion targets the boundaries the
+    // user can actually see/hear active on the waveform right now.
+    const auto method = useOnsetDetectionForPlayback.load() ? DetectionMethod::onset
+                                                             : DetectionMethod::peak;
+    auto autoSlices = transientDetector.detectSlices (currentSensitivity.load(), defaultHoldoffMs, trimStart, trimEnd, method);
 
     int nearest = -1;
     int bestDistance = std::numeric_limits<int>::max();

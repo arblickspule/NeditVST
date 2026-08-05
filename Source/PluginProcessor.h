@@ -86,6 +86,37 @@ public:
 
     float getSensitivity() const { return currentSensitivity.load(); }
 
+    //=== TEMPORARY: Onset vs. Peak detection comparison tool ===
+    // Lets the two TransientDetector::DetectionMethod pipelines (see that
+    // enum's doc comment) run side by side on the same audio at the same
+    // sensitivity: both are always detected (see getPeakDetectionMarkers()/
+    // getOnsetDetectionMarkers() below, used by WaveformDisplay to paint
+    // both marker sets at once), but only ONE of them actually feeds
+    // rebuildSlicesFromDetectionAndManualPoints()/previewSlicesAtSensitivity()/
+    // excludeNearestAutoPoint() -- i.e. only one drives what actually gets
+    // sliced and played. This toggle picks which. Same "immediately
+    // re-run detection" convention as setSensitivityAndRedetect() above,
+    // since flipping it changes the real slice boundaries.
+    //
+    // Delete this whole section (and useOnsetDetectionForPlayback, and the
+    // DetectionMethod plumbing through the three call sites above) once
+    // the onset-vs-peak decision is made -- see TransientDetector.h.
+    void setUseOnsetDetection (bool useOnset)
+    {
+        useOnsetDetectionForPlayback.store (useOnset);
+        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+    }
+
+    bool getUseOnsetDetection() const { return useOnsetDetectionForPlayback.load(); }
+
+    // Raw detector output for each method at the current sensitivity/holdoff/
+    // trim -- NOT merged with manual points or exclusions, since these exist
+    // purely so WaveformDisplay can paint "what this algorithm alone would
+    // place" for comparison. Never used to build the real, playable `slices`
+    // list -- see rebuildSlicesFromDetectionAndManualPoints() for that.
+    std::vector<int> getPeakDetectionMarkers() const;
+    std::vector<int> getOnsetDetectionMarkers() const;
+
     //=== Quantize detected transients to grid (Step 35) ===
     // Auto-detected transients only -- manual points are deliberately
     // user-placed (including via Shift's explicit free-placement bypass),
@@ -1462,6 +1493,13 @@ private:
     std::atomic<double> manualBpmOverrideValue { 120.0 };
 
     std::atomic<float> currentSensitivity { defaultSensitivity };
+
+    // TEMPORARY: Onset vs. Peak detection comparison tool -- see the public
+    // section above. Off (peak) by default, same "preserve existing
+    // behaviour until explicitly opted into" convention as every other
+    // toggle in this class. Delete alongside the rest of that section.
+    std::atomic<bool> useOnsetDetectionForPlayback { false };
+
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
 

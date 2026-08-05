@@ -209,6 +209,15 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         updateAfterSampleOrSliceChange();
     };
 
+    // TEMPORARY: Onset vs. Peak detection comparison tool.
+    controlsContent.addAndMakeVisible (onsetDetectionToggle);
+    onsetDetectionToggle.setToggleState (processor.getUseOnsetDetection(), juce::dontSendNotification);
+    onsetDetectionToggle.onClick = [this]
+    {
+        processor.setUseOnsetDetection (onsetDetectionToggle.getToggleState());
+        updateAfterSampleOrSliceChange();
+    };
+
     controlsContent.addAndMakeVisible (quantizeTransientsToggle);
     quantizeTransientsToggle.setToggleState (processor.getQuantizeTransientsEnabled(), juce::dontSendNotification);
     quantizeTransientsToggle.onClick = [this]
@@ -594,6 +603,9 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     auto sensitivityRow = area.removeFromTop (30);
     sensitivityLabel.setBounds (sensitivityRow.removeFromLeft (140));
     sensitivitySlider.setBounds (sensitivityRow);
+    area.removeFromTop (10);
+
+    onsetDetectionToggle.setBounds (area.removeFromTop (24)); // TEMPORARY -- see the toggle's own doc comment in the header
     area.removeFromTop (10);
 
     quantizeTransientsToggle.setBounds (area.removeFromTop (24));

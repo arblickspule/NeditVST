@@ -33,6 +33,31 @@ struct Slice
     int lengthInSamples() const { return endSample - startSample; }
 };
 
+//==============================================================================
+// TEMPORARY (Onset vs. Peak detection comparison tool): lets detectSlices()
+// run either the original peak-picking pipeline (`peak`, threshold-and-hold
+// on the derivative of a slow-attack envelope — everything described in the
+// file header above) or a new onset pipeline (`onset`) that instead looks
+// for the point amplitude first starts climbing out of near-silence, using
+// a much faster envelope/derivative pair so it isn't blurred by the slow
+// envelope's own attack smoothing, then snaps that point to the nearest
+// zero-crossing for a click-free cut. Both run on every analyze() call so
+// the UI can show both marker sets at once for comparison; the toggle in
+// the editor just decides which one is passed to detectSlices() for the
+// slices that actually get played.
+//
+// This whole enum, the `method` parameter below, and every onset-only
+// member/helper in this class are here ONLY to make that comparison
+// possible. Once the decision is made: if Peak wins, delete DetectionMethod,
+// the method parameter (detectSlices always behaves as `peak` did), and
+// every onset-only member below; if Onset wins, do the same in reverse —
+// delete the peak pipeline and make onset's the only path, no toggle.
+enum class DetectionMethod
+{
+    peak,
+    onset
+};
+
 class TransientDetector
 {
 public:
@@ -54,9 +79,13 @@ public:
         the role position 0 used to play (the one always-present, never-
         excludable boundary); the last slice's endSample is rangeEndSample
         rather than the buffer's true length. Defaults (-1, -1) mean "the
-        whole analysed buffer," matching pre-trim behaviour exactly. */
+        whole analysed buffer," matching pre-trim behaviour exactly.
+        method (TEMPORARY — see DetectionMethod above): which detection
+        pipeline to run. Defaults to `peak`, i.e. every pre-existing call
+        site is unaffected unless it explicitly opts into `onset`. */
     std::vector<Slice> detectSlices (float sensitivity, float holdoffMs,
-                                      int rangeStartSample = -1, int rangeEndSample = -1) const;
+                                      int rangeStartSample = -1, int rangeEndSample = -1,
+                                      DetectionMethod method = DetectionMethod::peak) const;
 
     bool hasAnalysis() const { return ! derivative.empty(); }
     int getAnalyzedLengthInSamples() const { return numSamples; }
@@ -79,10 +108,40 @@ public:
                           int rangeStartSample = -1, int rangeEndSample = -1) const;
 
 private:
+    // Peak-picking pipeline (unchanged from the original implementation).
+    std::vector<int> pickPeakOnsets (float sensitivity, float holdoffMs,
+                                      int rangeStartSample, int rangeEndSample) const;
+
+    // TEMPORARY (onset pipeline — see DetectionMethod above).
+    std::vector<int> pickOnsetOnsets (float sensitivity, float holdoffMs,
+                                       int rangeStartSample, int rangeEndSample) const;
+
+    // TEMPORARY: searches +/- searchRadiusSamples of index in the raw
+    // signed signal for the nearest sign change, returning index unchanged
+    // if none is found in range. Used to snap a detected onset to a
+    // click-free cut point rather than leaving it wherever the rise-rate
+    // threshold happened to walk back to.
+    int snapToNearestZeroCrossing (int index, int searchRadiusSamples) const;
+
     std::vector<float> envelope;
     std::vector<float> derivative;
     double analyzedSampleRate = 44100.0;
     int numSamples = 0;
     float globalMaxDerivative = 0.0f;
     float noiseFloor = 0.0f;
+
+    // TEMPORARY (onset pipeline): raw signed mono-summed signal (no
+    // rectification, no envelope smoothing) — needed for zero-crossing
+    // snapping, which only makes sense against the actual waveform, not an
+    // envelope. A fast-attack/fast-release envelope + its derivative, in
+    // the same shape as `envelope`/`derivative` above but with far shorter
+    // time constants (see onsetAttackTimeMs/onsetReleaseTimeMs in the .cpp)
+    // so it reacts to a rise within a fraction of a millisecond instead of
+    // smoothing across ~1ms.
+    std::vector<float> signedMonoSignal;
+    std::vector<float> onsetEnvelope;
+    std::vector<float> onsetDerivative;
+    float onsetGlobalMaxDerivative = 0.0f;
+    float onsetNoiseFloor = 0.0f;
+    float onsetGlobalMaxAmplitude = 0.0f; // used to derive a "near silence" floor for walking a threshold crossing back to the true rise start
 };
