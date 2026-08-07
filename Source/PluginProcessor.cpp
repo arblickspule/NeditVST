@@ -82,49 +82,37 @@ namespace
         "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up", "Bitcrush", "Scratch", "Flanger"
     } };
 
-    // Bitcrush character constants (Step 48/49). Defaults match the
-    // original Step 48 fixed constants exactly (12-sample hold, 5-bit
-    // depth), used whenever no per-step override exists (Slice Length/
-    // Clock modes always, Sequenced mode steps that don't customize it) --
-    // same "no global dial, fixed fallback" precedent as Subdivide.
-    // Extremes are Sweep In/Out's fixed far end (Step 49) -- 48 samples is
-    // roughly 1/48th of the original rate (well past the original spec's
-    // 1/8-1/16 default range, deliberately more extreme since a SWEEP
-    // TARGET is meant to read as "maximally crushed," not "typical");
-    // 1 bit is the most crushed a bit-depth quantizer can go.
-    constexpr float bitcrushRateReductionDefault = 12.0f;
+    // Bitcrush character constants (Step 48/49) -- Sweep In/Out's fixed
+    // far end. 48 samples is roughly 1/48th of the original rate (well
+    // past the original spec's 1/8-1/16 default range, deliberately more
+    // extreme since a SWEEP TARGET is meant to read as "maximally
+    // crushed," not "typical"); 1 bit is the most crushed a bit-depth
+    // quantizer can go. The Static-mode DEFAULTS these used to hold are no
+    // longer fixed constants -- see bitcrushRateReductionGlobalValue/
+    // bitcrushBitDepthGlobalValue in PluginProcessor.h (Slice Length/Clock
+    // mode parameter panel).
     constexpr float bitcrushRateReductionExtreme = 48.0f;
-    constexpr float bitcrushBitDepthDefault = 5.0f;
     constexpr float bitcrushBitDepthExtreme = 1.0f;
 
-    // Flanger character constants -- same "fixed default, fixed Sweep
-    // In/Out extreme, no global dial" shape as Bitcrush's own constants
-    // just above. Delay Time's extreme sits at the TOP of its range (10ms,
-    // the deepest/most pronounced comb notch) exactly like Sample Rate
-    // Reduction's extreme does -- "Static, maxed out" and "fully swept"
-    // read as the same amount of character. Mix's extreme is fully wet
-    // (1.0) for the same reason -- it's the far end of the 0-100% range
-    // the parameter is already documented against. Feedback's extreme
-    // (0.88) is deliberately short of the mathematically-stable 1.0 ceiling
-    // -- comfortably clear of self-oscillation/runaway buildup while still
+    // Flanger character constants -- same "fixed Sweep In/Out extreme, no
+    // longer a fixed Static default" shape as Bitcrush's own constants
+    // just above (see flangerDelayTimeGlobalValue/flangerMixGlobalValue/
+    // flangerFeedbackGlobalValue in PluginProcessor.h). Delay Time's
+    // extreme sits at the TOP of its range (10ms, the deepest/most
+    // pronounced comb notch) exactly like Sample Rate Reduction's extreme
+    // does -- "Static, maxed out" and "fully swept" read as the same
+    // amount of character. Mix's extreme is fully wet (1.0) for the same
+    // reason -- it's the far end of the 0-100% range the parameter is
+    // already documented against. Feedback's extreme (0.88) is
+    // deliberately short of the mathematically-stable 1.0 ceiling --
+    // comfortably clear of self-oscillation/runaway buildup while still
     // landing on a genuinely resonant, pronounced comb character at
     // "Static, maxed out"/Sweep's far end, same convention as the other
     // two.
     constexpr float flangerDelayTimeMinMs = 0.5f;
-    constexpr float flangerDelayTimeDefaultMs = 2.0f;
     constexpr float flangerDelayTimeExtremeMs = 10.0f;
-    constexpr float flangerMixDefault = 0.5f;
     constexpr float flangerMixExtreme = 1.0f;
-    constexpr float flangerFeedbackDefault = 0.3f;
     constexpr float flangerFeedbackExtreme = 0.88f;
-
-    // Scratch's default Rate (v1) -- index into the shared note-value
-    // palette below, used whenever no per-step override exists (Slice
-    // Length/Clock modes always; Sequenced mode steps that don't
-    // customize it), same "no global dial, fixed fallback" precedent as
-    // Subdivide/Bitcrush above. Index 7 is 16n -- a fast default, and the
-    // same index stepResolutionIndex itself defaults to.
-    constexpr int scratchDefaultRateIndex = 7;
 
     // Sweep mode names (Step 49), shared by every swept parameter's own
     // Mode index -- Bitcrush's Sample Rate Reduction Mode/Bit Depth Mode,
@@ -701,23 +689,23 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentSliceLength = slice.endSample - slice.startSample;
                     currentPosition = (double) slice.startSample;
 
-                    // Scratch (v1) -- Clock mode always uses the fixed
-                    // default Rate; per-step overrides are Sequenced-mode-
+                    // Scratch (v1) -- Clock mode always uses the global
+                    // Rate value; per-step overrides are Sequenced-mode-
                     // only, same pattern as Bitcrush above. Captured here,
                     // before currentEndSample below, since it feeds
                     // directly into that calculation, same as Grain Speed
                     // does for Stretch.
                     currentPickScratchCycleLengthHostSamples = scratch
-                        ? computeScratchCycleLengthHostSamples (scratchDefaultRateIndex, currentSliceLength,
+                        ? computeScratchCycleLengthHostSamples (getScratchRateGlobal(), currentSliceLength,
                                                                  hostBpm, hostSampleRate, playbackRate)
                         : 0.0;
 
                     // Forward/Backward Curve (Scratch v2) -- Clock mode
-                    // always uses the fixed Linear/Linear default; per-step
-                    // overrides are Sequenced-mode-only, same pattern as
-                    // Rate just above.
-                    currentPickScratchForwardCurve = EasingCurve::linear;
-                    currentPickScratchBackwardCurve = EasingCurve::linear;
+                    // always uses the global values; per-step overrides
+                    // are Sequenced-mode-only, same pattern as Rate just
+                    // above.
+                    currentPickScratchForwardCurve = easingCurveFromIndex (getScratchForwardCurveGlobal());
+                    currentPickScratchBackwardCurve = easingCurveFromIndex (getScratchBackwardCurveGlobal());
 
                     currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
                                      : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
@@ -740,24 +728,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     currentPickCurveShape = curveShapeValue.load();
 
                     // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
-                    // Clock mode always uses the fixed default at Static
-                    // mode; per-step value/mode overrides are Sequenced-
-                    // mode-only, same pattern as Filter Sweep just above.
-                    currentPickBitcrushRateValue = bitcrushRateReductionDefault;
-                    currentPickBitcrushRateMode = 0;
-                    currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
-                    currentPickBitcrushBitDepthMode = 0;
+                    // Clock mode always uses the global values; per-step
+                    // value/mode overrides are Sequenced-mode-only, same
+                    // pattern as Filter Sweep just above.
+                    currentPickBitcrushRateValue = getBitcrushRateReductionGlobal();
+                    currentPickBitcrushRateMode = getBitcrushRateReductionModeGlobal();
+                    currentPickBitcrushBitDepthValue = getBitcrushBitDepthGlobal();
+                    currentPickBitcrushBitDepthMode = getBitcrushBitDepthModeGlobal();
 
                     // Flanger Delay Time/Mix/Feedback -- Clock mode always
-                    // uses the fixed default at Static mode; per-step
-                    // value/mode overrides are Sequenced-mode-only, same
-                    // pattern as Bitcrush just above.
-                    currentPickFlangerDelayValue = flangerDelayTimeDefaultMs;
-                    currentPickFlangerDelayMode = 0;
-                    currentPickFlangerMixValue = flangerMixDefault;
-                    currentPickFlangerMixMode = 0;
-                    currentPickFlangerFeedbackValue = flangerFeedbackDefault;
-                    currentPickFlangerFeedbackMode = 0;
+                    // uses the global values; per-step value/mode overrides
+                    // are Sequenced-mode-only, same pattern as Bitcrush
+                    // just above.
+                    currentPickFlangerDelayValue = getFlangerDelayTimeGlobal();
+                    currentPickFlangerDelayMode = getFlangerDelayTimeModeGlobal();
+                    currentPickFlangerMixValue = getFlangerMixGlobal();
+                    currentPickFlangerMixMode = getFlangerMixModeGlobal();
+                    currentPickFlangerFeedbackValue = getFlangerFeedbackGlobal();
+                    currentPickFlangerFeedbackMode = getFlangerFeedbackModeGlobal();
 
                     samplesSincePickStart = 0.0;
                     const double naturalLengthHostSamples =
@@ -974,50 +962,49 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // SequencerGrid::showParameterMenuForCell()'s swept
                         // branch), separately from the value itself.
                         currentPickBitcrushRateValue = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Sample Rate Reduction", bitcrushRateReductionDefault);
+                            activeRow, currentStepIndex, "Sample Rate Reduction", getBitcrushRateReductionGlobal());
                         currentPickBitcrushRateMode = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Sample Rate Reduction Mode", 0.0f));
+                            activeRow, currentStepIndex, "Sample Rate Reduction Mode", (float) getBitcrushRateReductionModeGlobal()));
                         currentPickBitcrushBitDepthValue = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Bit Depth", bitcrushBitDepthDefault);
+                            activeRow, currentStepIndex, "Bit Depth", getBitcrushBitDepthGlobal());
                         currentPickBitcrushBitDepthMode = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Bit Depth Mode", 0.0f));
+                            activeRow, currentStepIndex, "Bit Depth Mode", (float) getBitcrushBitDepthModeGlobal()));
 
                         // Flanger Delay Time/Mix/Feedback VALUE + MODE --
                         // same per-step-override-else-global pattern as
                         // Bitcrush just above.
                         currentPickFlangerDelayValue = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Delay Time", flangerDelayTimeDefaultMs);
+                            activeRow, currentStepIndex, "Delay Time", getFlangerDelayTimeGlobal());
                         currentPickFlangerDelayMode = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Delay Time Mode", 0.0f));
+                            activeRow, currentStepIndex, "Delay Time Mode", (float) getFlangerDelayTimeModeGlobal()));
                         currentPickFlangerMixValue = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Mix", flangerMixDefault);
+                            activeRow, currentStepIndex, "Mix", getFlangerMixGlobal());
                         currentPickFlangerMixMode = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Mix Mode", 0.0f));
+                            activeRow, currentStepIndex, "Mix Mode", (float) getFlangerMixModeGlobal()));
                         currentPickFlangerFeedbackValue = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Feedback", flangerFeedbackDefault);
+                            activeRow, currentStepIndex, "Feedback", getFlangerFeedbackGlobal());
                         currentPickFlangerFeedbackMode = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Feedback Mode", 0.0f));
+                            activeRow, currentStepIndex, "Feedback Mode", (float) getFlangerFeedbackModeGlobal()));
 
                         // Scratch Rate (v1) -- this step's own override if
-                        // it has one, else the fixed default, same per-
+                        // it has one, else the global value, same per-
                         // step-override-else-global pattern as Filter
                         // Sweep/Bitcrush above.
                         const int scratchRateIndex = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Rate", (float) scratchDefaultRateIndex));
+                            activeRow, currentStepIndex, "Rate", (float) getScratchRateGlobal()));
                         currentPickScratchCycleLengthHostSamples = scratch
                             ? computeScratchCycleLengthHostSamples (scratchRateIndex, currentSliceLength,
                                                                      hostBpm, hostSampleRate, playbackRate)
                             : 0.0;
 
                         // Forward/Backward Curve (Scratch v2) -- this
-                        // step's own override if it has one, else Linear
-                        // (v1's exact constant-speed behaviour), same
-                        // per-step-override-else-fixed-default pattern as
-                        // Rate just above.
+                        // step's own override if it has one, else the
+                        // global value, same per-step-override-else-global
+                        // pattern as Rate just above.
                         currentPickScratchForwardCurve = easingCurveFromIndex (juce::roundToInt (
-                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Forward Curve", 0.0f)));
+                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Forward Curve", (float) getScratchForwardCurveGlobal())));
                         currentPickScratchBackwardCurve = easingCurveFromIndex (juce::roundToInt (
-                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Backward Curve", 0.0f)));
+                            getSequencerCellParameterOverride (activeRow, currentStepIndex, "Backward Curve", (float) getScratchBackwardCurveGlobal())));
 
                         // Sequenced mode's own step grid already enforces
                         // beat-alignment for SCHEDULING (every note starts
@@ -1411,22 +1398,21 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
 
-                // Scratch (v1) -- Slice Length mode always uses the fixed
-                // default Rate; per-step overrides are Sequenced-mode-only,
+                // Scratch (v1) -- Slice Length mode always uses the global
+                // Rate value; per-step overrides are Sequenced-mode-only,
                 // same pattern as Bitcrush above. Captured here, before
                 // currentEndSample below, since it feeds directly into that
                 // calculation, same as Grain Speed does for Stretch.
                 currentPickScratchCycleLengthHostSamples = scratch
-                    ? computeScratchCycleLengthHostSamples (scratchDefaultRateIndex, currentSliceLength,
+                    ? computeScratchCycleLengthHostSamples (getScratchRateGlobal(), currentSliceLength,
                                                              hostBpm, hostSampleRate, playbackRate)
                     : 0.0;
 
                 // Forward/Backward Curve (Scratch v2) -- Slice Length mode
-                // always uses the fixed Linear/Linear default; per-step
-                // overrides are Sequenced-mode-only, same pattern as Rate
-                // just above.
-                currentPickScratchForwardCurve = EasingCurve::linear;
-                currentPickScratchBackwardCurve = EasingCurve::linear;
+                // always uses the global values; per-step overrides are
+                // Sequenced-mode-only, same pattern as Rate just above.
+                currentPickScratchForwardCurve = easingCurveFromIndex (getScratchForwardCurveGlobal());
+                currentPickScratchBackwardCurve = easingCurveFromIndex (getScratchBackwardCurveGlobal());
 
                 currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
                                  : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
@@ -1444,24 +1430,24 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPickCurveShape = curveShapeValue.load();
 
                 // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
-                // Slice Length mode always uses the fixed default at
-                // Static mode; per-step value/mode overrides are
-                // Sequenced-mode-only, same pattern as Filter Sweep above.
-                currentPickBitcrushRateValue = bitcrushRateReductionDefault;
-                currentPickBitcrushRateMode = 0;
-                currentPickBitcrushBitDepthValue = bitcrushBitDepthDefault;
-                currentPickBitcrushBitDepthMode = 0;
+                // Slice Length mode always uses the global values;
+                // per-step value/mode overrides are Sequenced-mode-only,
+                // same pattern as Filter Sweep above.
+                currentPickBitcrushRateValue = getBitcrushRateReductionGlobal();
+                currentPickBitcrushRateMode = getBitcrushRateReductionModeGlobal();
+                currentPickBitcrushBitDepthValue = getBitcrushBitDepthGlobal();
+                currentPickBitcrushBitDepthMode = getBitcrushBitDepthModeGlobal();
 
                 // Flanger Delay Time/Mix/Feedback -- Slice Length mode
-                // always uses the fixed default at Static mode; per-step
-                // value/mode overrides are Sequenced-mode-only, same
-                // pattern as Bitcrush just above.
-                currentPickFlangerDelayValue = flangerDelayTimeDefaultMs;
-                currentPickFlangerDelayMode = 0;
-                currentPickFlangerMixValue = flangerMixDefault;
-                currentPickFlangerMixMode = 0;
-                currentPickFlangerFeedbackValue = flangerFeedbackDefault;
-                currentPickFlangerFeedbackMode = 0;
+                // always uses the global values; per-step value/mode
+                // overrides are Sequenced-mode-only, same pattern as
+                // Bitcrush just above.
+                currentPickFlangerDelayValue = getFlangerDelayTimeGlobal();
+                currentPickFlangerDelayMode = getFlangerDelayTimeModeGlobal();
+                currentPickFlangerMixValue = getFlangerMixGlobal();
+                currentPickFlangerMixMode = getFlangerMixModeGlobal();
+                currentPickFlangerFeedbackValue = getFlangerFeedbackGlobal();
+                currentPickFlangerFeedbackMode = getFlangerFeedbackModeGlobal();
 
                 samplesSincePickStart = 0.0;
                 const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
@@ -3005,20 +2991,46 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 3: return getStretchGrainSizeMs();
         case 4: return getStretchSpeedMultiplier();
         case 5: return 0.0f; // Subdivide (Step 47) -- no global dial; Off is always the fallback/default
-        case 6: return bitcrushRateReductionDefault; // Sample Rate Reduction (Step 49) -- no global dial; the fixed default is always the fallback
-        case 7: return 0.0f; // Sample Rate Reduction Mode (Step 49) -- no global dial; Static is always the fallback/default
-        case 8: return bitcrushBitDepthDefault; // Bit Depth (Step 49) -- no global dial; the fixed default is always the fallback
-        case 9: return 0.0f; // Bit Depth Mode (Step 49) -- no global dial; Static is always the fallback/default
-        case 10: return (float) scratchDefaultRateIndex; // Rate (Scratch v1) -- no global dial; the fixed default is always the fallback
-        case 11: return 0.0f; // Forward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
-        case 12: return 0.0f; // Backward Curve (Scratch v2) -- no global dial; Linear is always the fallback/default
-        case 13: return flangerDelayTimeDefaultMs; // Delay Time (Flanger) -- no global dial; the fixed default is always the fallback
-        case 14: return 0.0f; // Delay Time Mode (Flanger) -- no global dial; Static is always the fallback/default
-        case 15: return flangerMixDefault; // Mix (Flanger) -- no global dial; the fixed default is always the fallback
-        case 16: return 0.0f; // Mix Mode (Flanger) -- no global dial; Static is always the fallback/default
-        case 17: return flangerFeedbackDefault; // Feedback (Flanger) -- no global dial; the fixed default is always the fallback
-        case 18: return 0.0f; // Feedback Mode (Flanger) -- no global dial; Static is always the fallback/default
+        case 6: return getBitcrushRateReductionGlobal(); // Sample Rate Reduction
+        case 7: return (float) getBitcrushRateReductionModeGlobal();
+        case 8: return getBitcrushBitDepthGlobal(); // Bit Depth
+        case 9: return (float) getBitcrushBitDepthModeGlobal();
+        case 10: return (float) getScratchRateGlobal(); // Rate (Scratch v1)
+        case 11: return (float) getScratchForwardCurveGlobal(); // Forward Curve (Scratch v2)
+        case 12: return (float) getScratchBackwardCurveGlobal(); // Backward Curve (Scratch v2)
+        case 13: return getFlangerDelayTimeGlobal(); // Delay Time (Flanger)
+        case 14: return (float) getFlangerDelayTimeModeGlobal();
+        case 15: return getFlangerMixGlobal(); // Mix (Flanger)
+        case 16: return (float) getFlangerMixModeGlobal();
+        case 17: return getFlangerFeedbackGlobal(); // Feedback (Flanger)
+        case 18: return (float) getFlangerFeedbackModeGlobal();
         default: return 0.0f;
+    }
+}
+
+void SlicerAudioProcessor::setSequencerCellParameterGlobalValue (int index, float value)
+{
+    switch (index)
+    {
+        case 0: setFilterSweepResonance (value); break;
+        case 1: setFilterSweepFilterType (juce::roundToInt (value)); break;
+        case 2: setCurveShape (juce::roundToInt (value)); break;
+        case 3: setStretchGrainSizeMs (value); break;
+        case 4: setStretchSpeedMultiplier (value); break;
+        case 6: setBitcrushRateReductionGlobal (value); break;
+        case 7: setBitcrushRateReductionModeGlobal (juce::roundToInt (value)); break;
+        case 8: setBitcrushBitDepthGlobal (value); break;
+        case 9: setBitcrushBitDepthModeGlobal (juce::roundToInt (value)); break;
+        case 10: setScratchRateGlobal (juce::roundToInt (value)); break;
+        case 11: setScratchForwardCurveGlobal (juce::roundToInt (value)); break;
+        case 12: setScratchBackwardCurveGlobal (juce::roundToInt (value)); break;
+        case 13: setFlangerDelayTimeGlobal (value); break;
+        case 14: setFlangerDelayTimeModeGlobal (juce::roundToInt (value)); break;
+        case 15: setFlangerMixGlobal (value); break;
+        case 16: setFlangerMixModeGlobal (juce::roundToInt (value)); break;
+        case 17: setFlangerFeedbackGlobal (value); break;
+        case 18: setFlangerFeedbackModeGlobal (juce::roundToInt (value)); break;
+        default: break; // index 5 (Subdivide) has no global dial; out-of-range is a no-op
     }
 }
 

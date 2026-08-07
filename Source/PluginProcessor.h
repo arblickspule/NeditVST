@@ -791,6 +791,55 @@ public:
     void setStretchSpeedMultiplier (float multiplier) { stretchSpeedMultiplierValue.store (juce::jlimit (minStretchSpeedMultiplier, maxStretchSpeedMultiplier, multiplier)); }
     float getStretchSpeedMultiplier() const { return stretchSpeedMultiplierValue.load(); }
 
+    //=== Bitcrush/Flanger/Scratch global defaults (Slice Length/Clock mode
+    // parameter panel) ===
+    // These nine parameters (Bitcrush's Sample Rate Reduction/Bit Depth,
+    // each with a Static/Sweep In/Sweep Out Mode; Flanger's Delay Time/
+    // Mix/Feedback, each with its own Mode; Scratch's Rate/Forward Curve/
+    // Backward Curve) had no adjustable global dial before now -- Slice
+    // Length/Clock mode picks always used a fixed fallback constant (see
+    // bitcrushRateReductionDefault etc. in PluginProcessor.cpp), the same
+    // "no global dial" precedent Subdivide still follows. Turned into
+    // stored, adjustable values here, same "was a compile-time constant,
+    // now overridable" treatment Filter Sweep resonance/Stretch grain
+    // settings got above -- defaults match the original fixed constants
+    // exactly, so nothing changes until the parameter panel actually
+    // touches one. Min/max/option-count clamping reuses the generic
+    // getSequencerCellParameterMin()/Max()/NumOptions() rather than
+    // duplicating per-parameter range constants here (indices 6-18 match
+    // getSequencerCellParameterName()'s own ordering).
+    void setBitcrushRateReductionGlobal (float value) { bitcrushRateReductionGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (6), getSequencerCellParameterMax (6), value)); }
+    float getBitcrushRateReductionGlobal() const { return bitcrushRateReductionGlobalValue.load(); }
+    void setBitcrushRateReductionModeGlobal (int mode) { bitcrushRateReductionModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (7) - 1, mode)); }
+    int getBitcrushRateReductionModeGlobal() const { return bitcrushRateReductionModeGlobalValue.load(); }
+
+    void setBitcrushBitDepthGlobal (float value) { bitcrushBitDepthGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (8), getSequencerCellParameterMax (8), value)); }
+    float getBitcrushBitDepthGlobal() const { return bitcrushBitDepthGlobalValue.load(); }
+    void setBitcrushBitDepthModeGlobal (int mode) { bitcrushBitDepthModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (9) - 1, mode)); }
+    int getBitcrushBitDepthModeGlobal() const { return bitcrushBitDepthModeGlobalValue.load(); }
+
+    void setScratchRateGlobal (int index) { scratchRateGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (10) - 1, index)); }
+    int getScratchRateGlobal() const { return scratchRateGlobalValue.load(); }
+    void setScratchForwardCurveGlobal (int index) { scratchForwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (11) - 1, index)); }
+    int getScratchForwardCurveGlobal() const { return scratchForwardCurveGlobalValue.load(); }
+    void setScratchBackwardCurveGlobal (int index) { scratchBackwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (12) - 1, index)); }
+    int getScratchBackwardCurveGlobal() const { return scratchBackwardCurveGlobalValue.load(); }
+
+    void setFlangerDelayTimeGlobal (float value) { flangerDelayTimeGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (13), getSequencerCellParameterMax (13), value)); }
+    float getFlangerDelayTimeGlobal() const { return flangerDelayTimeGlobalValue.load(); }
+    void setFlangerDelayTimeModeGlobal (int mode) { flangerDelayTimeModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (14) - 1, mode)); }
+    int getFlangerDelayTimeModeGlobal() const { return flangerDelayTimeModeGlobalValue.load(); }
+
+    void setFlangerMixGlobal (float value) { flangerMixGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (15), getSequencerCellParameterMax (15), value)); }
+    float getFlangerMixGlobal() const { return flangerMixGlobalValue.load(); }
+    void setFlangerMixModeGlobal (int mode) { flangerMixModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (16) - 1, mode)); }
+    int getFlangerMixModeGlobal() const { return flangerMixModeGlobalValue.load(); }
+
+    void setFlangerFeedbackGlobal (float value) { flangerFeedbackGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (17), getSequencerCellParameterMax (17), value)); }
+    float getFlangerFeedbackGlobal() const { return flangerFeedbackGlobalValue.load(); }
+    void setFlangerFeedbackModeGlobal (int mode) { flangerFeedbackModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (18) - 1, mode)); }
+    int getFlangerFeedbackModeGlobal() const { return flangerFeedbackModeGlobalValue.load(); }
+
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
     // rendered, never when slices get picked/retriggered or how they're
@@ -1199,6 +1248,16 @@ public:
     // call Step 45 used directly. Not static (unlike the helpers above)
     // since it reads live atomic state.
     float getSequencerCellParameterGlobalValue (int index) const;
+
+    // Writes this parameter's GLOBAL value (the mirror-image dispatcher of
+    // getSequencerCellParameterGlobalValue() above) -- used by the Slice
+    // Length/Clock mode parameter panel, which edits global defaults
+    // directly rather than a per-step override. Discrete/Mode parameters
+    // are written as their option index cast to float, same convention
+    // setSequencerCellParameterOverride() already uses. A no-op for
+    // Subdivide (index 5), which has no global dial (see
+    // getSequencerCellParameterGlobalValue()'s own doc comment).
+    void setSequencerCellParameterGlobalValue (int index, float value);
 
     bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const;
     float getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const;
@@ -1633,6 +1692,23 @@ private:
     // Curve shape (Step 46) -- see setCurveShape()/getCurveShape() above.
     // 0 = linear, matching Tape Stop/Ping-Pong's existing behaviour.
     std::atomic<int> curveShapeValue { 0 };
+
+    // Bitcrush/Flanger/Scratch global defaults -- see set*Global()/
+    // get*Global() above. Defaults match the original fixed constants
+    // (bitcrushRateReductionDefault etc. in PluginProcessor.cpp) exactly.
+    std::atomic<float> bitcrushRateReductionGlobalValue { 12.0f };
+    std::atomic<int> bitcrushRateReductionModeGlobalValue { 0 };
+    std::atomic<float> bitcrushBitDepthGlobalValue { 5.0f };
+    std::atomic<int> bitcrushBitDepthModeGlobalValue { 0 };
+    std::atomic<int> scratchRateGlobalValue { 7 }; // 16n, matching scratchDefaultRateIndex
+    std::atomic<int> scratchForwardCurveGlobalValue { 0 }; // Linear
+    std::atomic<int> scratchBackwardCurveGlobalValue { 0 }; // Linear
+    std::atomic<float> flangerDelayTimeGlobalValue { 2.0f };
+    std::atomic<int> flangerDelayTimeModeGlobalValue { 0 };
+    std::atomic<float> flangerMixGlobalValue { 0.5f };
+    std::atomic<int> flangerMixModeGlobalValue { 0 };
+    std::atomic<float> flangerFeedbackGlobalValue { 0.3f };
+    std::atomic<int> flangerFeedbackModeGlobalValue { 0 };
 
     // This pick's own resonance/filter type/curve shape (Step 45/46),
     // captured once at pick-start by every trigger mode (Slice Length/

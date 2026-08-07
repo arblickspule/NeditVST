@@ -41,6 +41,10 @@
             file="../Source/PlaybackStylePalette.h"/>
       <FILE id="e5Vn8Q" name="EasingCurve.h" compile="0" resource="0"
             file="../Source/EasingCurve.h"/>
+      <FILE id="f3Kp9L" name="PlaybackStyleParameterPanel.cpp" compile="1" resource="0"
+            file="../Source/PlaybackStyleParameterPanel.cpp"/>
+      <FILE id="g7Mq2X" name="PlaybackStyleParameterPanel.h" compile="0" resource="0"
+            file="../Source/PlaybackStyleParameterPanel.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

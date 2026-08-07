@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), sequencerGrid (p), playbackStylePalette (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), playbackStyleParameterPanel (p), sequencerGrid (p), playbackStylePalette (p)
 {
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
@@ -292,6 +292,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     playbackStyleLabel.setJustificationType (juce::Justification::centredLeft);
 
     controlsContent.addAndMakeVisible (playbackStyleGrid);
+
+    controlsContent.addAndMakeVisible (playbackStyleParametersLabel);
+    playbackStyleParametersLabel.setText ("Style parameters", juce::dontSendNotification);
+    playbackStyleParametersLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (playbackStyleParameterPanel);
 
     controlsContent.addAndMakeVisible (clockReferenceLabel);
     clockReferenceLabel.setText ("Clock reference", juce::dontSendNotification);
@@ -623,6 +629,10 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     playbackStyleGrid.setBounds (area.removeFromTop (PlaybackStyleGrid::getPreferredHeight()));
     area.removeFromTop (20);
 
+    playbackStyleParametersLabel.setBounds (area.removeFromTop (20));
+    playbackStyleParameterPanel.setBounds (area.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
+    area.removeFromTop (20);
+
     auto clockReferenceRow = area.removeFromTop (30);
     clockReferenceLabel.setBounds (clockReferenceRow.removeFromLeft (140));
     clockReferenceSelector.setBounds (clockReferenceRow.removeFromLeft (150));
@@ -801,6 +811,13 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     // randomizeSequence()'s use of playbackStyleProbabilities).
     playbackStyleLabel.setVisible (true);
     playbackStyleGrid.setVisible (true);
+
+    // Playback Style parameter panel -- the mirror image of the
+    // Sequenced-only group below: visible in Slice Length/Clock modes,
+    // hidden in Sequenced mode, which keeps its own per-step right-click
+    // editing on the grid instead (see SequencerGrid's doc comment).
+    playbackStyleParametersLabel.setVisible (! sequenced);
+    playbackStyleParameterPanel.setVisible (! sequenced);
 
     // Sequenced-only controls (Step 37/38/41).
     stepResolutionLabel.setVisible (sequenced);

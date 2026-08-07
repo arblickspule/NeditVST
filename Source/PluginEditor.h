@@ -7,6 +7,7 @@
 #include "PlaybackStyleGrid.h"
 #include "SequencerGrid.h"
 #include "PlaybackStylePalette.h"
+#include "PlaybackStyleParameterPanel.h"
 
 //==============================================================================
 /** Step-41 editor: load button, reset-edits safety net, undo/redo, an
@@ -224,6 +225,17 @@ private:
     // see SequencerGrid's doc comment.
     juce::Label playbackStyleLabel;
     PlaybackStyleGrid playbackStyleGrid;
+
+    // Playback Style parameter panel -- a style picker + a persistent
+    // panel of that style's own parameters (Static/Sweep In/Sweep Out
+    // modes, sliders, discrete option pickers), all reusing the exact
+    // widgets SequencerGrid's right-click menu already uses. Visible in
+    // Slice Length/Clock modes only (Sequenced mode keeps its own
+    // per-step right-click editing instead, see updateTriggerModeVisibility()).
+    // Edits write straight into the same global-default storage a
+    // Sequencer step without its own override already falls back to.
+    juce::Label playbackStyleParametersLabel;
+    PlaybackStyleParameterPanel playbackStyleParameterPanel;
 
     // Clock-mode-only controls — laid out in reserved space, hidden
     // (setVisible(false)) rather than the window resizing dynamically,

@@ -81,6 +81,8 @@ target_sources(NeditVST
         Source/SequencerGrid.h
         Source/PlaybackStylePalette.cpp
         Source/PlaybackStylePalette.h
+        Source/PlaybackStyleParameterPanel.cpp
+        Source/PlaybackStyleParameterPanel.h
         Source/EasingCurve.h
 )
 
