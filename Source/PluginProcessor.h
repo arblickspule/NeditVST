@@ -81,41 +81,10 @@ public:
     void setSensitivityAndRedetect (float sensitivity)
     {
         currentSensitivity.store (juce::jlimit (0.0f, 1.0f, sensitivity));
-        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
     float getSensitivity() const { return currentSensitivity.load(); }
-
-    //=== TEMPORARY: Onset vs. Peak detection comparison tool ===
-    // Lets the two TransientDetector::DetectionMethod pipelines (see that
-    // enum's doc comment) run side by side on the same audio at the same
-    // sensitivity: both are always detected (see getPeakDetectionMarkers()/
-    // getOnsetDetectionMarkers() below, used by WaveformDisplay to paint
-    // both marker sets at once), but only ONE of them actually feeds
-    // rebuildSlicesFromDetectionAndManualPoints()/previewSlicesAtSensitivity()/
-    // excludeNearestAutoPoint() -- i.e. only one drives what actually gets
-    // sliced and played. This toggle picks which. Same "immediately
-    // re-run detection" convention as setSensitivityAndRedetect() above,
-    // since flipping it changes the real slice boundaries.
-    //
-    // Delete this whole section (and useOnsetDetectionForPlayback, and the
-    // DetectionMethod plumbing through the three call sites above) once
-    // the onset-vs-peak decision is made -- see TransientDetector.h.
-    void setUseOnsetDetection (bool useOnset)
-    {
-        useOnsetDetectionForPlayback.store (useOnset);
-        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
-    }
-
-    bool getUseOnsetDetection() const { return useOnsetDetectionForPlayback.load(); }
-
-    // Raw detector output for each method at the current sensitivity/holdoff/
-    // trim -- NOT merged with manual points or exclusions, since these exist
-    // purely so WaveformDisplay can paint "what this algorithm alone would
-    // place" for comparison. Never used to build the real, playable `slices`
-    // list -- see rebuildSlicesFromDetectionAndManualPoints() for that.
-    std::vector<int> getPeakDetectionMarkers() const;
-    std::vector<int> getOnsetDetectionMarkers() const;
 
     //=== Quantize detected transients to grid (Step 35) ===
     // Auto-detected transients only -- manual points are deliberately
@@ -140,7 +109,7 @@ public:
     void setQuantizeTransientsEnabled (bool enabled)
     {
         quantizeTransientsEnabled.store (enabled);
-        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
     bool getQuantizeTransientsEnabled() const { return quantizeTransientsEnabled.load(); }
@@ -148,7 +117,7 @@ public:
     void setQuantizeGridIndex (int index)
     {
         quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
-        redetectSlices (currentSensitivity.load(), defaultHoldoffMs);
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
     int getQuantizeGridIndex() const { return quantizeGridIndex.load(); }
@@ -194,7 +163,7 @@ public:
         }
 
         trimStartSample.store (target);
-        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
     void setTrimEndSample (int sample, bool snapToTransient = true)
@@ -211,7 +180,7 @@ public:
         }
 
         trimEndSample.store (target);
-        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), defaultHoldoffMs);
+        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
     //=== Audition (Step 25) ===
@@ -1417,6 +1386,37 @@ private:
     // consistent with the direct-read path "for free."
     double computeSourceSpanSeconds() const;
 
+    // Tempo-relative minimum holdoff between consecutive detected
+    // transients, replacing the old fixed defaultHoldoffMs floor everywhere
+    // detection actually runs (see the call sites below). At max
+    // sensitivity, a fixed ms floor lets detection density run away on fast
+    // material and stay needlessly sparse on slow material — neither
+    // bounded by anything musical. This instead never allows two onsets
+    // closer than roughly a 32nd note apart AT THE LOOP'S OWN CALCULATED
+    // TEMPO (getCalculatedOriginalBpm(), the same trim/bars/manual-override
+    // -aware derivation used everywhere else tempo matters in this class),
+    // so density scales with how fast the material actually is instead of
+    // an arbitrary constant. A 32nd note is 1/8 of a quarter-note beat
+    // (assumes 4/4, same assumption used throughout); 60000/bpm is one
+    // beat in ms.
+    //
+    // Falls back to the old fixed defaultHoldoffMs when there's no usable
+    // tempo yet (bpm <= 0 -- no sample loaded, or a degenerate span), so
+    // behaviour before a sample loads is unchanged. Also floors at 1ms as a
+    // numerical safety net (not a musical one) against an absurd manual BPM
+    // override collapsing the holdoff to ~0 and effectively disabling it.
+    float computeMinimumHoldoffMs() const
+    {
+        const double bpm = getCalculatedOriginalBpm();
+
+        if (bpm <= 0.0)
+            return defaultHoldoffMs;
+
+        constexpr double thirtySecondNoteFractionOfBeat = 1.0 / 8.0;
+        const double beatMs = 60000.0 / bpm;
+        return (float) juce::jmax (1.0, beatMs * thirtySecondNoteFractionOfBeat);
+    }
+
     // Audition (Step 25) — the raw, generative-engine-bypassing loop
     // render. Called from processBlock() (sampleLock already held) in
     // place of everything below it whenever auditionActive is set. Reads/
@@ -1493,13 +1493,6 @@ private:
     std::atomic<double> manualBpmOverrideValue { 120.0 };
 
     std::atomic<float> currentSensitivity { defaultSensitivity };
-
-    // TEMPORARY: Onset vs. Peak detection comparison tool -- see the public
-    // section above. Off (peak) by default, same "preserve existing
-    // behaviour until explicitly opted into" convention as every other
-    // toggle in this class. Delete alongside the rest of that section.
-    std::atomic<bool> useOnsetDetectionForPlayback { false };
-
     std::atomic<float> fadeInMs { 5.0f };
     std::atomic<float> fadeOutMs { 15.0f };
 
@@ -1993,9 +1986,13 @@ private:
     bool currentPickBeatQuantized = false;
     double currentPickQuantizedStretchRatio = 1.0;
 
-    // Sensible starting defaults — moderate sensitivity, 30ms holdoff to
-    // avoid double-triggering on a single drum hit's ringing tail.
-    static constexpr float defaultSensitivity = 0.5f;
+    static constexpr float defaultSensitivity = 0.5f; // sensible starting sensitivity
+
+    // Fixed-ms holdoff floor — ONLY used as computeMinimumHoldoffMs()'s
+    // fallback when there's no usable tempo yet (no sample loaded). Every
+    // actual detection call site uses computeMinimumHoldoffMs() instead of
+    // this directly; see that method's doc comment for why (tempo-relative
+    // holdoff replaced this as the real minimum-gap floor).
     static constexpr float defaultHoldoffMs = 30.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SlicerAudioProcessor)

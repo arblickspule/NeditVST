@@ -259,15 +259,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
         }
         else
         {
-            // TEMPORARY (Onset vs. Peak comparison tool): this boundary's
-            // colour follows whichever detection method is actually active
-            // (see processor.getUseOnsetDetection()) rather than always
-            // being white, so it stays consistent with the comparison
-            // overlay drawn below -- white always means Peak, gold always
-            // means Onset, regardless of which one is currently driving
-            // playback. Revert to plain white once the decision is made.
-            g.setColour (processor.getUseOnsetDetection() ? juce::Colours::gold.withAlpha (0.5f)
-                                                           : juce::Colours::white.withAlpha (0.5f));
+            g.setColour (juce::Colours::white.withAlpha (0.5f));
             g.drawVerticalLine ((int) startX, bounds.getY(), bounds.getBottom());
         }
 
@@ -299,35 +291,6 @@ void WaveformDisplay::paint (juce::Graphics& g)
 
         g.setColour (juce::Colours::orange.withAlpha (0.9f));
         g.drawRect (faderX, bounds.getY(), faderWidth, bounds.getHeight(), 1.0f);
-    }
-
-    // --- TEMPORARY (Onset vs. Peak detection comparison tool): overlay the
-    // INACTIVE method's raw marker positions (unmerged with manual points/
-    // exclusions -- purely "what this algorithm alone would place") in its
-    // own colour, so both algorithms' output are visible at once regardless
-    // of which one is actually driving playback (the toggle above just
-    // decides which colour the REAL boundaries drawn in the loop above use).
-    // Suppressed during a live sensitivity-preview drag -- previewSlices
-    // only reflects the active method at the trial value, and there's no
-    // cheap way to get the inactive method's trial-value markers too, so
-    // rather than show a stale/inconsistent overlay this just hides it for
-    // the drag's duration; it reappears as soon as the drag ends and a real
-    // refresh() runs.
-    //
-    // Delete this whole block (and the two processor accessors it calls,
-    // and the colour-follows-toggle change in the loop above) once the
-    // onset-vs-peak decision is made. ---
-    if (! hasPreview)
-    {
-        const bool onsetActive = processor.getUseOnsetDetection();
-        const auto inactiveMarkers = onsetActive ? processor.getPeakDetectionMarkers()
-                                                  : processor.getOnsetDetectionMarkers();
-
-        g.setColour (onsetActive ? juce::Colours::white.withAlpha (0.5f)
-                                  : juce::Colours::gold.withAlpha (0.5f));
-
-        for (const int sample : inactiveMarkers)
-            g.drawVerticalLine ((int) sampleToX (sample), bounds.getY(), bounds.getBottom());
     }
 }
 

@@ -200,12 +200,6 @@ private:
     juce::Label sensitivityLabel;
     juce::Slider sensitivitySlider;
 
-    // TEMPORARY: Onset vs. Peak detection comparison tool -- see
-    // SlicerAudioProcessor::setUseOnsetDetection()/getUseOnsetDetection()
-    // and the DetectionMethod enum in TransientDetector.h. Off (Peak) by
-    // default. Delete this toggle once the onset-vs-peak decision is made.
-    juce::ToggleButton onsetDetectionToggle { "Use Onset Detection (temporary A/B test)" };
-
     // Quantize detected transients to grid (Step 35) — auto-detected
     // transients only, never manual points (see PluginProcessor.h's
     // doc comment for why). Grid dropdown visible only while the toggle
