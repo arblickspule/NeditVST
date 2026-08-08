@@ -690,6 +690,10 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
                                                  .removeFromTop (PlaybackStylePalette::getPreferredHeight()));
     sequencerRow.removeFromLeft (10);
     sequencerViewport.setBounds (sequencerRow);
+    // Dynamic row-height scaling (see SequencerGrid's own doc comment) --
+    // sequencerViewport's own height IS the available vertical space the
+    // grid scales its rows against, so it's passed straight through.
+    sequencerGrid.setAvailableHeight (sequencerViewport.getHeight());
     area.removeFromTop (20);
 
     auto undoRedoRow = area.removeFromTop (30);

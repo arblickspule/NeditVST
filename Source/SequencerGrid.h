@@ -49,6 +49,16 @@
     is meant to live inside a juce::Viewport for vertical scrolling when
     there are more rows than fit.
 
+    Dynamic row height: rowHeight itself isn't fixed -- it scales against
+    setAvailableHeight() (the editor's sequencerViewport height) so that a
+    lightly-sliced sample fills the available vertical space with fewer,
+    taller rows rather than leaving it mostly empty, while a busy sample
+    (many detected slices) keeps rowHeight at its minRowHeight floor and
+    relies on the surrounding Viewport's existing scroll behaviour, same as
+    before this existed. See computeRowHeight()/minRowHeight's own doc
+    comments. Column width/step resolution are untouched by this -- they
+    remain governed by Pattern Length and step resolution, not slice count.
+
     Self-sizing: polls the processor's current row/column counts on a
     timer (same 30fps live-update pattern WaveformDisplay already uses)
     and resizes itself whenever they (or the target width) change. The
@@ -128,6 +138,12 @@ public:
     // components always visually line up.
     void setTargetWidth (int width);
 
+    // Sets the total vertical space the editor has allocated for this grid
+    // (sequencerViewport's own height) -- drives dynamic row-height scaling
+    // (see rowHeight's own doc comment below). Called by the editor's
+    // layout code alongside setTargetWidth().
+    void setAvailableHeight (int height);
+
 private:
     void timerCallback() override; // polls dimensions (resizes if changed) and drives the playhead + repaint
     void updateSizeIfNeeded();
@@ -135,6 +151,14 @@ private:
     int getRowIndexAtY (int y) const;
     int getColumnIndexAtX (int x) const;
     int getColumnWidth() const; // targetWidth / numColumns, clamped to a sane minimum
+
+    // Dynamic row-height calculation (see rowHeight's own doc comment) --
+    // pure function of numRows and the currently-known availableHeight, no
+    // side effects. Returns minRowHeight when numRows*minRowHeight already
+    // exceeds availableHeight (busy samples keep the floor + scrolling,
+    // unchanged from before this existed) or when numRows <= 0 (avoids a
+    // divide-by-zero and there's nothing to scale anyway).
+    int computeRowHeight (int numRows) const;
 
     // How many subsequent columns (from startColumn, inclusive) a note in
     // `row` should visually span -- see the class doc comment above. Reads
@@ -165,13 +189,37 @@ private:
 
     SlicerAudioProcessor& processor;
 
-    static constexpr int rowHeight = 16;
+    // Row height floor -- whatever used to be the fixed row height before
+    // dynamic scaling. Busy samples (many detected slices) still land
+    // here, at minRowHeight, and still scroll inside sequencerViewport
+    // exactly as before.
+    static constexpr int minRowHeight = 16;
+
+    // Current EFFECTIVE row height, recomputed (via computeRowHeight())
+    // every time updateSizeIfNeeded() notices numRows or availableHeight
+    // has changed -- never written to directly elsewhere. When
+    // numRows*minRowHeight fits within availableHeight (few slices), this
+    // scales UP to fill the space, one row per slice, no wasted vertical
+    // room and no unnecessary scrollbar; otherwise it stays at
+    // minRowHeight and sequencerViewport's existing scroll behaviour takes
+    // over, unchanged. Every paint()/hit-test calculation that used to
+    // reference the old fixed constant now reads this instead.
+    int rowHeight = minRowHeight;
+
     static constexpr int minColumnWidth = 2; // floor so an extreme column count never collapses to 0px-wide cells
 
     // Target total width (Step 38) -- matches WaveformDisplay's width, set
     // via setTargetWidth(). Starts at a sane placeholder until the editor's
     // first layout call.
     int targetWidth = 400;
+
+    // Total vertical space the editor has allocated for this grid
+    // (sequencerViewport's own height), set via setAvailableHeight() --
+    // the denominator computeRowHeight() scales against. 0 until the
+    // editor's first layout call, which computeRowHeight() treats the same
+    // as "doesn't fit" (falls back to minRowHeight) since there's no real
+    // space to scale into yet.
+    int availableHeight = 0;
 
     // Drag state -- dragRow is locked for the whole gesture (-1 when not
     // dragging); dragTargetStyle (Step 41) is decided once on mouseDown --
@@ -220,6 +268,7 @@ private:
     int lastKnownNumRows = 0;
     int lastKnownNumColumns = 0;
     int lastKnownTargetWidth = 0;
+    int lastKnownAvailableHeight = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SequencerGrid)
 };

@@ -19,7 +19,7 @@ std::vector<PlaybackStyleParameterPanel::PanelRow> PlaybackStyleParameterPanel::
 
     for (int paramIndex : applicable)
     {
-        if (paramIndex == 5) // Subdivide -- excluded, see class doc comment
+        if (paramIndex == 5 || paramIndex == 19) // Subdivide, Volume -- excluded, see class doc comment
             continue;
 
         if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex))

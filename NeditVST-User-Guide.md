@@ -114,28 +114,40 @@ per step (in Sequenced mode):
   timestretch artifacts).
 - **Filter Down / Filter Up** — a resonant filter sweep, closing or
   opening over the duration of the hit.
-- **Scratch** — the same forward/backward bounce as Ping-Pong, but much
-  faster and tempo-synced — a quick flutter near the start of the slice,
-  like a DJ scratch. Its cycle speed (**Rate**) is adjustable per step,
-  and each direction's own **Forward Curve**/**Backward Curve** shapes
-  how the pitch actually bends within that stroke — Linear plays it back
-  at constant speed (no bend); Ease In, Ease Out, and Ease In-Out each
-  give the stroke a different speed profile (slow-building, sharp-and-
-  tapering, or a smooth slow-fast-slow swell), and the two directions can
-  be set differently for an asymmetric scratch (e.g. a sharp flick out,
-  a smoother pull back).
+- **Scratch** — rapid forward/backward cycling with a real pitch-bend
+  curve, closer to a turntable scratch than Ping-Pong's constant-speed
+  bounce. Rate, plus independent curve shapes for the forward and
+  backward strokes.
+- **Bitcrush** — lo-fi digital degradation — sample-rate reduction and
+  bit-depth reduction, each independently adjustable.
+- **Flanger** — a short modulated delay mixed with the dry signal for
+  a classic sweeping comb-filter "whoosh." Delay time, mix, and
+  feedback, each independently adjustable.
 
-Some styles have their own adjustable character — **resonance** and
-**filter type** for the Filter styles, **Rate**/**Forward Curve**/
-**Backward Curve** for Scratch, for example — accessible in Sequencer
-mode by **right-clicking** an active step (see below).
+Every style with adjustable parameters (Scratch, Bitcrush, Flanger,
+Filter, Stretch) can also have those parameters **swept** across the
+duration of the hit rather than held at one fixed value — usually a
+choice between Static, Sweep In, and Sweep Out (or, for Volume
+specifically, Ramp Up/Ramp Down — see the Sequencer section).
+
+**Two ways to adjust these parameters:**
+- **Slice Length / Clock mode** — a persistent panel: pick a style
+  from the selector, its parameters appear below, ready to edit
+  directly. Changing a value here changes the shared default used
+  everywhere that style is picked without its own per-step override.
+- **Sequencer mode** — right-click an individual step for that one
+  step's own settings (see below) — these override the shared default
+  just for that step.
 
 ## 7. The Sequencer
 
 Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
 
 - Each **row** is one available slice (bottom row = earliest detected
-  transient, working up); each **column** is a time step.
+  transient, working up); each **column** is a time step. Row height
+  scales to fit the available space — a sample with only a few slices
+  gets taller, easier-to-see rows; a busy sample with many detected
+  slices falls back to thinner rows with scrolling.
 - **Click and drag** to draw steps in. A step's length automatically
   reflects that slice's real duration — a 3-eighth-note-long slice draws
   in as a 3-eighth-note-long bar, not a single generic block.
@@ -148,26 +160,28 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
   it — the step takes on that color and plays back with that style.
 - **Randomize Sequence** — generates a pattern automatically, respecting
   each slice's natural length and drawing styles from the same weighted
-  probabilities used elsewhere.
+  probabilities used elsewhere. Each style in the palette has its own
+  small checkbox — check a style's box and any step Randomize assigns
+  that style to will also get fully randomized parameters (values *and*
+  Static/Sweep modes); left unchecked (the default), that style keeps
+  its plain default settings when randomized.
 - **Clear** — wipes the pattern.
 - **Right-click an active step** (click near the left edge of the step)
   to open its parameter menu — adjust that specific step's resonance,
-  filter type, curve shape, grain settings, **Rate** (Scratch's own
-  bounce-cycle speed, picked from a note-value list — 1/16 by default),
-  **Forward Curve**/**Backward Curve** (Scratch's own per-direction pitch-
-  bend shape — Linear/Ease In/Ease Out/Ease In-Out, Linear by default),
-  or **Subdivide** (retriggers that one step internally at a chosen
-  rate — its own mini roll). Drag the slider that appears (or pick a
-  value directly from the list, for Rate/Forward Curve/Backward Curve/
-  Filter Type/Curve Shape), release to confirm — a small triangle marks
-  any step with a customized value.
+  filter type, curve shape, grain settings, rate, delay/mix/feedback,
+  **Volume** (Static / Ramp Up / Ramp Down — raises or lowers the
+  step's volume smoothly across its own duration), or **Subdivide**
+  (retriggers that one step internally at a chosen rate — its own mini
+  roll). Drag the slider that appears, release to confirm — a small
+  triangle marks any step with a customized value. Volume ramps (and
+  effect sweeps) correctly glide across the *entire* step even when
+  Subdivide is also retriggering underneath them.
 - **Shift+drag a step's right edge to extend it** beyond its slice's
   natural length. What happens with that extra time depends on the
   step's playback style:
-  - **Forward / Ping-Pong / Scratch** — loop to fill the extra time
-    (Forward repeats the slice from the top; Ping-Pong repeats
-    additional forward/backward round trips; Scratch repeats additional
-    Rate-length bounce cycles).
+  - **Forward / Ping-Pong** — loop to fill the extra time (Forward
+    repeats the slice from the top; Ping-Pong repeats additional
+    forward/backward round trips).
   - **Tape Stop / Stretch / Filter Down / Filter Up** — the effect
     itself stretches to span the *entire* extended length: Tape Stop's
     decel takes the full extended time to reach silence, Stretch's

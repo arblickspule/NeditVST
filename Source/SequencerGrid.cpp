@@ -58,16 +58,36 @@ void SequencerGrid::setTargetWidth (int width)
     updateSizeIfNeeded();
 }
 
+void SequencerGrid::setAvailableHeight (int height)
+{
+    availableHeight = juce::jmax (0, height);
+    updateSizeIfNeeded();
+}
+
+int SequencerGrid::computeRowHeight (int numRows) const
+{
+    if (numRows <= 0)
+        return minRowHeight;
+
+    if (numRows * minRowHeight <= availableHeight)
+        return availableHeight / numRows; // scale up to fill the space -- fewer slices, taller rows
+
+    return minRowHeight; // doesn't fit -- floor + sequencerViewport's existing scroll behaviour, unchanged
+}
+
 void SequencerGrid::updateSizeIfNeeded()
 {
     const int numRows = processor.getSequencerNumRows();
     const int numColumns = processor.getSequencerNumSteps();
 
-    if (numRows != lastKnownNumRows || numColumns != lastKnownNumColumns || targetWidth != lastKnownTargetWidth)
+    if (numRows != lastKnownNumRows || numColumns != lastKnownNumColumns
+        || targetWidth != lastKnownTargetWidth || availableHeight != lastKnownAvailableHeight)
     {
         lastKnownNumRows = numRows;
         lastKnownNumColumns = numColumns;
         lastKnownTargetWidth = targetWidth;
+        lastKnownAvailableHeight = availableHeight;
+        rowHeight = computeRowHeight (numRows);
         setSize (juce::jmax (1, targetWidth), juce::jmax (1, numRows * rowHeight));
     }
 }

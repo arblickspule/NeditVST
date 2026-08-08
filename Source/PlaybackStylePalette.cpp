@@ -33,6 +33,12 @@ int PlaybackStylePalette::getRowIndexAtY (int y) const
     return juce::jlimit (0, SlicerAudioProcessor::numPlaybackStyleOptions - 1, y / rowHeight);
 }
 
+juce::Rectangle<int> PlaybackStylePalette::getCheckboxBounds (int row) const
+{
+    const int y = row * rowHeight + (rowHeight - checkboxSize) / 2;
+    return { getWidth() - checkboxSize - 3, y, checkboxSize, checkboxSize };
+}
+
 void PlaybackStylePalette::paint (juce::Graphics& g)
 {
     const int selected = processor.getSelectedDrawingStyle();
@@ -40,7 +46,8 @@ void PlaybackStylePalette::paint (juce::Graphics& g)
     for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
     {
         const juce::Rectangle<int> row (0, i * rowHeight, getWidth(), rowHeight);
-        const auto swatch = row.reduced (3);
+        const auto checkboxBounds = getCheckboxBounds (i);
+        const auto swatch = row.reduced (3).withTrimmedRight (checkboxBounds.getWidth() + 6);
 
         g.setColour (getStyleColour (i));
         g.fillRect (swatch);
@@ -53,11 +60,33 @@ void PlaybackStylePalette::paint (juce::Graphics& g)
         g.setFont (12.0f);
         g.drawFittedText (SlicerAudioProcessor::getPlaybackStyleName (i), swatch.reduced (4, 0),
                            juce::Justification::centred, 1);
+
+        // "Randomize parameters" checkbox (see this class's own doc
+        // comment) -- independent of the swatch's selected/unselected
+        // border above.
+        const bool randomizeParams = processor.getRandomizeParametersForStyle (i);
+
+        g.setColour (juce::Colours::black.withAlpha (0.6f));
+        g.fillRect (checkboxBounds);
+        g.setColour (juce::Colours::white.withAlpha (0.8f));
+        g.drawRect (checkboxBounds, 1);
+
+        if (randomizeParams)
+        {
+            g.setColour (juce::Colours::white);
+            g.fillRect (checkboxBounds.reduced (3));
+        }
     }
 }
 
 void PlaybackStylePalette::mouseDown (const juce::MouseEvent& event)
 {
-    processor.setSelectedDrawingStyle (getRowIndexAtY (event.y));
+    const int row = getRowIndexAtY (event.y);
+
+    if (getCheckboxBounds (row).contains (event.x, event.y))
+        processor.setRandomizeParametersForStyle (row, ! processor.getRandomizeParametersForStyle (row));
+    else
+        processor.setSelectedDrawingStyle (row);
+
     repaint();
 }

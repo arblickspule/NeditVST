@@ -634,6 +634,38 @@ public:
             playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
+    // Per-style "randomize parameters" opt-in (Sequenced mode's Randomize
+    // Sequence button), one flag per PlaybackStyle, all defaulting to false
+    // -- unchecked reproduces today's Randomize behaviour exactly (slice +
+    // style only, no per-step overrides). When randomizeSequence() places a
+    // step whose style has this set, it also rolls a random value (and,
+    // for swept parameters, an independent random Static/Sweep In/Sweep
+    // Out mode) for every parameter getApplicableSequencerCellParameters()
+    // lists for that style, MINUS Subdivide (5) and Volume (19) -- both are
+    // general/style-independent, not "this style's own" parameters, same
+    // exclusion PlaybackStyleParameterPanel's buildRowsForStyle() already
+    // applies. Styles with nothing left after that exclusion (Forward, the
+    // only one currently) are unaffected regardless of this flag, since
+    // there's nothing to randomize. Purely a UI toggle -- manually-drawn
+    // steps never consult this, only randomizeSequence() does.
+    bool getRandomizeParametersForStyle (int index) const
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index < 0 || index >= (int) randomizeParametersForStyle.size())
+            return false;
+
+        return randomizeParametersForStyle[(size_t) index];
+    }
+
+    void setRandomizeParametersForStyle (int index, bool shouldRandomize)
+    {
+        const juce::ScopedLock sl (sampleLock);
+
+        if (index >= 0 && index < (int) randomizeParametersForStyle.size())
+            randomizeParametersForStyle[(size_t) index] = shouldRandomize;
+    }
+
     //=== Tape Stop scope (Step 21) ===
     // Clock-mode-only: how long a Tape Stop pick's decel lasts. Slice
     // Length mode doesn't need this choice — the duration there is always
@@ -1187,13 +1219,38 @@ public:
     // Time/Mix already compute (see processBlock()'s flangerProgress) --
     // no separate timing mechanism needed, it's just a third value fed
     // through the same sweptFlangerValue lambda.
-    static constexpr int numSequencerCellParameters = 19;
-    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve" / "Delay Time" / "Delay Time Mode" / "Mix" / "Mix Mode" / "Feedback" / "Feedback Mode"
+    // Volume (index 19) adds a style-independent ramp, paired with its own
+    // hidden Mode index (20) -- same "swept value + paired Mode" shape as
+    // Bitcrush/Flanger above, but GENERAL rather than gated by a specific
+    // style, same as Subdivide (index 5): appended unconditionally by
+    // getApplicableSequencerCellParameters() for every active step
+    // regardless of PlaybackStyle. Its Mode uses its own directional
+    // option names ("Static"/"Ramp Up"/"Ramp Down", see
+    // getSequencerCellParameterOptionName()) rather than the shared
+    // Sweep In/Out sweepModeNames every other swept parameter's Mode uses,
+    // since volume has an intuitive up/down sense the others don't --
+    // Ramp Up/Down always sweep toward/away from silence (0.0), a fixed
+    // "extreme" like every other swept parameter has, not a second
+    // user-adjustable value. The slider sets the reference level (Ramp
+    // Down's start / Ramp Up's target), same interaction as Static. It's
+    // an ADDITIONAL multiplier layered onto the existing base fade-in/out
+    // gain (see processBlock()'s volumeGain), not a replacement for it,
+    // and reuses Flanger's exact Whole Window progress mechanism
+    // (samplesSinceWindowStart/currentWindowLengthHostSamples) so a
+    // Subdivide-d step's ramp glides smoothly across the whole step
+    // rather than resetting on every retrigger -- see
+    // processBlock()'s volumeUseWholeWindow. No global dial (same as
+    // Subdivide) -- see getSequencerCellParameterGlobalValue()'s own doc
+    // comment -- so it's Sequenced-mode-only, not offered in Slice
+    // Length/Clock mode.
+    static constexpr int numSequencerCellParameters = 21;
+    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve" / "Delay Time" / "Delay Time Mode" / "Mix" / "Mix Mode" / "Feedback" / "Feedback Mode" / "Volume" / "Volume Mode"
 
-    // Swept parameters (Step 49): true for indices 6 and 8 (Sample Rate
-    // Reduction, Bit Depth), and 13, 15, 17 (Flanger's Delay Time, Mix,
-    // Feedback) -- these open a Static/Sweep In/Sweep Out mode-choice
-    // submenu FIRST, rather than going straight to a plain discrete-options
+    // Swept parameters (Step 49; Volume): true for indices 6 and 8 (Sample
+    // Rate Reduction, Bit Depth), 13, 15, 17 (Flanger's Delay Time, Mix,
+    // Feedback), and 19 (Volume) -- these open a mode-choice submenu FIRST
+    // (Static/Sweep In/Sweep Out, or for Volume, Static/Ramp Up/Ramp
+    // Down), rather than going straight to a plain discrete-options
     // submenu or straight to the slider overlay the way every other
     // parameter here does. See SequencerGrid::showParameterMenuForCell().
     static bool isSequencerCellParameterSwept (int index);
@@ -1236,10 +1293,12 @@ public:
     // numbering, and the same ordinal sequencerGrid itself stores) --
     // e.g. a Forward step offers none, Filter Down/Up offers Resonance +
     // Filter Type. An out-of-range/empty-cell style (-1) offers none.
-    // Subdivide (Step 47) is deliberately NOT included here -- it's
-    // appended unconditionally by this function itself for every valid
-    // (non-empty-cell) style, since it's a general retrigger mechanism,
-    // not tied to any one effect the way everything else here is.
+    // Subdivide (Step 47) and Volume (index 19) are deliberately NOT
+    // included here -- both are appended unconditionally by this function
+    // itself for every valid (non-empty-cell) style, since neither is
+    // tied to any one effect the way everything else here is (Subdivide
+    // is a general retrigger mechanism; Volume is a pure gain stage that
+    // applies identically regardless of which style's DSP is running).
     static std::vector<int> getApplicableSequencerCellParameters (int style);
 
     // This parameter's current GLOBAL value (i.e. what applies when no
@@ -1255,8 +1314,9 @@ public:
     // directly rather than a per-step override. Discrete/Mode parameters
     // are written as their option index cast to float, same convention
     // setSequencerCellParameterOverride() already uses. A no-op for
-    // Subdivide (index 5), which has no global dial (see
-    // getSequencerCellParameterGlobalValue()'s own doc comment).
+    // Subdivide (index 5) and Volume/Volume Mode (indices 19/20), none of
+    // which have a global dial (see getSequencerCellParameterGlobalValue()'s
+    // own doc comment).
     void setSequencerCellParameterGlobalValue (int index, float value);
 
     bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const;
@@ -1568,6 +1628,7 @@ private:
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
     std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
+    std::vector<bool> randomizeParametersForStyle = std::vector<bool> ((size_t) numPlaybackStyleOptions, false); // see getRandomizeParametersForStyle()'s own doc comment
     std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
     std::atomic<FilterSweepScope> filterSweepScope { FilterSweepScope::perTick };
 
@@ -1758,6 +1819,20 @@ private:
     int currentPickFlangerMixMode = 0;
     float currentPickFlangerFeedbackValue = 0.0f;
     int currentPickFlangerFeedbackMode = 0;
+
+    // This pick's own Volume ramp VALUE and MODE (style-independent) --
+    // captured ONLY by Sequenced mode's step-trigger block, unlike every
+    // other currentPick* pair above, since Volume has no global dial and
+    // is deliberately not offered in Slice Length/Clock mode (see
+    // isSequencerCellParameterSwept()'s own doc comment). Defaults here
+    // (1.0/Static, i.e. full volume, unchanged) are the "no ramp" no-op,
+    // matching what an absent override resolves to anyway -- but
+    // processBlock() still gates its use behind `sequencedMode` itself
+    // rather than relying on these defaults alone, so a value captured
+    // during a previous Sequenced-mode step can never bleed into Slice
+    // Length/Clock mode playback after switching modes.
+    float currentPickVolumeValue = 1.0f;
+    int currentPickVolumeMode = 0;
 
     // Clock-mode scheduling state (audio thread only). A "window" is one
     // span of the outer clock reference; a "tick" is one subdivision

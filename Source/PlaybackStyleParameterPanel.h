@@ -40,7 +40,14 @@
 
     Subdivide (index 5) applies to every style in SequencerGrid's own menu
     but is excluded here -- it's a per-step retrigger rate tied to the step
-    sequencer's own step timing, with no meaning in Slice Length/Clock modes. */
+    sequencer's own step timing, with no meaning in Slice Length/Clock modes.
+    Volume (index 19) is excluded for the same reason: it's a per-step gain
+    ramp keyed to the Sequencer's own Whole Window step timing (see
+    PluginProcessor.h's own doc comment on isSequencerCellParameterSwept()),
+    has no global dial (getSequencerCellParameterGlobalValue() hardcodes its
+    fallback the same way it does for Subdivide), and isn't meaningful outside
+    Sequenced mode -- a possible later addition once the Sequencer version is
+    proven, not required now. */
 class PlaybackStyleParameterPanel : public juce::Component
 {
 public:
@@ -72,11 +79,11 @@ private:
     };
 
     // Builds the row list for one style: getApplicableSequencerCellParameters()
-    // minus Subdivide (index 5); a swept parameter (Sample Rate Reduction/
-    // Bit Depth/Delay Time/Mix/Feedback) expands to its own Mode row
-    // (discrete, paramIndex+1) followed by its Value row (continuous,
-    // paramIndex) -- Mode first, matching the right-click menu's own "pick
-    // mode, then configure amount" order.
+    // minus Subdivide (index 5) and Volume (index 19); a swept parameter
+    // (Sample Rate Reduction/Bit Depth/Delay Time/Mix/Feedback) expands to
+    // its own Mode row (discrete, paramIndex+1) followed by its Value row
+    // (continuous, paramIndex) -- Mode first, matching the right-click
+    // menu's own "pick mode, then configure amount" order.
     static std::vector<PanelRow> buildRowsForStyle (int style);
 
     juce::Rectangle<int> getRowBounds (int rowIndex) const;

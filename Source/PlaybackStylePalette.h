@@ -13,6 +13,16 @@
     selected swatch is drawn with a highlighted border so it's always
     clear which style the next click/drag on the grid will use.
 
+    Each row also carries a small checkbox in its top-right corner --
+    SlicerAudioProcessor::getRandomizeParametersForStyle()/
+    setRandomizeParametersForStyle(), one per style same as the swatches
+    themselves. When checked, Randomize Sequence also rolls random
+    parameter values (and Static/Sweep In/Sweep Out modes) for that
+    style's own parameters on every step it places with that style -- see
+    randomizeSequence()'s own doc comment. Unrelated to which swatch is
+    currently selected for drawing; clicking a checkbox toggles only that
+    row's flag and does not change the selected drawing style.
+
     getStyleColour() is the single canonical colour-per-style mapping --
     SequencerGrid reuses it directly for the piano-roll bars so a bar's
     colour always matches its swatch here, rather than duplicating the
@@ -49,9 +59,15 @@ public:
 private:
     int getRowIndexAtY (int y) const;
 
+    // Local-coordinate bounds of the given row's "randomize parameters"
+    // checkbox -- top-right corner of the row, same square used for both
+    // the hit-test in mouseDown() and the paint in paint().
+    juce::Rectangle<int> getCheckboxBounds (int row) const;
+
     SlicerAudioProcessor& processor;
 
     static constexpr int rowHeight = 28;
+    static constexpr int checkboxSize = 14;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PlaybackStylePalette)
 };

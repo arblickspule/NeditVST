@@ -122,6 +122,17 @@ namespace
         "Static", "Sweep In", "Sweep Out"
     } };
 
+    // Volume ramp mode names -- Volume's own Mode option list, parallel to
+    // sweepModeNames above but with directional language ("Ramp Up"/"Ramp
+    // Down") rather than "Sweep In"/"Sweep Out", since volume has an
+    // intuitive up/down sense the other swept parameters' effects don't.
+    // Both ramp toward/away from silence (0.0), a fixed extreme like every
+    // other swept parameter's Sweep In/Out -- see processBlock()'s
+    // sweptVolumeValue.
+    const std::array<const char*, 3> volumeRampModeNames { {
+        "Static", "Ramp Up", "Ramp Down"
+    } };
+
     // Tape Stop scope names (Step 21).
     const std::array<const char*, SlicerAudioProcessor::numTapeStopScopeOptions> tapeStopScopeNames { {
         "Whole window", "Per tick"
@@ -152,7 +163,7 @@ namespace
         "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide",
         "Sample Rate Reduction", "Sample Rate Reduction Mode", "Bit Depth", "Bit Depth Mode", "Rate",
         "Forward Curve", "Backward Curve", "Delay Time", "Delay Time Mode", "Mix", "Mix Mode",
-        "Feedback", "Feedback Mode"
+        "Feedback", "Feedback Mode", "Volume", "Volume Mode"
     } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
@@ -986,6 +997,18 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         currentPickFlangerFeedbackMode = juce::roundToInt (getSequencerCellParameterOverride (
                             activeRow, currentStepIndex, "Feedback Mode", (float) getFlangerFeedbackModeGlobal()));
 
+                        // Volume ramp VALUE + MODE -- style-independent, so
+                        // unlike Bitcrush/Flanger above there's no global
+                        // dial to fall back to (same as Subdivide); an
+                        // absent override falls back straight to 1.0/Static
+                        // (full volume, unchanged), matching
+                        // getSequencerCellParameterGlobalValue()'s own
+                        // fallback for indices 19/20.
+                        currentPickVolumeValue = getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Volume", 1.0f);
+                        currentPickVolumeMode = juce::roundToInt (getSequencerCellParameterOverride (
+                            activeRow, currentStepIndex, "Volume Mode", 0.0f));
+
                         // Scratch Rate (v1) -- this step's own override if
                         // it has one, else the global value, same per-
                         // step-override-else-global pattern as Filter
@@ -1729,6 +1752,64 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             ? juce::jlimit (0.0f, flangerFeedbackExtreme, sweptFlangerValue (currentPickFlangerFeedbackValue, currentPickFlangerFeedbackMode, flangerFeedbackExtreme))
             : 0.0f;
 
+        // Volume ramp: a style-independent gain multiplier, unlike
+        // Bitcrush/Flanger above which only apply to their own style --
+        // gated on `sequencedMode` alone (every PlaybackStyle, Forward
+        // included), not a currentPlaybackStyle check, since it's a pure
+        // gain stage layered onto whatever the active style's own DSP
+        // already produced (see the fade-gain block below). Also gates
+        // OUT Slice Length/Clock mode entirely: those trigger modes never
+        // populate currentPickVolumeValue/Mode (Sequenced-mode-only, no
+        // global dial -- see PluginProcessor.h), so without this gate a
+        // value captured during a prior Sequenced-mode step could
+        // otherwise bleed into playback after switching modes.
+        const bool volumeRampActive = sequencedMode;
+
+        // Same Whole Window progress source as Flanger's flangerUseWholeWindow/
+        // flangerProgress just above -- prefers samplesSinceWindowStart/
+        // currentWindowLengthHostSamples (continuous across this step's
+        // Subdivide retriggers) whenever Subdivide is actually on, falling
+        // back to the per-pick fraction otherwise (numerically identical
+        // there anyway, since only one trigger occupies the whole step).
+        // This is what makes "Subdivide to 16ths across a whole bar, with
+        // Volume ramping smoothly across that entire bar" work.
+        const bool volumeUseWholeWindow = sequencedMode && sequencedSubdivisionActive;
+
+        double volumeProgress = 0.0;
+
+        if (volumeRampActive)
+        {
+            volumeProgress = volumeUseWholeWindow
+                ? ((currentWindowLengthHostSamples > 0.0)
+                       ? juce::jlimit (0.0, 1.0, samplesSinceWindowStart / currentWindowLengthHostSamples)
+                       : 1.0)
+                : ((currentPickLengthInHostSamples > 0.0)
+                       ? juce::jlimit (0.0, 1.0, samplesSincePickStart / currentPickLengthInHostSamples)
+                       : 1.0);
+        }
+
+        // mode: 0 Static (constant at the set level), 1 Ramp Up (silence
+        // -> set level), 2 Ramp Down (set level -> silence) -- directional
+        // language rather than Sweep In/Out's, since volume has an
+        // intuitive up/down sense the other swept parameters don't. Both
+        // ramp toward/away from a fixed extreme of 0.0 (silence), the
+        // Volume equivalent of Bitcrush/Flanger's own fixed sweep
+        // extremes, rather than a second user-adjustable value.
+        const auto sweptVolumeValue = [volumeProgress] (float setValue, int mode) -> float
+        {
+            if (mode == 1)
+                return (float) (setValue * volumeProgress);
+
+            if (mode == 2)
+                return (float) (setValue * (1.0 - volumeProgress));
+
+            return setValue;
+        };
+
+        const double volumeGain = volumeRampActive
+            ? juce::jlimit (0.0, 1.0, (double) sweptVolumeValue (currentPickVolumeValue, currentPickVolumeMode))
+            : 1.0;
+
         // Read position decided once per OUTPUT sample here (not per
         // channel below), same "stereo pair stays in lockstep" reasoning
         // as Bitcrush's shared hold counter above -- both channels read
@@ -1973,6 +2054,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             }
 
             gain = juce::jlimit (0.0, 1.0, gain);
+
+            // Volume ramp: an ADDITIONAL multiplier on top of the base
+            // fade-in/out gain just clamped above, not a replacement for
+            // it -- Volume handles the musical gesture across the whole
+            // step/window, the base fade still handles click-avoidance at
+            // the pick's own hard start/end boundaries (and, for
+            // Ping-Pong/Scratch, its midpoint). Both are already clamped
+            // to [0, 1] individually, so multiplying them together stays
+            // in range with no further clamp needed. A no-op (1.0) outside
+            // Sequenced mode -- see volumeRampActive above.
+            gain *= volumeGain;
 
             // Filter Down/Filter Up (Step 29/30): cutoff computed once per
             // sample here (shared across every output channel below, not
@@ -2872,7 +2964,7 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
 {
-    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12 || index == 14 || index == 16 || index == 18; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2); Delay Time Mode, Mix Mode, Feedback Mode (Flanger)
+    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12 || index == 14 || index == 16 || index == 18 || index == 20; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2); Delay Time Mode, Mix Mode, Feedback Mode (Flanger); Volume Mode
 }
 
 bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
@@ -2882,7 +2974,7 @@ bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
 
 bool SlicerAudioProcessor::isSequencerCellParameterSwept (int index)
 {
-    return index == 6 || index == 8 || index == 13 || index == 15 || index == 17; // Sample Rate Reduction, Bit Depth (Step 49); Delay Time, Mix, Feedback (Flanger) -- see declaration in PluginProcessor.h
+    return index == 6 || index == 8 || index == 13 || index == 15 || index == 17 || index == 19; // Sample Rate Reduction, Bit Depth (Step 49); Delay Time, Mix, Feedback (Flanger); Volume -- see declaration in PluginProcessor.h
 }
 
 int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
@@ -2893,6 +2985,7 @@ int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
     if (index == 7 || index == 9 || index == 14 || index == 16 || index == 18) return (int) sweepModeNames.size(); // Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Delay Time Mode, Mix Mode, Feedback Mode (Flanger)
     if (index == 10) return numNoteValueOptions; // Rate (Scratch v1) -- the shared note-value palette, no "Off" (Scratch always has a rate)
     if (index == 11 || index == 12) return numEasingCurveOptions; // Forward Curve, Backward Curve (Scratch v2)
+    if (index == 20) return (int) volumeRampModeNames.size(); // Volume Mode
 
     return 0;
 }
@@ -2913,6 +3006,14 @@ juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int inde
         return sweepModeNames[(size_t) optionIndex];
     }
 
+    if (index == 20) // Volume Mode
+    {
+        if (optionIndex < 0 || optionIndex >= (int) volumeRampModeNames.size())
+            return {};
+
+        return volumeRampModeNames[(size_t) optionIndex];
+    }
+
     return {};
 }
 
@@ -2926,6 +3027,7 @@ float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
     if (index == 13) return flangerDelayTimeMinMs; // Delay Time (Flanger) -- least pronounced comb character
     if (index == 15) return 0.0f; // Mix (Flanger) -- fully dry
     if (index == 17) return 0.0f; // Feedback (Flanger) -- no feedback at all
+    if (index == 19) return 0.0f; // Volume -- silence
 
     return 0.0f;
 }
@@ -2941,6 +3043,7 @@ float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
     if (index == 13) return flangerDelayTimeExtremeMs; // Delay Time (Flanger) -- slider tops out exactly at the Sweep In/Out target, same "Static maxed out == fully swept" convention as Sample Rate Reduction
     if (index == 15) return flangerMixExtreme; // Mix (Flanger) -- fully wet, same convention
     if (index == 17) return flangerFeedbackExtreme; // Feedback (Flanger) -- 88%, short of self-oscillation, same convention
+    if (index == 19) return 1.0f; // Volume -- full volume/unity gain
 
     return 1.0f;
 }
@@ -2974,10 +3077,14 @@ std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int
         default: return {};        // empty/invalid cell (-1) -- no menu at all
     }
 
-    // Subdivide (Step 47): general, not style-specific -- appended for
-    // every valid style above (including Forward), unlike everything
-    // else in this function.
+    // Subdivide (Step 47) and Volume (index 19): both general, not
+    // style-specific -- appended for every valid style above (including
+    // Forward), unlike everything else in this function. Volume is a
+    // pure gain stage layered after whatever the style's own DSP already
+    // produces, so it applies identically regardless of which style (if
+    // any -- Forward included) is active.
     params.push_back (5);
+    params.push_back (19);
     return params;
 }
 
@@ -3004,6 +3111,8 @@ float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) con
         case 16: return (float) getFlangerMixModeGlobal();
         case 17: return getFlangerFeedbackGlobal(); // Feedback (Flanger)
         case 18: return (float) getFlangerFeedbackModeGlobal();
+        case 19: return 1.0f; // Volume -- no global dial; full volume (no change) is always the fallback/default
+        case 20: return 0.0f; // Volume Mode -- Static is always the fallback/default
         default: return 0.0f;
     }
 }
@@ -3030,7 +3139,7 @@ void SlicerAudioProcessor::setSequencerCellParameterGlobalValue (int index, floa
         case 16: setFlangerMixModeGlobal (juce::roundToInt (value)); break;
         case 17: setFlangerFeedbackGlobal (value); break;
         case 18: setFlangerFeedbackModeGlobal (juce::roundToInt (value)); break;
-        default: break; // index 5 (Subdivide) has no global dial; out-of-range is a no-op
+        default: break; // indices 5 (Subdivide) and 19/20 (Volume/Volume Mode) have no global dial; out-of-range is a no-op
     }
 }
 
@@ -3205,7 +3314,59 @@ void SlicerAudioProcessor::randomizeSequence()
                 // Randomize reach for it less often here. Default weights
                 // are Forward-only, so this reproduces exactly the old
                 // all-Forward behaviour until those weights are touched.
-                sequencerGrid[(size_t) (row * columns + foundColumn)] = pickWeightedIndex (playbackStyleProbabilities);
+                const int placedStyle = pickWeightedIndex (playbackStyleProbabilities);
+                sequencerGrid[(size_t) (row * columns + foundColumn)] = placedStyle;
+
+                // Per-style "randomize parameters" opt-in (see
+                // getRandomizeParametersForStyle()'s own doc comment) --
+                // unchecked (the default) leaves this step with no
+                // override at all, identical to the behaviour above before
+                // this feature existed. Checked rolls an independent
+                // random value for every parameter this style actually
+                // owns (getApplicableSequencerCellParameters() minus the
+                // general Subdivide/Volume entries, same exclusion
+                // PlaybackStyleParameterPanel uses), plus an independent
+                // random Static/Sweep In/Sweep Out mode for whichever of
+                // those are swept.
+                if (placedStyle >= 0 && placedStyle < (int) randomizeParametersForStyle.size()
+                    && randomizeParametersForStyle[(size_t) placedStyle])
+                {
+                    for (const int paramIndex : getApplicableSequencerCellParameters (placedStyle))
+                    {
+                        if (paramIndex == 5 || paramIndex == 19) // Subdivide, Volume -- general, not this style's own
+                            continue;
+
+                        const juce::String paramName = getSequencerCellParameterName (paramIndex);
+
+                        // Discrete (Filter Type/Curve Shape/Rate/Forward
+                        // Curve/Backward Curve/etc.) picks a random option
+                        // index; everything else (Resonance/Grain Size/
+                        // Grain Speed, and a swept parameter's own Value)
+                        // picks a random point in its min/max range --
+                        // isSequencerCellParameterSwept() and
+                        // isSequencerCellParameterDiscrete() never overlap.
+                        if (isSequencerCellParameterDiscrete (paramIndex))
+                        {
+                            const int numOptions = getSequencerCellParameterNumOptions (paramIndex);
+                            const int randomOption = numOptions > 0 ? random.nextInt (numOptions) : 0;
+                            setSequencerCellParameterOverride (row, foundColumn, paramName, (float) randomOption);
+                        }
+                        else
+                        {
+                            const float minValue = getSequencerCellParameterMin (paramIndex);
+                            const float maxValue = getSequencerCellParameterMax (paramIndex);
+                            setSequencerCellParameterOverride (row, foundColumn, paramName, minValue + random.nextFloat() * (maxValue - minValue));
+                        }
+
+                        if (isSequencerCellParameterSwept (paramIndex))
+                        {
+                            const int modeIndex = paramIndex + 1;
+                            const int numModes = getSequencerCellParameterNumOptions (modeIndex);
+                            const int randomMode = numModes > 0 ? random.nextInt (numModes) : 0;
+                            setSequencerCellParameterOverride (row, foundColumn, getSequencerCellParameterName (modeIndex), (float) randomMode);
+                        }
+                    }
+                }
 
                 const int spanEnd = juce::jmin (columns, foundColumn + naturalSteps);
 
