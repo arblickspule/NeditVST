@@ -37,12 +37,11 @@ FetchContent_MakeAvailable(JUCE)
 # Xcode-built one — same manufacturer/plugin codes, same bundle ID, same
 # characteristics. None of these are new values.
 #
-# NOTE: the .jucer's pluginCharacteristicsValue is
-# "pluginIsSynth,pluginWantsMidiIn" — i.e. NEEDS_MIDI_INPUT currently
-# resolves to TRUE, even though PluginProcessor::acceptsMidi() returns
-# false in code (MIDI was functionally removed in Step 6). That's an
-# existing mismatch in the .jucer file, not something introduced here —
-# copied as-is per "don't invent new values."
+# NEEDS_MIDI_INPUT TRUE matches the .jucer's pluginCharacteristicsValue
+# ("pluginIsSynth,pluginWantsMidiIn") and PluginProcessor::acceptsMidi(),
+# which now returns true -- MIDI note-on input drives Sequencer pattern-bank
+# recall while Sequenced Trigger Mode is active (see PluginProcessor.h's
+# "MIDI input / Sequencer pattern bank" section).
 juce_add_plugin(NeditVST
     COMPANY_NAME "yourcompany"
     COMPANY_WEBSITE "www.yourcompany.com"
@@ -83,6 +82,8 @@ target_sources(NeditVST
         Source/PlaybackStylePalette.h
         Source/PlaybackStyleParameterPanel.cpp
         Source/PlaybackStyleParameterPanel.h
+        Source/PatternBankPanel.cpp
+        Source/PatternBankPanel.h
         Source/EasingCurve.h
 )
 

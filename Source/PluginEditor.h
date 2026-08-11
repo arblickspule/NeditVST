@@ -8,6 +8,7 @@
 #include "SequencerGrid.h"
 #include "PlaybackStylePalette.h"
 #include "PlaybackStyleParameterPanel.h"
+#include "PatternBankPanel.h"
 
 //==============================================================================
 /** Step-41 editor: load button, reset-edits safety net, undo/redo, an
@@ -299,6 +300,25 @@ private:
     // width so the COMBINED row still lines up with WaveformDisplay's
     // width, same as it did alone before this existed.
     PlaybackStylePalette playbackStylePalette;
+
+    // MIDI pattern bank (Sequenced mode only) -- populated/active slot
+    // indicators plus the "Save to..." MIDI Learn control. See its own
+    // class doc comment for the note-layout/interaction details.
+    PatternBankPanel patternBankPanel;
+
+    // Pattern Switch Timing (Pass 2) -- governs WHEN a pattern-bank recall
+    // note-on above actually takes effect (Immediate/Set Interval/End of
+    // Pattern); sits directly below patternBankPanel since it's purely
+    // about that recall's timing, not pattern content itself.
+    // patternSwitchIntervalSelector reuses the exact same 20-value
+    // note-value palette as clockReferenceSelector/stepResolutionSelector
+    // above, and is only shown while Set Interval is selected (same
+    // show/hide-by-mode convention as everything else in
+    // updateTriggerModeVisibility()).
+    juce::Label patternSwitchTimingLabel;
+    juce::ComboBox patternSwitchTimingSelector;
+    juce::Label patternSwitchIntervalLabel;
+    juce::ComboBox patternSwitchIntervalSelector;
 
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;

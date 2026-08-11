@@ -453,10 +453,19 @@ bool SlicerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
-    midiMessages.clear(); // transport-driven now — no MIDI in or out
     buffer.clear();
 
     const juce::ScopedLock sl (sampleLock);
+
+    // Dispatch note-ons before discarding the buffer below -- see
+    // handleIncomingMidi()/dispatchNoteOn() for the routing layer. Done
+    // before the trigger-mode init section further down (which runs once
+    // per block, later in this same call) so a MIDI-triggered pattern
+    // recall's dimension/state changes are already in place when that
+    // section runs, giving an instant switch within the block the note-on
+    // arrived in.
+    handleIncomingMidi (midiMessages);
+    midiMessages.clear(); // not a MIDI effect -- never produce MIDI out
 
     if (! sampleLoaded)
         return;
@@ -859,15 +868,97 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // bug Step 6 introduced and fixed (a boundary computed once per
             // block from the block's start position silently misses
             // boundaries landing mid-block).
-            const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
-            const int totalSteps = getSequencerNumSteps();
+            double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+            int totalSteps = getSequencerNumSteps();
 
             if (stepBeats > 0.0 && totalSteps > 0)
             {
-                const juce::int64 absoluteStepIndex = (juce::int64) std::floor (samplePpq / stepBeats);
-                const int currentStepIndex = (int) (((absoluteStepIndex % totalSteps) + totalSteps) % totalSteps);
+                juce::int64 absoluteStepIndex = (juce::int64) std::floor (samplePpq / stepBeats);
+                int currentStepIndex = (int) (((absoluteStepIndex % totalSteps) + totalSteps) % totalSteps);
 
-                if (currentStepIndex != sequencedLastStepIndex)
+                // Pattern Switch Timing (Pass 2): Set Interval/End of
+                // Pattern both defer an already-armed recall
+                // (pendingPatternSwitchNote) to a boundary, checked every
+                // SAMPLE right here alongside the step-boundary check just
+                // below it -- same per-sample discipline as everything else
+                // in this function, avoiding the Step 6 bug (a boundary
+                // computed once per block silently missing ones that land
+                // mid-block). Deliberately evaluated against THIS pattern's
+                // stepBeats/totalSteps (captured above, before any swap
+                // below) -- "reaches the end of its OWN Pattern Length"
+                // means the currently playing pattern's own length, not the
+                // incoming one's.
+                const int pendingSwitchNote = pendingPatternSwitchNote.load();
+
+                if (pendingSwitchNote >= 0)
+                {
+                    bool boundaryCrossed = false;
+
+                    if (patternSwitchTiming.load() == PatternSwitchTiming::setInterval)
+                    {
+                        if (! patternSwitchIntervalBoundaryArmed)
+                        {
+                            // Just (re-)armed -- snap to the next grid point
+                            // from wherever ppq is right now, same
+                            // "windowIndex + 1" shape Clock mode/Reset use
+                            // to find their own next boundary.
+                            const double intervalBeats = juce::jmax (
+                                getNoteValueBeats (patternSwitchIntervalIndex.load()), 1.0e-6);
+                            const juce::int64 intervalIndex = (juce::int64) std::floor (samplePpq / intervalBeats);
+                            patternSwitchIntervalBoundaryPpq = (double) (intervalIndex + 1) * intervalBeats;
+                            patternSwitchIntervalBoundaryArmed = true;
+                        }
+
+                        boundaryCrossed = (samplePpq >= patternSwitchIntervalBoundaryPpq);
+                    }
+                    else if (patternSwitchTiming.load() == PatternSwitchTiming::endOfPattern)
+                    {
+                        // The pattern's own existing loop-boundary logic --
+                        // the same absoluteStepIndex/totalSteps wrap the
+                        // step-trigger check just below already relies on
+                        // -- not a separately calculated boundary. A
+                        // genuine wrap (step totalSteps-1 -> step 0), not
+                        // just "step index happens to be 0" (which is also
+                        // true on the very first step ever, before
+                        // sequencedLastStepIndex has taken any real value).
+                        boundaryCrossed = (currentStepIndex == 0 && sequencedLastStepIndex == totalSteps - 1);
+                    }
+
+                    if (boundaryCrossed)
+                    {
+                        handleSequencerPatternRecallNoteOn (pendingSwitchNote);
+                        pendingPatternSwitchNote.store (-1);
+                        patternSwitchIntervalBoundaryArmed = false;
+
+                        // handleSequencerPatternRecallNoteOn() just forced
+                        // sequencedModeInitialized false expecting the
+                        // usual once-per-block re-sync (see its own doc
+                        // comment) -- but that block-level check already
+                        // ran for THIS block, before this per-sample loop
+                        // started, so left alone that flag would instead
+                        // fire a redundant second re-sync at the START of
+                        // NEXT block, re-triggering the same step again.
+                        // Set it back to true here since this sample's own
+                        // step alignment is being re-derived immediately
+                        // below against the just-recalled pattern instead.
+                        sequencedModeInitialized = true;
+
+                        // Re-derive against the just-recalled pattern's own
+                        // resolution/length so the step lookup below reads
+                        // the NEW grid at the correct width, not the old
+                        // pattern's.
+                        stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+                        totalSteps = getSequencerNumSteps();
+
+                        if (stepBeats > 0.0 && totalSteps > 0)
+                        {
+                            absoluteStepIndex = (juce::int64) std::floor (samplePpq / stepBeats);
+                            currentStepIndex = (int) (((absoluteStepIndex % totalSteps) + totalSteps) % totalSteps);
+                        }
+                    }
+                }
+
+                if (stepBeats > 0.0 && totalSteps > 0 && currentStepIndex != sequencedLastStepIndex)
                 {
                     sequencedLastStepIndex = currentStepIndex;
                     currentlyPlayingStepIndexForUI.store (currentStepIndex);
@@ -2705,6 +2796,129 @@ void SlicerAudioProcessor::resetSequencerGrid()
     sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), -1);
     sequencerCellParameterOverrides.clear(); // Step 45 -- dimensions just changed, old flat indices are meaningless now
     sequencerCellExtendedLengthSteps.clear(); // Step-extension (Pass 1) -- same reasoning
+}
+
+//==============================================================================
+// MIDI input dispatch layer + Sequencer pattern bank (Pass 1: immediate
+// recall; Pass 2: Set Interval/End of Pattern switch timing)
+//==============================================================================
+
+void SlicerAudioProcessor::handleIncomingMidi (const juce::MidiBuffer& midiMessages)
+{
+    for (const auto metadata : midiMessages)
+    {
+        const auto message = metadata.getMessage();
+
+        if (message.isNoteOn())
+            dispatchNoteOn (message.getNoteNumber());
+    }
+}
+
+void SlicerAudioProcessor::dispatchNoteOn (int noteNumber)
+{
+    // The routing point: checks current context (TriggerMode) and calls
+    // whichever handler applies. Sequenced mode's pattern bank is the only
+    // handler today -- a future Perform mode or MIDI Control sequencing
+    // mode just adds another case here, without touching
+    // handleIncomingMidi() or this switch's surrounding structure.
+    switch (triggerMode.load())
+    {
+        case TriggerMode::sequenced:
+            if (midiLearnArmed.load())
+                completeMidiLearn (noteNumber);
+            else
+                handlePatternSwitchNoteOn (noteNumber);
+            break;
+
+        case TriggerMode::sliceLength:
+        case TriggerMode::clock:
+        default:
+            break; // reserved for future Perform/Control modes -- MIDI ignored entirely here
+    }
+}
+
+SlicerAudioProcessor::SequencerPatternSnapshot SlicerAudioProcessor::captureCurrentSequencerPatternSnapshot() const
+{
+    SequencerPatternSnapshot snapshot;
+    snapshot.populated = true;
+    snapshot.rows = getSequencerNumRows();
+    snapshot.columns = getSequencerNumSteps();
+    snapshot.stepResolutionIndex = stepResolutionIndex.load();
+    snapshot.patternLengthBarsIndex = patternLengthBarsIndex.load();
+    snapshot.grid = sequencerGrid;
+    snapshot.parameterOverrides = sequencerCellParameterOverrides;
+    snapshot.extendedLengthSteps = sequencerCellExtendedLengthSteps;
+    return snapshot;
+}
+
+void SlicerAudioProcessor::handlePatternSwitchNoteOn (int noteNumber)
+{
+    if (! patternBank[(size_t) noteNumber].populated)
+        return; // empty slot -- no-op regardless of timing mode, same as Pass 1
+
+    if (patternSwitchTiming.load() == PatternSwitchTiming::immediate)
+    {
+        handleSequencerPatternRecallNoteOn (noteNumber);
+        return;
+    }
+
+    // Set Interval / End of Pattern: don't switch yet -- arm the pending
+    // target and let the per-sample boundary check in processBlock()'s
+    // sequencedMode branch apply it once the chosen boundary is crossed. A
+    // newer note-on arriving before that boundary just overwrites this same
+    // atomic, so the newest one always wins -- there's never more than one
+    // pending switch to track.
+    pendingPatternSwitchNote.store (noteNumber);
+    patternSwitchIntervalBoundaryArmed = false; // force Set Interval's "next occurrence" to be recomputed fresh from wherever ppq is on the very next per-sample check
+}
+
+void SlicerAudioProcessor::handleSequencerPatternRecallNoteOn (int noteNumber)
+{
+    const auto& snapshot = patternBank[(size_t) noteNumber];
+
+    if (! snapshot.populated)
+        return; // empty slot -- no-op, current pattern keeps playing undisturbed
+
+    sequencerGrid = snapshot.grid;
+    sequencerCellParameterOverrides = snapshot.parameterOverrides;
+    sequencerCellExtendedLengthSteps = snapshot.extendedLengthSteps;
+    stepResolutionIndex.store (snapshot.stepResolutionIndex);
+    patternLengthBarsIndex.store (snapshot.patternLengthBarsIndex);
+    activePatternBankSlot.store (noteNumber);
+
+    // Force the step-boundary tracker to re-sync against the newly recalled
+    // grid on the very next check, below in processBlock() -- same re-init
+    // setTriggerMode() already relies on when switching INTO Sequenced mode.
+    sequencedModeInitialized = false;
+}
+
+void SlicerAudioProcessor::completeMidiLearn (int noteNumber)
+{
+    patternBank[(size_t) noteNumber] = pendingSaveSnapshot;
+    midiLearnArmed.store (false);
+}
+
+void SlicerAudioProcessor::armMidiLearnForPatternSave()
+{
+    const juce::ScopedLock sl (sampleLock);
+    pendingSaveSnapshot = captureCurrentSequencerPatternSnapshot();
+    midiLearnArmed.store (true);
+}
+
+void SlicerAudioProcessor::cancelMidiLearn()
+{
+    midiLearnArmed.store (false);
+}
+
+std::array<bool, 128> SlicerAudioProcessor::getPopulatedPatternBankSlots() const
+{
+    const juce::ScopedLock sl (sampleLock);
+    std::array<bool, 128> populated {};
+
+    for (size_t i = 0; i < patternBank.size(); ++i)
+        populated[i] = patternBank[i].populated;
+
+    return populated;
 }
 
 int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const

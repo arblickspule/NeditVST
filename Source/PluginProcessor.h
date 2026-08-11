@@ -4,11 +4,13 @@
 #include "TransientDetector.h"
 #include "GranularStretcher.h"
 #include "EasingCurve.h"
+#include <array>
 #include <map>
 #include <vector>
 
 //==============================================================================
-// STEP 6/8: transport-synced generative playback — no MIDI, no keyboard.
+// STEP 6/8: transport-synced generative playback, plus MIDI-driven pattern
+// recall in Sequenced mode (see the MIDI input / Pattern bank section below).
 //
 // How it works (Step 8 revision — self-chaining weighted playback):
 //   - The loaded sample is treated as `loopLengthBars` bars long (set by the
@@ -24,6 +26,10 @@
 //     there's no bar-boundary resync. Weight 0 = that slice is excluded
 //     from the draw entirely (never picked, though the math still tolerates
 //     it fine even without exclusion).
+//   - MIDI input is otherwise not used to trigger playback (Slice Length and
+//     Clock modes remain purely transport-driven) — its only current job is
+//     switching between saved Sequencer patterns while Sequenced mode is
+//     active, via the dispatch layer described below.
 //==============================================================================
 
 //==============================================================================
@@ -43,7 +49,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
-    bool acceptsMidi() const override { return false; } // transport-driven now, no MIDI needed
+    bool acceptsMidi() const override { return true; } // Sequenced mode's pattern-bank recall (see below) needs note-on input
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
@@ -459,6 +465,20 @@ public:
         clockCurrentPickValid = false;
         resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
         sequencedModeInitialized = false; // Step 37 -- same guarantee entering Sequenced mode
+
+        // Pattern bank MIDI Learn only makes sense while Sequenced mode is
+        // selected (it's the only mode whose UI can arm it) -- leaving the
+        // mode abandons any learn still armed, so it can never later capture
+        // a stale snapshot into the wrong slot after the user's moved on.
+        // Same reasoning for a pattern switch left pending (Pass 2) -- its
+        // boundary check only ever runs in the sequencedMode branch below,
+        // so leaving the mode would otherwise strand it, silently applying
+        // whenever Sequenced mode is re-entered later.
+        if (mode != TriggerMode::sequenced)
+        {
+            midiLearnArmed.store (false);
+            pendingPatternSwitchNote.store (-1);
+        }
     }
 
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
@@ -1333,6 +1353,84 @@ public:
     // Sequenced mode isn't active (or transport stopped).
     int getCurrentlyPlayingStepIndex() const { return currentlyPlayingStepIndexForUI.load(); }
 
+    //=== MIDI input / Sequencer pattern bank (Pass 1: immediate recall; Pass 2: Set Interval/End of Pattern timing) ===
+    // A small, general dispatch layer reads every incoming MidiBuffer in
+    // processBlock() and routes note-on events by current TriggerMode (see
+    // dispatchNoteOn() in the private section below) -- Sequenced mode's
+    // pattern bank is the only handler today, but adding a future Perform
+    // or MIDI Control mode is just another case in that switch, not a
+    // rewrite of the read/dispatch plumbing itself.
+    //
+    // The bank has 128 slots, indexed 1:1 by MIDI note number. Each slot
+    // either holds a complete snapshot of the Sequencer grid (every cell's
+    // style, every parameter override, and the step-resolution/pattern-
+    // length that define the grid's own dimensions) or is empty. Slots are
+    // populated lazily, only via MIDI Learn: armMidiLearnForPatternSave()
+    // captures the CURRENT grid immediately (not whenever the note
+    // eventually arrives), then the next note-on received while armed
+    // claims that slot. For an empty slot, a recall note-on is always a
+    // silent no-op -- whatever's currently playing is left completely
+    // undisturbed. None of this is persisted across DAW sessions yet (see
+    // getStateInformation()'s own doc comment).
+    void armMidiLearnForPatternSave(); // captures the current grid; takes sampleLock itself -- UI-thread entry point
+    void cancelMidiLearn();
+    bool isMidiLearnArmed() const { return midiLearnArmed.load(); }
+
+    // One locked snapshot copy per call, cheap enough for a UI timer to
+    // poll at a modest rate without hammering sampleLock 128 times a tick.
+    std::array<bool, 128> getPopulatedPatternBankSlots() const;
+
+    // -1 if no slot has been recalled this session (still whatever the user
+    // last drew/edited by hand).
+    int getActivePatternBankSlot() const { return activePatternBankSlot.load(); }
+
+    // Pattern Switch Timing (Pass 2) -- governs WHEN a recall note-on for a
+    // populated slot actually takes effect. Purely a timing layer on top of
+    // the recall mechanism above; doesn't touch Trigger Mode, Pitch Mode, or
+    // any playback style logic.
+    //   immediate    -- unchanged from Pass 1: switches the instant the
+    //     note-on arrives, mid-block if need be.
+    //   setInterval  -- defers the switch to the next occurrence of a
+    //     chosen musical grid point (patternSwitchIntervalIndex, same
+    //     note-value palette as Clock reference/Step resolution), checked
+    //     every sample against host ppq (see processBlock()'s sequencedMode
+    //     branch) -- same per-sample boundary discipline Clock mode and the
+    //     mandatory Reset feature already use.
+    //   endOfPattern -- defers the switch to the moment the CURRENTLY
+    //     PLAYING pattern wraps at its own Pattern Length -- reuses that
+    //     pattern's existing step-wrap detection as the trigger, no
+    //     separate ppq math.
+    // In either deferred mode, a new note-on before the boundary replaces
+    // the pending target outright (last note before the boundary wins) --
+    // never more than one switch pending at a time.
+    enum class PatternSwitchTiming { immediate, setInterval, endOfPattern };
+
+    void setPatternSwitchTiming (PatternSwitchTiming timing)
+    {
+        patternSwitchTiming.store (timing);
+        pendingPatternSwitchNote.store (-1); // changing the timing mode abandons any switch already pending under the old one
+    }
+
+    PatternSwitchTiming getPatternSwitchTiming() const { return patternSwitchTiming.load(); }
+
+    // Set Interval's grid point -- same numNoteValueOptions palette as
+    // Clock reference/Step resolution (see getNoteValueName()/
+    // getNoteValueBeats() above). Meaningless while Immediate or End of
+    // Pattern is selected, same "stored but inert unless its mode is
+    // active" convention clockReferenceIndex etc. already follow.
+    void setPatternSwitchIntervalIndex (int index)
+    {
+        patternSwitchIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+    }
+
+    int getPatternSwitchIntervalIndex() const { return patternSwitchIntervalIndex.load(); }
+
+    // -1 if no switch is currently pending; otherwise the MIDI note number
+    // (== pattern bank slot) a deferred switch is headed toward, for the UI
+    // to show as "pending," distinct from "active." Only ever non-(-1)
+    // while patternSwitchTiming is setInterval or endOfPattern.
+    int getPendingPatternSwitchSlot() const { return pendingPatternSwitchNote.load(); }
+
 #if JUCE_DEBUG
     // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
     // done. Call from a UI-thread timer (SequencerGrid's own 30fps poll)
@@ -1489,6 +1587,64 @@ private:
     // slices rebuild (rows), or loop length/step resolution change
     // (columns). Must be called with sampleLock already held.
     void resetSequencerGrid();
+
+    // One pattern bank slot's full contents (Step: MIDI pattern bank) --
+    // see captureCurrentSequencerPatternSnapshot()/patternBank below for how
+    // it's populated and read.
+    struct SequencerPatternSnapshot
+    {
+        bool populated = false;
+        int rows = 0, columns = 0;
+        int stepResolutionIndex = 0, patternLengthBarsIndex = 0;
+        std::vector<int> grid;
+        std::map<int, std::map<juce::String, float>> parameterOverrides;
+        std::map<int, int> extendedLengthSteps;
+    };
+
+    // MIDI input dispatch layer -- see the public "MIDI input / Sequencer
+    // pattern bank" section above for the overall design. All of these,
+    // plus completeMidiLearn()/handleSequencerPatternRecallNoteOn() below,
+    // are only ever called from within processBlock() and assume sampleLock
+    // is already held by the caller (same convention resetSequencerGrid()
+    // itself follows) -- they must never take the lock themselves.
+    void handleIncomingMidi (const juce::MidiBuffer& midiMessages);
+    void dispatchNoteOn (int noteNumber);
+
+    // Sequenced mode's recall entry point (Pass 2) -- routes by
+    // patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
+    // below right away (unchanged Pass 1 behaviour); setInterval/endOfPattern
+    // instead arm pendingPatternSwitchNote and let the per-sample boundary
+    // check in processBlock()'s sequencedMode branch apply the switch once
+    // the chosen boundary is crossed. Empty slot -> no-op either way, same
+    // as Pass 1.
+    void handlePatternSwitchNoteOn (int noteNumber);
+
+    // The actual grid swap, called either directly (Immediate) or from the
+    // deferred per-sample boundary check (Set Interval/End of Pattern). A
+    // populated slot overwrites the live grid AND its defining dimensions
+    // (stepResolutionIndex/patternLengthBarsIndex) wholesale, then forces
+    // sequencedModeInitialized false so the step-boundary tracker re-syncs
+    // against the new grid on the very next check -- the same "just
+    // switched, trigger immediately" mechanic setTriggerMode() already
+    // relies on for a mode change. Callers invoking this MID-BLOCK (the
+    // deferred timing modes) must also set sequencedModeInitialized back to
+    // true afterward once they've re-derived this sample's step alignment
+    // themselves -- see the sequencedMode branch in processBlock() -- since
+    // otherwise the NEXT block would re-trigger the same step a second time
+    // (sequencedModeInitialized only gets consulted once per block, and
+    // this call happens after that block's own check already ran).
+    void handleSequencerPatternRecallNoteOn (int noteNumber);
+
+    // Writes pendingSaveSnapshot (captured back when armMidiLearnForPatternSave()
+    // was clicked) into patternBank[noteNumber] and clears midiLearnArmed.
+    void completeMidiLearn (int noteNumber);
+
+    // Captures rows/columns/stepResolutionIndex/patternLengthBarsIndex
+    // alongside the grid+override maps themselves -- those two indices
+    // define the grid's column stride, so a recall that restored the cell
+    // data without them would reinterpret it against the wrong stride and
+    // scramble every cell. Assumes sampleLock already held.
+    SequencerPatternSnapshot captureCurrentSequencerPatternSnapshot() const;
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
@@ -1671,6 +1827,32 @@ private:
     // getSequencerCellExtendedLengthSteps()/setSequencerCellExtendedLengthSteps()
     // above for how it's read/written.
     std::map<int, int> sequencerCellExtendedLengthSteps;
+
+    // Sequencer pattern bank (MIDI input, Pass 1) -- 128 slots, indexed 1:1
+    // by MIDI note number, each either empty (default) or a full
+    // SequencerPatternSnapshot. Guarded by sampleLock, same lifecycle as
+    // sequencerGrid itself: read on the audio thread from
+    // handleSequencerPatternRecallNoteOn()/completeMidiLearn() (called from
+    // processBlock(), lock already held there), written from the UI thread
+    // via armMidiLearnForPatternSave(). pendingSaveSnapshot holds whatever
+    // was captured at the moment "Save to..." was clicked, until a note-on
+    // arrives to claim a slot for it (or cancelMidiLearn() discards it).
+    std::array<SequencerPatternSnapshot, 128> patternBank;
+    SequencerPatternSnapshot pendingSaveSnapshot;
+    std::atomic<bool> midiLearnArmed { false };
+    std::atomic<int> activePatternBankSlot { -1 }; // -1 = no recall yet this session
+
+    // Pattern Switch Timing (Pass 2) -- see the public enum's own doc
+    // comment above. patternSwitchIntervalIndex defaults to index 19 ("1n",
+    // one bar) -- a coarser default than clockReferenceIndex's one-beat
+    // default, since switching an entire pattern is a coarser action than
+    // Clock mode's own per-slice picks. pendingPatternSwitchNote is -1
+    // whenever no switch is pending; written from the audio thread only
+    // (dispatchNoteOn and the per-sample boundary check both run inside
+    // processBlock()), read from the UI thread for the "pending" indicator.
+    std::atomic<PatternSwitchTiming> patternSwitchTiming { PatternSwitchTiming::immediate };
+    std::atomic<int> patternSwitchIntervalIndex { 19 };
+    std::atomic<int> pendingPatternSwitchNote { -1 };
 
     // Style Palette's persistent "currently selected drawing style" (Step
     // 41) -- defaults to Forward (index 0).
@@ -1870,6 +2052,20 @@ private:
     // first time.
     bool sequencedModeInitialized = false;
     int sequencedLastStepIndex = -1;
+
+    // Set Interval pattern-switch scheduling (Pass 2, audio thread only) --
+    // patternSwitchIntervalBoundaryArmed false means "next occurrence not
+    // computed yet," forcing the per-sample check in processBlock() to snap
+    // patternSwitchIntervalBoundaryPpq to the next grid point fresh from
+    // wherever ppq currently is, the moment a switch gets (re-)armed --
+    // same "arm now, resolve against the very next per-sample check" shape
+    // clockModeInitialized/resetWindowInitialized use for their own first
+    // boundary. Re-armed (set back to false) every time
+    // pendingPatternSwitchNote changes, including on replacement by a newer
+    // note-on -- always tracks "next occurrence from NOW," not from
+    // whenever the original note-on arrived.
+    bool patternSwitchIntervalBoundaryArmed = false;
+    double patternSwitchIntervalBoundaryPpq = 0.0;
 
     // Subdivide (Step 47, audio thread only) -- per-step retrigger rate,
     // Sequenced mode only. Captured once at a step's own pick-start (see

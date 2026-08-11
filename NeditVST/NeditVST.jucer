@@ -45,6 +45,10 @@
             file="../Source/PlaybackStyleParameterPanel.cpp"/>
       <FILE id="g7Mq2X" name="PlaybackStyleParameterPanel.h" compile="0" resource="0"
             file="../Source/PlaybackStyleParameterPanel.h"/>
+      <FILE id="h9Rk3P" name="PatternBankPanel.cpp" compile="1" resource="0"
+            file="../Source/PatternBankPanel.cpp"/>
+      <FILE id="m4Vd7T" name="PatternBankPanel.h" compile="0" resource="0"
+            file="../Source/PatternBankPanel.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

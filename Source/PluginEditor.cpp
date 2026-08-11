@@ -2,7 +2,7 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), playbackStyleParameterPanel (p), sequencerGrid (p), playbackStylePalette (p)
+    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), playbackStyleParameterPanel (p), sequencerGrid (p), playbackStylePalette (p), patternBankPanel (p)
 {
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
@@ -396,6 +396,43 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     clearSequenceButton.addListener (this);
 
     controlsContent.addAndMakeVisible (playbackStylePalette);
+    controlsContent.addAndMakeVisible (patternBankPanel);
+
+    // Pattern Switch Timing (Pass 2) -- governs when a pattern-bank recall
+    // note-on (see patternBankPanel just above) actually takes effect.
+    // Item IDs are 1-based, in PatternSwitchTiming enum order.
+    controlsContent.addAndMakeVisible (patternSwitchTimingLabel);
+    patternSwitchTimingLabel.setText ("Pattern switch timing", juce::dontSendNotification);
+    patternSwitchTimingLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (patternSwitchTimingSelector);
+    patternSwitchTimingSelector.addItem ("Immediate", 1);
+    patternSwitchTimingSelector.addItem ("Set Interval", 2);
+    patternSwitchTimingSelector.addItem ("End of Pattern", 3);
+    patternSwitchTimingSelector.setSelectedId (
+        static_cast<int> (processor.getPatternSwitchTiming()) + 1, juce::dontSendNotification);
+    patternSwitchTimingSelector.onChange = [this]
+    {
+        processor.setPatternSwitchTiming (
+            static_cast<SlicerAudioProcessor::PatternSwitchTiming> (patternSwitchTimingSelector.getSelectedId() - 1));
+        updateTriggerModeVisibility(); // Set Interval's own note-value picker only shows for that one timing mode
+    };
+
+    // Set Interval's grid point -- same note-value palette as Clock
+    // reference/Step resolution above, shown only while Set Interval is
+    // the selected timing (see updateTriggerModeVisibility()).
+    controlsContent.addAndMakeVisible (patternSwitchIntervalLabel);
+    patternSwitchIntervalLabel.setText ("Switch interval", juce::dontSendNotification);
+    patternSwitchIntervalLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (patternSwitchIntervalSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        patternSwitchIntervalSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    patternSwitchIntervalSelector.setSelectedId (processor.getPatternSwitchIntervalIndex() + 1, juce::dontSendNotification);
+    patternSwitchIntervalSelector.onChange = [this]
+    {
+        processor.setPatternSwitchIntervalIndex (patternSwitchIntervalSelector.getSelectedId() - 1);
+    };
 
     controlsContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
@@ -696,6 +733,24 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     sequencerGrid.setAvailableHeight (sequencerViewport.getHeight());
     area.removeFromTop (20);
 
+    // Pattern bank (MIDI input, Sequenced mode only) -- its own row, same
+    // pattern as every other Sequenced-only control above, rather than
+    // squeezed into sequencerRow where it'd fight sequencerViewport for
+    // width.
+    auto patternBankRow = area.removeFromTop (PatternBankPanel::getPreferredHeight());
+    patternBankPanel.setBounds (patternBankRow.removeFromLeft (PatternBankPanel::preferredWidth));
+    area.removeFromTop (20);
+
+    auto patternSwitchTimingRow = area.removeFromTop (30);
+    patternSwitchTimingLabel.setBounds (patternSwitchTimingRow.removeFromLeft (140));
+    patternSwitchTimingSelector.setBounds (patternSwitchTimingRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto patternSwitchIntervalRow = area.removeFromTop (30);
+    patternSwitchIntervalLabel.setBounds (patternSwitchIntervalRow.removeFromLeft (140));
+    patternSwitchIntervalSelector.setBounds (patternSwitchIntervalRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
     auto undoRedoRow = area.removeFromTop (30);
     undoButton.setBounds (undoRedoRow.removeFromLeft (100));
     undoRedoRow.removeFromLeft (10);
@@ -761,6 +816,20 @@ void SlicerAudioProcessorEditor::timerCallback()
     auditionButton.setColour (juce::TextButton::buttonColourId,
                                auditioning ? juce::Colours::orange.withAlpha (0.6f)
                                            : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
+
+    // These two are otherwise write-only (UI -> processor via onChange
+    // below) -- a MIDI pattern-bank recall can change the processor's
+    // stepResolutionIndex/patternLengthBarsIndex on its own, out from under
+    // them, so poll and resync rather than let them show a stale value
+    // while SequencerGrid (which already polls dimensions live) shows the
+    // newly recalled grid underneath.
+    const int processorStepResolutionId = processor.getStepResolutionIndex() + 1;
+    if (stepResolutionSelector.getSelectedId() != processorStepResolutionId)
+        stepResolutionSelector.setSelectedId (processorStepResolutionId, juce::dontSendNotification);
+
+    const int processorPatternLengthId = processor.getPatternLengthBarsIndex() + 1;
+    if (patternLengthSelector.getSelectedId() != processorPatternLengthId)
+        patternLengthSelector.setSelectedId (processorPatternLengthId, juce::dontSendNotification);
 }
 
 void SlicerAudioProcessorEditor::chooseAndLoadFile()
@@ -832,6 +901,20 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     clearSequenceButton.setVisible (sequenced);
     playbackStylePalette.setVisible (sequenced);
     sequencerViewport.setVisible (sequenced);
+    patternBankPanel.setVisible (sequenced);
+
+    // Pattern Switch Timing (Pass 2) -- the timing mode selector is visible
+    // whenever the pattern bank itself is (Sequenced mode); Set Interval's
+    // own note-value picker only additionally shows when that specific
+    // timing is the one selected.
+    patternSwitchTimingLabel.setVisible (sequenced);
+    patternSwitchTimingSelector.setVisible (sequenced);
+
+    const bool setInterval = sequenced
+        && patternSwitchTimingSelector.getSelectedId()
+               == static_cast<int> (SlicerAudioProcessor::PatternSwitchTiming::setInterval) + 1;
+    patternSwitchIntervalLabel.setVisible (setInterval);
+    patternSwitchIntervalSelector.setVisible (setInterval);
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
