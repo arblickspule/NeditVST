@@ -482,13 +482,77 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         processor.setPerformanceWorkingSync (performanceSyncToggle.getToggleState());
     };
 
+    // Trim Snap mode -- Transients (existing behaviour) / Grid (fixed
+    // musical grid at the established tempo). Item IDs mirror
+    // SlicerAudioProcessor::TrimSnapMode's declaration order (1 = transients,
+    // 2 = grid), same "JUCE item IDs are 1-based" convention as every other
+    // enum-backed selector here.
+    controlsContent.addAndMakeVisible (performanceTrimSnapLabel);
+    performanceTrimSnapLabel.setText ("Trim snap", juce::dontSendNotification);
+    performanceTrimSnapLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (performanceTrimSnapSelector);
+    performanceTrimSnapSelector.addItem ("Transients", 1);
+    performanceTrimSnapSelector.addItem ("Grid", 2);
+    performanceTrimSnapSelector.setSelectedId (
+        static_cast<int> (processor.getPerformanceTrimSnapMode()) + 1, juce::dontSendNotification);
+    performanceTrimSnapSelector.onChange = [this]
+    {
+        processor.setPerformanceTrimSnapMode (
+            static_cast<SlicerAudioProcessor::TrimSnapMode> (performanceTrimSnapSelector.getSelectedId() - 1));
+        updatePerformanceTrimSnapVisibility();
+    };
+
+    // Grid resolution -- same note-value palette as Clock reference/
+    // Quantize Transients' Grid/Subdivide, shown only while Grid is the
+    // selected snap mode (see updatePerformanceTrimSnapVisibility()).
+    controlsContent.addAndMakeVisible (performanceTrimGridLabel);
+    performanceTrimGridLabel.setText ("Grid", juce::dontSendNotification);
+    performanceTrimGridLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (performanceTrimGridSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        performanceTrimGridSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    performanceTrimGridSelector.setSelectedId (processor.getPerformanceTrimGridIndex() + 1, juce::dontSendNotification);
+    performanceTrimGridSelector.onChange = [this]
+    {
+        processor.setPerformanceTrimGridIndex (performanceTrimGridSelector.getSelectedId() - 1);
+    };
+
+    // Quantize Recall -- off (immediate, unchanged) by default, same
+    // "preserve existing behaviour until explicitly opted into" convention
+    // as Trim Snap's own toggle above.
+    controlsContent.addAndMakeVisible (performanceQuantizeRecallToggle);
+    performanceQuantizeRecallToggle.setToggleState (processor.getPerformanceQuantizeRecallEnabled(), juce::dontSendNotification);
+    performanceQuantizeRecallToggle.onClick = [this]
+    {
+        processor.setPerformanceQuantizeRecallEnabled (performanceQuantizeRecallToggle.getToggleState());
+        updatePerformanceQuantizeRecallVisibility();
+    };
+
+    // Quantize Recall's grid point -- same note-value palette as Clock
+    // reference/Set Interval/Trim Snap's own Grid picker above, shown only
+    // while the toggle is on (see updatePerformanceQuantizeRecallVisibility()).
+    controlsContent.addAndMakeVisible (performanceQuantizeRecallIntervalLabel);
+    performanceQuantizeRecallIntervalLabel.setText ("Recall interval", juce::dontSendNotification);
+    performanceQuantizeRecallIntervalLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (performanceQuantizeRecallIntervalSelector);
+    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+        performanceQuantizeRecallIntervalSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    performanceQuantizeRecallIntervalSelector.setSelectedId (processor.getPerformanceQuantizeRecallIntervalIndex() + 1, juce::dontSendNotification);
+    performanceQuantizeRecallIntervalSelector.onChange = [this]
+    {
+        processor.setPerformanceQuantizeRecallIntervalIndex (performanceQuantizeRecallIntervalSelector.getSelectedId() - 1);
+    };
+
     controlsContent.addAndMakeVisible (performanceKeyboardPanel);
 
     controlsContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
 
-    updateTriggerModeVisibility();
+    updateTriggerModeVisibility(); // also calls updatePerformanceTrimSnapVisibility()/updatePerformanceQuantizeRecallVisibility()
     updatePitchModeVisibility();
     updateManualBpmOverrideVisibility();
     updateQuantizeTransientsVisibility();
@@ -813,6 +877,29 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     performanceSyncToggle.setBounds (performanceToggleRow.removeFromLeft (100));
     area.removeFromTop (10);
 
+    // Trim Snap mode + its Grid-resolution picker -- same row shape as
+    // Pattern Switch Timing/Set Interval above.
+    auto performanceTrimSnapRow = area.removeFromTop (30);
+    performanceTrimSnapLabel.setBounds (performanceTrimSnapRow.removeFromLeft (140));
+    performanceTrimSnapSelector.setBounds (performanceTrimSnapRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto performanceTrimGridRow = area.removeFromTop (30);
+    performanceTrimGridLabel.setBounds (performanceTrimGridRow.removeFromLeft (140));
+    performanceTrimGridSelector.setBounds (performanceTrimGridRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    // Quantize Recall toggle + its own note-value picker -- same row shape
+    // as Trim Snap/Pattern Switch Timing above.
+    auto performanceQuantizeRecallRow = area.removeFromTop (24);
+    performanceQuantizeRecallToggle.setBounds (performanceQuantizeRecallRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
+    auto performanceQuantizeRecallIntervalRow = area.removeFromTop (30);
+    performanceQuantizeRecallIntervalLabel.setBounds (performanceQuantizeRecallIntervalRow.removeFromLeft (140));
+    performanceQuantizeRecallIntervalSelector.setBounds (performanceQuantizeRecallIntervalRow.removeFromLeft (150));
+    area.removeFromTop (10);
+
     // Full contentWidth, unlike the old compact bank grid -- a real
     // keyboard needs the room to be usable.
     auto performanceKeyboardRow = area.removeFromTop (PerformanceKeyboardPanel::getPreferredHeight());
@@ -1019,7 +1106,19 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     performanceStyleParameterPanel.setVisible (performance);
     performanceLoopToggle.setVisible (performance);
     performanceSyncToggle.setVisible (performance);
+    performanceTrimSnapLabel.setVisible (performance);
+    performanceTrimSnapSelector.setVisible (performance);
+    performanceQuantizeRecallToggle.setVisible (performance);
     performanceKeyboardPanel.setVisible (performance);
+
+    // Trim Snap's own Grid-resolution picker additionally depends on which
+    // snap mode is selected -- same "own function, called both here and
+    // from its selector's onChange" split Set Interval's picker above uses.
+    updatePerformanceTrimSnapVisibility();
+
+    // Quantize Recall's own note-value picker additionally depends on
+    // whether the toggle is on -- same split as Trim Snap's picker above.
+    updatePerformanceQuantizeRecallVisibility();
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
@@ -1036,6 +1135,30 @@ void SlicerAudioProcessorEditor::updateQuantizeTransientsVisibility()
 
     quantizeGridLabel.setVisible (enabled);
     quantizeGridSelector.setVisible (enabled);
+}
+
+void SlicerAudioProcessorEditor::updatePerformanceTrimSnapVisibility()
+{
+    // Grid resolution only matters -- and is only shown -- while Performance
+    // mode is the active trigger mode AND Grid is the selected Trim Snap
+    // mode; Transients needs no resolution picker at all.
+    const bool performance = triggerModeSelector.getSelectedId() == 4;
+    const bool grid = performanceTrimSnapSelector.getSelectedId() == 2;
+
+    performanceTrimGridLabel.setVisible (performance && grid);
+    performanceTrimGridSelector.setVisible (performance && grid);
+}
+
+void SlicerAudioProcessorEditor::updatePerformanceQuantizeRecallVisibility()
+{
+    // Recall interval only matters -- and is only shown -- while Performance
+    // mode is the active trigger mode AND Quantize Recall is switched on;
+    // off needs no interval picker at all (immediate, unchanged behaviour).
+    const bool performance = triggerModeSelector.getSelectedId() == 4;
+    const bool quantized = performanceQuantizeRecallToggle.getToggleState();
+
+    performanceQuantizeRecallIntervalLabel.setVisible (performance && quantized);
+    performanceQuantizeRecallIntervalSelector.setVisible (performance && quantized);
 }
 
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()

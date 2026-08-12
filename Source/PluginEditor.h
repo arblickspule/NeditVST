@@ -114,6 +114,8 @@ private:
     void updatePitchModeVisibility(); // shows/hides the Time-Stretch-only controls
     void updateManualBpmOverrideVisibility(); // shows/hides the BPM numeric field
     void updateQuantizeTransientsVisibility(); // shows/hides the Grid dropdown
+    void updatePerformanceTrimSnapVisibility(); // shows/hides the Trim Snap Grid-resolution dropdown
+    void updatePerformanceQuantizeRecallVisibility(); // shows/hides the Quantize Recall note-value dropdown
     int layoutControlsContent (int contentWidth); // lays out every control below; returns the total height they need
 
     SlicerAudioProcessor& processor;
@@ -366,6 +368,35 @@ private:
     PlaybackStyleParameterPanel performanceStyleParameterPanel;
     juce::ToggleButton performanceLoopToggle { "Loop" };
     juce::ToggleButton performanceSyncToggle { "Sync" };
+
+    // Trim Snap mode -- governs what dragging a state's trim handle snaps
+    // to: Transients (existing behaviour) or Grid (fixed musical grid at
+    // the sample's established tempo, ignoring detected transients
+    // entirely). performanceTrimGridSelector reuses the same note-value
+    // palette as Clock reference/Quantize Transients' Grid/Subdivide, and
+    // is only shown while Grid is the selected snap mode (same show/hide-
+    // by-selection convention as Set Interval's own note-value picker --
+    // see updatePerformanceTrimSnapVisibility()).
+    juce::Label performanceTrimSnapLabel;
+    juce::ComboBox performanceTrimSnapSelector;
+    juce::Label performanceTrimGridLabel;
+    juce::ComboBox performanceTrimGridSelector;
+
+    // Quantize Recall -- governs WHEN a physical MIDI key press's recall (or
+    // live-audition, for the focused key) actually takes effect: off
+    // (default) is the original immediate switch; on defers it to the next
+    // occurrence of performanceQuantizeRecallIntervalSelector's chosen grid
+    // point, same "Set Interval" mechanism Pattern Switch Timing above
+    // already uses for the Sequencer pattern bank.
+    // performanceQuantizeRecallIntervalSelector reuses the same note-value
+    // palette as Clock reference/Set Interval/Trim Snap's own Grid picker,
+    // and is only shown while the toggle is on (same show/hide-by-selection
+    // convention as those other pickers -- see
+    // updatePerformanceQuantizeRecallVisibility()).
+    juce::ToggleButton performanceQuantizeRecallToggle { "Quantize Recall" };
+    juce::Label performanceQuantizeRecallIntervalLabel;
+    juce::ComboBox performanceQuantizeRecallIntervalSelector;
+
     PerformanceKeyboardSource performanceKeyboardSource;
     PerformanceKeyboardPanel performanceKeyboardPanel;
 

@@ -128,6 +128,35 @@ public:
 
     int getQuantizeGridIndex() const { return quantizeGridIndex.load(); }
 
+    //=== Trim Snap mode (Performance mode's per-state trims only) ===
+    // Governs what setTrimStartSample()/setTrimEndSample() snap TO when
+    // snapToTransient is true -- Shift still bypasses snapping entirely in
+    // either mode, unchanged (see WaveformDisplay::mouseDrag). Transients
+    // (default) is the existing behaviour, used everywhere including here
+    // unless Grid is explicitly selected. Grid ignores detected transients
+    // altogether and instead snaps to a FIXED musical grid, spaced by
+    // performanceTrimGridIndex's note value at the sample's already-
+    // established tempo (getCalculatedOriginalBpm()) -- see
+    // findNearestGridSample() for exactly how. Only consulted while
+    // TriggerMode::performance is active; Slice Length/Clock modes' shared
+    // global trim always uses Transients, regardless of this setting.
+    enum class TrimSnapMode { transients, grid };
+
+    void setPerformanceTrimSnapMode (TrimSnapMode mode) { performanceTrimSnapMode.store (mode); }
+    TrimSnapMode getPerformanceTrimSnapMode() const { return performanceTrimSnapMode.load(); }
+
+    // Grid resolution -- same 20-value note-value palette as Clock
+    // reference/Quantize Transients' Grid/Subdivide (getNoteValueName()/
+    // getNoteValueBeats(), no separate table). Default index 13 (4n / one
+    // quarter note), the same default every other note-value-palette
+    // control here uses.
+    void setPerformanceTrimGridIndex (int index)
+    {
+        performanceTrimGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+    }
+
+    int getPerformanceTrimGridIndex() const { return performanceTrimGridIndex.load(); }
+
     //=== Trim markers (Step 23/25) ===
     // Two independent boundaries, in source-sample units, confining
     // EVERYTHING else in this class to [trimStart, trimEnd): transient
@@ -165,6 +194,13 @@ public:
     // two handles crossing) both before AND after the snap search, since
     // an unconstrained search can land a peak right at — or past — that
     // boundary.
+    //
+    // Trim Snap mode: while snapToTransient is true AND Performance mode is
+    // active AND performanceTrimSnapMode is Grid, findNearestGridSample()
+    // replaces the transient search entirely (not layered alongside it) —
+    // see its own comment. Outside those conditions (any other trigger
+    // mode, or Performance mode still on Transients) behaviour is exactly
+    // as before.
     void setTrimStartSample (int sample, bool snapToTransient = true)
     {
         const int currentEnd = trimEndSample.load();
@@ -173,8 +209,9 @@ public:
 
         if (snapToTransient)
         {
-            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-            target = juce::jlimit (0, upperBound, transientDetector.findNearestPeak (target, radiusSamples));
+            target = juce::jlimit (0, upperBound, shouldGridSnapTrim()
+                ? findNearestGridSample (target)
+                : transientDetector.findNearestPeak (target, (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate)));
         }
 
         trimStartSample.store (target);
@@ -200,8 +237,9 @@ public:
 
         if (snapToTransient)
         {
-            const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-            target = juce::jlimit (lowerBound, bufferLength, transientDetector.findNearestPeak (target, radiusSamples));
+            target = juce::jlimit (lowerBound, bufferLength, shouldGridSnapTrim()
+                ? findNearestGridSample (target)
+                : transientDetector.findNearestPeak (target, (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate)));
         }
 
         trimEndSample.store (target);
@@ -1521,6 +1559,55 @@ public:
 
     std::array<bool, 128> getPopulatedPerformanceStateBankSlots() const;
 
+    // Quantize Recall -- same mechanism as Pattern Switch Timing's Set
+    // Interval mode above (see that enum's own doc comment), applied to
+    // Performance mode's MIDI state recall instead of the Sequencer pattern
+    // bank. Off (immediate, the original behaviour) by default. When on, a
+    // physical MIDI key press -- recalling any saved state, or
+    // live-auditioning the currently-focused one -- doesn't switch right
+    // away; it arms pendingPerformanceRecallNote and waits for the next
+    // occurrence of performanceQuantizeRecallIntervalIndex's grid point,
+    // checked every SAMPLE against host ppq in processBlock()'s
+    // performanceMode branch -- the same per-sample boundary discipline
+    // Set Interval, Clock mode, and the mandatory Reset feature all already
+    // use, avoiding the Step 6 bug (a boundary computed once per block
+    // silently missing one that lands mid-block). A newer note-on before
+    // that point just overwrites pendingPerformanceRecallNote in
+    // handlePerformanceStateNoteOn(), so the newest press always wins --
+    // never more than one recall pending at a time, same rule Set Interval
+    // itself follows.
+    //
+    // Transport-independence: falls back to immediate if the host transport
+    // isn't playing when the key is pressed (there's no meaningful beat
+    // position to quantize against without it), and also if the transport
+    // stops while a switch is already pending (see processBlock()'s own
+    // handling) -- both preserve the "auditionable without pressing play"
+    // behaviour Performance mode already has.
+    void setPerformanceQuantizeRecallEnabled (bool enabled)
+    {
+        performanceQuantizeRecallEnabled.store (enabled);
+        pendingPerformanceRecallNote.store (-1); // changing the setting abandons any switch already pending under the old one, same as setPatternSwitchTiming()
+    }
+
+    bool getPerformanceQuantizeRecallEnabled() const { return performanceQuantizeRecallEnabled.load(); }
+
+    // Quantize Recall's grid point -- same numNoteValueOptions palette as
+    // Clock reference/Set Interval (see getNoteValueName()/
+    // getNoteValueBeats() above). Meaningless while Quantize Recall is off,
+    // same "stored but inert unless its mode is active" convention
+    // patternSwitchIntervalIndex etc. already follow.
+    void setPerformanceQuantizeRecallIntervalIndex (int index)
+    {
+        performanceQuantizeRecallIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+    }
+
+    int getPerformanceQuantizeRecallIntervalIndex() const { return performanceQuantizeRecallIntervalIndex.load(); }
+
+    // -1 if no recall is currently pending; otherwise the MIDI note number
+    // (== performance state bank slot) a deferred recall is headed toward.
+    // Only ever non-(-1) while performanceQuantizeRecallEnabled is true.
+    int getPendingPerformanceRecallSlot() const { return pendingPerformanceRecallNote.load(); }
+
     // The "working state" -- style/params/loop/sync currently being edited
     // via performanceStyleParameterPanel/the Loop+Sync toggles, ahead of
     // whatever the next Save captures. Parameter values are seeded once, in
@@ -1686,6 +1773,35 @@ private:
     // very edge of the trim can never quantize to a position outside it.
     int quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const;
 
+    // Trim Snap mode (Grid) -- true only while Performance mode is the
+    // active trigger mode AND performanceTrimSnapMode is Grid. Checked by
+    // setTrimStartSample()/setTrimEndSample() to pick findNearestGridSample()
+    // over the usual transient search; kept as its own tiny helper since
+    // both call sites need the exact same condition.
+    bool shouldGridSnapTrim() const
+    {
+        return triggerMode.load() == TriggerMode::performance
+            && performanceTrimSnapMode.load() == TrimSnapMode::grid;
+    }
+
+    // Trim Snap mode (Grid) -- finds the nearest FIXED musical grid position
+    // to rawSample, spaced by getNoteValueBeats(performanceTrimGridIndex) at
+    // the sample's established tempo (getCalculatedOriginalBpm()), anchored
+    // at tempoTrimStartSample -- the one stable "beat 0" reference that
+    // stays put regardless of which Performance state slot currently has
+    // focus (see tempoTrimStartSample's own comment). Same beats<->samples
+    // round-trip quantizeOnsetToGrid() above already uses for the analogous
+    // auto-detected-transient-quantize feature, just anchored differently:
+    // that one anchors to the trim it's searching WITHIN, which isn't
+    // available here since the trim handle itself is what's moving --
+    // tempoTrimStartSample is the nearest equivalent stable reference.
+    // Returns rawSample unchanged if the source tempo or grid resolution is
+    // degenerate (<= 0), same defensive fallback quantizeOnsetToGrid() uses.
+    // NOT clamped to any range itself -- both callers already clamp the
+    // result into the allowed handle range, same as they already do for the
+    // transient-snap search.
+    int findNearestGridSample (int rawSample) const;
+
     // Sequenced Trigger Mode (Step 37) -- clears the pattern to all-off,
     // sized to the CURRENT grid dimensions (getSequencerNumRows()/
     // getSequencerNumSteps()). Called whenever either dimension changes:
@@ -1712,8 +1828,12 @@ private:
     // are only ever called from within processBlock() and assume sampleLock
     // is already held by the caller (same convention resetSequencerGrid()
     // itself follows) -- they must never take the lock themselves.
-    void handleIncomingMidi (const juce::MidiBuffer& midiMessages);
-    void dispatchNoteOn (int noteNumber);
+    // hostTransportPlaying is threaded through from processBlock() (computed
+    // there ahead of this call, see its own call site) purely so Quantize
+    // Recall's note-on handler can decide immediate-vs-deferred on the spot
+    // -- every other handler ignores it.
+    void handleIncomingMidi (const juce::MidiBuffer& midiMessages, bool hostTransportPlaying);
+    void dispatchNoteOn (int noteNumber, bool hostTransportPlaying);
 
     // Sequenced mode's recall entry point (Pass 2) -- routes by
     // patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
@@ -1752,16 +1872,33 @@ private:
     SequencerPatternSnapshot captureCurrentSequencerPatternSnapshot() const;
 
     // Performance mode's own note-on entry point -- dispatched from
-    // dispatchNoteOn()'s TriggerMode::performance case. Playback-only now:
-    // if noteNumber is the currently FOCUSED slot, it live-auditions
-    // performanceWorkingState (in-progress edits, via the shared trim
-    // atomics); otherwise it plays a frozen copy of that OTHER slot's own
-    // saved snapshot (empty slot -> no-op), never touching focus or
-    // performanceWorkingState. Either way, sets performanceRecallPending =
-    // true for the per-sample loop in processBlock() to consume on its very
-    // next check (same same-call, same-lock handoff sequencedModeInitialized
-    // already uses for its own pattern recall, just below).
-    void handlePerformanceStateNoteOn (int noteNumber);
+    // dispatchNoteOn()'s TriggerMode::performance case. An empty, unfocused
+    // slot is a no-op regardless of Quantize Recall, same as Pass 1 (checked
+    // up front here before either path below runs). Otherwise routes by
+    // performanceQuantizeRecallEnabled, exactly the same "immediate vs.
+    // arm-and-defer" split handlePatternSwitchNoteOn() uses for
+    // patternSwitchTiming:
+    //   off, OR on but the host transport isn't playing right now (no
+    //     meaningful beat position to quantize against without it) --
+    //     applies immediately via applyPerformanceStateRecall(), unchanged
+    //     Pass 1 behaviour.
+    //   on AND transport playing -- arms pendingPerformanceRecallNote and
+    //     lets the per-sample boundary check in processBlock()'s
+    //     performanceMode branch apply it once the chosen grid point is
+    //     reached. A newer note-on before that point just overwrites the
+    //     same atomic, so the newest press always wins -- never more than
+    //     one recall pending at a time.
+    void handlePerformanceStateNoteOn (int noteNumber, bool hostTransportPlaying);
+
+    // The actual focus/playback-source swap, called either directly
+    // (Quantize Recall off, or transport stopped) or from the deferred
+    // per-sample boundary check (Quantize Recall on). Re-checks the target
+    // slot's populated flag for the non-focused case (mirrors
+    // handleSequencerPatternRecallNoteOn()'s own re-check) since a deferred
+    // call runs an arbitrary amount of time after the note-on that armed
+    // it -- moved out of handlePerformanceStateNoteOn() itself so both call
+    // sites (immediate and deferred) share exactly one implementation.
+    void applyPerformanceStateRecall (int noteNumber);
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
@@ -1926,6 +2063,15 @@ private:
     std::atomic<bool> quantizeTransientsEnabled { false };
     std::atomic<int> quantizeGridIndex { 13 };
 
+    // Trim Snap mode (Performance mode's per-state trims only) -- off
+    // (Transients) by default, same "preserve existing behaviour until
+    // explicitly opted into" convention as quantizeTransientsEnabled above.
+    // performanceTrimGridIndex defaults to index 13 (4n / one quarter
+    // note), the same default every other note-value-palette control here
+    // uses.
+    std::atomic<TrimSnapMode> performanceTrimSnapMode { TrimSnapMode::transients };
+    std::atomic<int> performanceTrimGridIndex { 13 };
+
     std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
     std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
     std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
@@ -2024,6 +2170,24 @@ private:
     std::atomic<PatternSwitchTiming> patternSwitchTiming { PatternSwitchTiming::immediate };
     std::atomic<int> patternSwitchIntervalIndex { 19 };
     std::atomic<int> pendingPatternSwitchNote { -1 };
+
+    // Quantize Recall (Performance mode) -- see the public getters/setters'
+    // own doc comment above for the overall design; same shape as Pattern
+    // Switch Timing's Set Interval mode just above, just off by default
+    // (preserving Performance mode's original immediate-recall behaviour)
+    // rather than defaulting to a deferred mode the way Sequenced mode's
+    // Pattern Switch Timing does. performanceQuantizeRecallIntervalIndex
+    // defaults to index 13 (4n / one quarter note), the same default every
+    // other note-value-palette control in this class uses (unlike
+    // patternSwitchIntervalIndex's own coarser one-bar default -- recalling
+    // a single performance state is a finer-grained action than switching
+    // an entire pattern). pendingPerformanceRecallNote is -1 whenever no
+    // recall is pending; written from the audio thread only (dispatchNoteOn
+    // and the per-sample boundary check both run inside processBlock()),
+    // read from the UI thread for the "pending" getter.
+    std::atomic<bool> performanceQuantizeRecallEnabled { false };
+    std::atomic<int> performanceQuantizeRecallIntervalIndex { 13 };
+    std::atomic<int> pendingPerformanceRecallNote { -1 };
 
     // Style Palette's persistent "currently selected drawing style" (Step
     // 41) -- defaults to Forward (index 0).
@@ -2262,6 +2426,16 @@ private:
     // whenever the original note-on arrived.
     bool patternSwitchIntervalBoundaryArmed = false;
     double patternSwitchIntervalBoundaryPpq = 0.0;
+
+    // Quantize Recall scheduling (Performance mode, audio thread only) --
+    // exactly the same "arm now, resolve against the very next per-sample
+    // check" shape as patternSwitchIntervalBoundaryArmed/Ppq just above,
+    // just for pendingPerformanceRecallNote instead of
+    // pendingPatternSwitchNote. Re-armed (set back to false) every time
+    // pendingPerformanceRecallNote changes, including on replacement by a
+    // newer note-on -- always tracks "next occurrence from NOW."
+    bool performanceQuantizeRecallBoundaryArmed = false;
+    double performanceQuantizeRecallBoundaryPpq = 0.0;
 
     // Subdivide (Step 47, audio thread only) -- per-step retrigger rate,
     // Sequenced mode only. Captured once at a step's own pick-start (see

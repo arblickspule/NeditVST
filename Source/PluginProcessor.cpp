@@ -509,6 +509,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     debugAudioLockAcquiredCount.fetch_add (1, std::memory_order_relaxed);
 #endif
 
+    // Computed ahead of the MIDI dispatch just below (rather than after, as
+    // before Quantize Recall) purely so handlePerformanceStateNoteOn() can
+    // know whether the host transport is playing AT NOTE-ON TIME, to decide
+    // immediate-vs-deferred -- everything else that reads these three still
+    // does so no earlier than it did before, so this reordering is a no-op
+    // for every other mode.
+    auto* playHead = getPlayHead();
+    const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo>{};
+    const bool hostTransportPlaying = position.hasValue() && position->getIsPlaying();
+
     // Dispatch note-ons before discarding the buffer below -- see
     // handleIncomingMidi()/dispatchNoteOn() for the routing layer. Done
     // before the trigger-mode init section further down (which runs once
@@ -516,15 +526,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // recall's dimension/state changes are already in place when that
     // section runs, giving an instant switch within the block the note-on
     // arrived in.
-    handleIncomingMidi (midiMessages);
+    handleIncomingMidi (midiMessages, hostTransportPlaying);
     midiMessages.clear(); // not a MIDI effect -- never produce MIDI out
 
     if (! sampleLoaded)
         return;
 
-    auto* playHead = getPlayHead();
-    const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo>{};
-    const bool hostTransportPlaying = position.hasValue() && position->getIsPlaying();
     const double hostSampleRate = getSampleRate();
 
     // Performance mode (Pass 1) needs to be known before the gates below --
@@ -1534,15 +1541,69 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
         else if (performanceMode)
         {
+            // Quantize Recall: mirrors Pattern Switch Timing's Set Interval
+            // scheme above (see the sequencedMode branch's own boundary
+            // check), reusing the same per-sample host-ppq
+            // boundary-crossing detection -- checked every SAMPLE, not once
+            // per block, the same discipline that avoids the Step 6 bug (a
+            // boundary computed once per block silently missing one that
+            // lands mid-block). A pending recall (pendingPerformanceRecallNote,
+            // armed by handlePerformanceStateNoteOn() while Quantize Recall
+            // is on and the transport was playing at note-on time) is
+            // applied the instant its chosen grid point is reached; a newer
+            // note-on before that point just overwrites the same atomic
+            // there, so the newest press always wins.
+            //
+            // Falls back to applying immediately, right here, if the host
+            // transport isn't playing -- there's no meaningful beat position
+            // to quantize against without it, and this also rescues a
+            // recall that was armed while playing but whose target transport
+            // then stopped before the boundary was ever reached (ppq holds
+            // still while stopped, so an unplayed boundary would otherwise
+            // never arrive) -- both preserve the "auditionable without
+            // pressing play" behaviour Performance mode already has.
+            const int pendingRecallNote = pendingPerformanceRecallNote.load();
+
+            if (pendingRecallNote >= 0)
+            {
+                bool boundaryCrossed = ! hostTransportPlaying;
+
+                if (hostTransportPlaying)
+                {
+                    if (! performanceQuantizeRecallBoundaryArmed)
+                    {
+                        // Just (re-)armed -- snap to the next grid point
+                        // from wherever ppq is right now, same
+                        // "windowIndex + 1" shape Clock mode/Reset/Set
+                        // Interval all use to find their own next boundary.
+                        const double intervalBeats = juce::jmax (
+                            getNoteValueBeats (performanceQuantizeRecallIntervalIndex.load()), 1.0e-6);
+                        const juce::int64 intervalIndex = (juce::int64) std::floor (samplePpq / intervalBeats);
+                        performanceQuantizeRecallBoundaryPpq = (double) (intervalIndex + 1) * intervalBeats;
+                        performanceQuantizeRecallBoundaryArmed = true;
+                    }
+
+                    boundaryCrossed = (samplePpq >= performanceQuantizeRecallBoundaryPpq);
+                }
+
+                if (boundaryCrossed)
+                {
+                    applyPerformanceStateRecall (pendingRecallNote);
+                    pendingPerformanceRecallNote.store (-1);
+                    performanceQuantizeRecallBoundaryArmed = false;
+                }
+            }
+
             // Performance mode: no probability engine, no slices -- one
             // hand-trimmed segment, one style, that style's own independent
             // parameter values, driven purely by MIDI note-on
-            // (performanceRecallPending, set by handlePerformanceStateNoteOn()
-            // in dispatchNoteOn()'s routing) rather than by anything
-            // time/position-based. Physical MIDI is playback-only (the
-            // on-screen keyboard is the only thing that ever changes focus
-            // -- see setFocusedPerformanceStateSlot()): pressing the FOCUSED
-            // slot's key plays performanceWorkingState itself (live
+            // (performanceRecallPending, set by handlePerformanceStateNoteOn()/
+            // applyPerformanceStateRecall() in dispatchNoteOn()'s routing, or
+            // by the Quantize Recall boundary check just above) rather than
+            // by anything time/position-based. Physical MIDI is playback-only
+            // (the on-screen keyboard is the only thing that ever changes
+            // focus -- see setFocusedPerformanceStateSlot()): pressing the
+            // FOCUSED slot's key plays performanceWorkingState itself (live
             // in-progress edits, via the shared trim atomics every other
             // mode also edits through); pressing any OTHER slot's key plays
             // a frozen copy of ITS saved snapshot
@@ -3057,6 +3118,32 @@ int SlicerAudioProcessor::quantizeOnsetToGrid (int onsetSample, int trimStart, i
     return juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), (int) std::llround (quantizedSampleDouble));
 }
 
+int SlicerAudioProcessor::findNearestGridSample (int rawSample) const
+{
+    const double gridBeats = getNoteValueBeats (performanceTrimGridIndex.load());
+
+    if (gridBeats <= 0.0)
+        return rawSample;
+
+    const double originalBpm = getCalculatedOriginalBpm();
+
+    if (originalBpm <= 0.0 || sampleSampleRate <= 0.0)
+        return rawSample;
+
+    // Same beats<->samples round-trip quantizeOnsetToGrid() above uses,
+    // anchored at tempoTrimStartSample instead of a passed-in trim start --
+    // see this function's own comment for why.
+    const int anchor = tempoTrimStartSample.load();
+    const double offsetSeconds = (double) (rawSample - anchor) / sampleSampleRate;
+    const double offsetBeats = offsetSeconds * (originalBpm / 60.0);
+    const double nearestGridStep = std::round (offsetBeats / gridBeats);
+    const double quantizedBeats = nearestGridStep * gridBeats;
+    const double quantizedSeconds = quantizedBeats * (60.0 / originalBpm);
+    const double quantizedSampleDouble = (double) anchor + quantizedSeconds * sampleSampleRate;
+
+    return (int) std::llround (quantizedSampleDouble);
+}
+
 void SlicerAudioProcessor::resetSequencerGrid()
 {
     const int rows = getSequencerNumRows();
@@ -3071,18 +3158,18 @@ void SlicerAudioProcessor::resetSequencerGrid()
 // recall; Pass 2: Set Interval/End of Pattern switch timing)
 //==============================================================================
 
-void SlicerAudioProcessor::handleIncomingMidi (const juce::MidiBuffer& midiMessages)
+void SlicerAudioProcessor::handleIncomingMidi (const juce::MidiBuffer& midiMessages, bool hostTransportPlaying)
 {
     for (const auto metadata : midiMessages)
     {
         const auto message = metadata.getMessage();
 
         if (message.isNoteOn())
-            dispatchNoteOn (message.getNoteNumber());
+            dispatchNoteOn (message.getNoteNumber(), hostTransportPlaying);
     }
 }
 
-void SlicerAudioProcessor::dispatchNoteOn (int noteNumber)
+void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, bool hostTransportPlaying)
 {
     // The routing point: checks current context (TriggerMode) and calls
     // whichever handler applies. Sequenced mode's pattern bank and
@@ -3097,7 +3184,7 @@ void SlicerAudioProcessor::dispatchNoteOn (int noteNumber)
             break;
 
         case TriggerMode::performance:
-            handlePerformanceStateNoteOn (noteNumber);
+            handlePerformanceStateNoteOn (noteNumber, hostTransportPlaying);
             break;
 
         case TriggerMode::sliceLength:
@@ -3195,7 +3282,7 @@ std::array<bool, 128> SlicerAudioProcessor::getPopulatedPatternBankSlots() const
 // Performance mode state bank (click-to-focus + auto-save)
 //==============================================================================
 
-void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber)
+void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber, bool hostTransportPlaying)
 {
     // Physical MIDI in Performance mode is playback-only -- the on-screen
     // keyboard's click handler (setFocusedPerformanceStateSlot(), below) is
@@ -3207,7 +3294,35 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber)
     // whatever's already saved there, via a frozen copy of its own
     // independent snapshot (including its own saved trim), so auditioning
     // it can never disturb performanceWorkingState or the focused slot's
-    // in-progress edits.
+    // in-progress edits. An empty, unfocused slot is a no-op regardless of
+    // Quantize Recall -- checked up front, before either the immediate or
+    // deferred path below runs, same as Pass 1.
+    if (noteNumber != focusedPerformanceStateSlot.load() && ! performanceStateBank[(size_t) noteNumber].populated)
+        return; // empty, unfocused slot -- no-op, whatever's already playing keeps playing undisturbed
+
+    // Quantize Recall (see its own doc comment above): defer to the next
+    // grid point instead of switching right now, UNLESS the host transport
+    // isn't playing -- there's no meaningful beat position to quantize
+    // against without it, so this falls back to the immediate path below,
+    // same as Quantize Recall being off entirely.
+    if (performanceQuantizeRecallEnabled.load() && hostTransportPlaying)
+    {
+        // A newer note-on before the boundary just overwrites this same
+        // atomic, so the newest one always wins -- there's never more than
+        // one pending recall to track. Re-armed (false) so the per-sample
+        // boundary check in processBlock() recomputes "next occurrence"
+        // fresh from wherever ppq is right now, not from whenever an
+        // earlier pending note-on arrived.
+        pendingPerformanceRecallNote.store (noteNumber);
+        performanceQuantizeRecallBoundaryArmed = false;
+        return;
+    }
+
+    applyPerformanceStateRecall (noteNumber);
+}
+
+void SlicerAudioProcessor::applyPerformanceStateRecall (int noteNumber)
+{
     if (noteNumber == focusedPerformanceStateSlot.load())
     {
         performancePlaybackIsFocused = true;
@@ -3217,7 +3332,7 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber)
         const auto& snapshot = performanceStateBank[(size_t) noteNumber];
 
         if (! snapshot.populated)
-            return; // empty, unfocused slot -- no-op, whatever's already playing keeps playing undisturbed
+            return; // slot emptied (or lost focus) between the note-on that armed a deferred recall and this boundary -- no-op, same as the immediate path's own check
 
         currentlyPlayingPerformanceSnapshot = snapshot;
         performancePlaybackIsFocused = false;

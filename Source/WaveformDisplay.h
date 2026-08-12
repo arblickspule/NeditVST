@@ -50,7 +50,13 @@
         learn) — nothing outside the trimmed range can ever be detected,
         manually placed, or played; dragging a handle inward past an
         existing slice boundary drops that boundary from the active slice
-        list on the next rebuild.
+        list on the next rebuild. In Performance mode, the Trim Snap
+        selector can switch this per-state trim's snap target from
+        Transients to Grid (a fixed musical grid at the established tempo,
+        entirely ignoring transients) — that branch lives inside
+        SlicerAudioProcessor::setTrimStartSample()/setTrimEndSample(), so
+        this component's own drag code (below) is unchanged either way;
+        Shift still bypasses snapping regardless of which mode is selected.
       - Scroll wheel zooms; Shift+scroll wheel pans (Step 31).
 
     Also accepts drag-and-drop of audio files straight onto it. */
