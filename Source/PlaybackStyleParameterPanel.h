@@ -32,11 +32,24 @@
     to, so editing here changes both Slice Length/Clock mode playback AND
     whatever Sequenced-mode steps have no override of their own.
 
-    The style selector's current selection is purely local UI state, kept
-    deliberately separate from SlicerAudioProcessor::getSelectedDrawingStyle()
-    (Sequenced mode's "what style paints next" concept) -- reusing that value
-    here would mean switching styles in this panel also changed what
-    Sequenced mode's own grid draws with, and vice versa.
+    The style selector's current selection is purely local UI state for the
+    default (Slice Length/Clock) construction, kept deliberately separate
+    from SlicerAudioProcessor::getSelectedDrawingStyle() (Sequenced mode's
+    "what style paints next" concept) -- reusing that value here would mean
+    switching styles in this panel also changed what Sequenced mode's own
+    grid draws with, and vice versa.
+
+    Reused by Performance mode (Pass 1) via the optional constructor
+    parameters below: a getValue/setValue pair lets a caller point this panel
+    at ANY per-index float storage instead of the global default value --
+    Performance mode passes lambdas bound to
+    SlicerAudioProcessor::getPerformanceWorkingParameterValue()/
+    setPerformanceWorkingParameterValue() instead, so editing there can never
+    read or write the same global values Slice Length/Clock use (they must
+    stay fully independent). initialStyleId/onStyleChanged make the style
+    selector's own selection persist as real state too, when a caller needs
+    that (Performance mode does; Slice Length/Clock's own instance, passing
+    neither, keeps today's "purely local UI state" behaviour unchanged).
 
     Subdivide (index 5) applies to every style in SequencerGrid's own menu
     but is excluded here -- it's a per-step retrigger rate tied to the step
@@ -51,7 +64,21 @@
 class PlaybackStyleParameterPanel : public juce::Component
 {
 public:
-    explicit PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse);
+    // getValue/setValue default to the global default value methods when
+    // left null (the original Slice Length/Clock behaviour, unchanged).
+    // initialStyleId seeds the style selector (JUCE's 1-based item IDs,
+    // matching styleSelector.setSelectedId()'s own convention -- id 1 ==
+    // style index 0). onStyleChanged, when set, is called with the newly
+    // selected style index every time the selector changes -- see class doc
+    // comment for why the default (null) instance leaves this purely local.
+    using GetParameterValue = std::function<float (int paramIndex)>;
+    using SetParameterValue = std::function<void (int paramIndex, float value)>;
+
+    explicit PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse,
+                                           GetParameterValue getValueIn = nullptr,
+                                           SetParameterValue setValueIn = nullptr,
+                                           int initialStyleId = 1,
+                                           std::function<void (int style)> onStyleChangedIn = nullptr);
 
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -65,6 +92,15 @@ public:
     // of which style is currently selected, so choosing a different style
     // never reflows anything laid out below this panel.
     static int getPreferredHeight();
+
+    // Resyncs the style selector to styleIndex without firing onStyleChanged
+    // -- needed by a caller whose underlying value can change out from under
+    // this panel (Performance mode's working state can change via a MIDI
+    // recall, on the audio thread, same class of "poll and resync" issue
+    // SlicerAudioProcessorEditor::timerCallback() already handles for
+    // stepResolutionSelector/patternLengthSelector). A no-op if styleIndex
+    // is already selected, so it's cheap to call unconditionally every tick.
+    void setSelectedStyle (int styleIndex);
 
 private:
     // One visible row: either a discrete option picker (Filter Type, Curve
@@ -92,6 +128,9 @@ private:
 
     SlicerAudioProcessor& processor;
     juce::ComboBox styleSelector;
+    GetParameterValue getValue;
+    SetParameterValue setValue;
+    std::function<void (int)> onStyleChanged;
 
     static constexpr int styleSelectorHeight = 24;
     static constexpr int rowGap = 6;

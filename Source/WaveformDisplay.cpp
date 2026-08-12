@@ -193,6 +193,17 @@ void WaveformDisplay::paint (juce::Graphics& g)
         }
     }
 
+    // Performance mode (Pass 1): no auto-detected markers, no slicing --
+    // the trim handles drawn above are the only precision tool this mode
+    // uses. Deliberately returns here rather than upstream of the trim/
+    // beat-grid drawing, so those stay visible; suppresses slice boundaries,
+    // manual-boundary markers, and the probability fader in one place,
+    // without touching the shared detection pipeline every other mode still
+    // relies on (transient detection keeps running normally underneath --
+    // this mode just never draws or reads its output).
+    if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance)
+        return;
+
     // --- Slice boundaries + probability faders ---
     // While a live preview is active (e.g. dragging the sensitivity
     // slider), draw the proposed layout instead of the committed one.

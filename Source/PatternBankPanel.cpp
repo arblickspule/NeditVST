@@ -1,7 +1,7 @@
 #include "PatternBankPanel.h"
 
-PatternBankPanel::PatternBankPanel (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+PatternBankPanel::PatternBankPanel (BankSource& sourceToUse)
+    : source (sourceToUse)
 {
     addAndMakeVisible (saveButton);
     saveButton.onClick = [this] { saveButtonClicked(); };
@@ -11,10 +11,10 @@ PatternBankPanel::PatternBankPanel (SlicerAudioProcessor& processorToUse)
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.7f));
     addAndMakeVisible (statusLabel);
 
-    populatedSlots = processor.getPopulatedPatternBankSlots();
-    activeSlot = processor.getActivePatternBankSlot();
-    pendingSlot = processor.getPendingPatternSwitchSlot();
-    learnArmed = processor.isMidiLearnArmed();
+    populatedSlots = source.getPopulatedSlots();
+    activeSlot = source.getActiveSlot();
+    pendingSlot = source.getPendingSlot();
+    learnArmed = source.isLearnArmed();
     updateSaveButtonText();
     updateStatusLabelForHoveredNote (-1);
 
@@ -119,11 +119,11 @@ void PatternBankPanel::mouseExit (const juce::MouseEvent&)
 void PatternBankPanel::saveButtonClicked()
 {
     if (learnArmed)
-        processor.cancelMidiLearn();
+        source.cancelLearn();
     else
-        processor.armMidiLearnForPatternSave();
+        source.armSave();
 
-    learnArmed = processor.isMidiLearnArmed();
+    learnArmed = source.isLearnArmed();
     updateSaveButtonText();
     updateStatusLabelForHoveredNote (-1);
     repaint();
@@ -131,10 +131,10 @@ void PatternBankPanel::saveButtonClicked()
 
 void PatternBankPanel::timerCallback()
 {
-    const auto newPopulated = processor.getPopulatedPatternBankSlots();
-    const int newActiveSlot = processor.getActivePatternBankSlot();
-    const int newPendingSlot = processor.getPendingPatternSwitchSlot();
-    const bool newLearnArmed = processor.isMidiLearnArmed();
+    const auto newPopulated = source.getPopulatedSlots();
+    const int newActiveSlot = source.getActiveSlot();
+    const int newPendingSlot = source.getPendingSlot();
+    const bool newLearnArmed = source.isLearnArmed();
 
     const bool changed = (newPopulated != populatedSlots) || (newActiveSlot != activeSlot)
                           || (newPendingSlot != pendingSlot) || (newLearnArmed != learnArmed);

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <iostream> // TEMPORARY DEBUG (Performance mode freeze investigation) -- see FreezeWatchdog
 
 namespace
 {
@@ -413,9 +414,50 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     // defaults here are harmless placeholders until then.
     filterSweepFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
     filterSweepFilter.setResonance (defaultFilterSweepResonance);
+
+    // Performance mode's working state (Pass 1) -- seed its parameter
+    // values from the same global defaults Slice Length/Clock start with,
+    // rather than zeros (a broken default for parameters like Bit Depth).
+    // From here on it's independent storage -- editing it never touches,
+    // and is never touched by, the global values this seeded from.
+    for (int i = 0; i < numSequencerCellParameters; ++i)
+        performanceWorkingState.parameterValues[(size_t) i] = getSequencerCellParameterGlobalValue (i);
+
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG (Performance mode click-to-focus freeze investigation)
+    // -- see freezeWatchdog's own doc comment. Runs on its own dedicated
+    // thread, independent of both the audio thread and the message thread.
+    freezeWatchdog.startTimer (1000);
+#endif
 }
 
-SlicerAudioProcessor::~SlicerAudioProcessor() = default;
+SlicerAudioProcessor::~SlicerAudioProcessor()
+{
+#if JUCE_DEBUG
+    freezeWatchdog.stopTimer();
+#endif
+}
+
+#if JUCE_DEBUG
+void SlicerAudioProcessor::FreezeWatchdog::hiResTimerCallback()
+{
+    const auto entries = owner.debugAudioProcessBlockEntries.load (std::memory_order_relaxed);
+    const auto acquired = owner.debugAudioLockAcquiredCount.load (std::memory_order_relaxed);
+    const bool focusInProgress = owner.debugFocusChangeInProgress.load (std::memory_order_relaxed);
+
+    std::cerr << "[watchdog] audioBlockEntries=" << entries << " audioLockAcquired=" << acquired;
+
+    if (focusInProgress)
+    {
+        const auto startedMs = owner.debugFocusChangeStartMs.load (std::memory_order_relaxed);
+        const auto waitedMs = (juce::int64) juce::Time::getMillisecondCounter() - startedMs;
+        std::cerr << "  *** UI FOCUS CHANGE (note " << owner.debugFocusChangeNoteNumber.load (std::memory_order_relaxed)
+                   << ") STILL IN PROGRESS -- waiting " << waitedMs << "ms ***";
+    }
+
+    std::cerr << std::endl;
+}
+#endif
 
 void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
@@ -455,7 +497,17 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG (Performance mode freeze investigation) -- lock-free
+    // atomic store only, see freezeWatchdog's own doc comment.
+    debugAudioProcessBlockEntries.fetch_add (1, std::memory_order_relaxed);
+#endif
+
     const juce::ScopedLock sl (sampleLock);
+
+#if JUCE_DEBUG
+    debugAudioLockAcquiredCount.fetch_add (1, std::memory_order_relaxed);
+#endif
 
     // Dispatch note-ons before discarding the buffer below -- see
     // handleIncomingMidi()/dispatchNoteOn() for the routing layer. Done
@@ -474,6 +526,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const auto position = playHead != nullptr ? playHead->getPosition() : juce::Optional<juce::AudioPlayHead::PositionInfo>{};
     const bool hostTransportPlaying = position.hasValue() && position->getIsPlaying();
     const double hostSampleRate = getSampleRate();
+
+    // Performance mode (Pass 1) needs to be known before the gates below --
+    // same "runs independent of host transport" precedent as Audition just
+    // underneath, just reached via a condition on those gates rather than a
+    // structural early-return, since Performance mode shares the rest of
+    // this function's per-sample render loop with every other mode
+    // (Audition doesn't -- it renders through its own separate function and
+    // returns immediately, so it never needs to reach the gates at all).
+    const bool performanceMode = (triggerMode.load() == TriggerMode::performance);
 
     // Audition (Step 25): takes priority over everything below — a raw,
     // generative-engine-bypassing loop of [trimStart, trimEnd), independent
@@ -500,10 +561,16 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     if (slices.empty())
         return;
 
-    if (playHead == nullptr)
+    // Performance mode (Pass 1) is exempt from both gates below, same
+    // "independent of host transport" contract Audition already gets above
+    // -- recalling a state (or hearing the one currently being edited) has
+    // to work whether or not the host's transport is running, unlike Slice
+    // Length/Clock/Sequenced, which are all genuinely meaningless without
+    // it (their triggers ARE the transport's beat/bar position).
+    if (playHead == nullptr && ! performanceMode)
         return;
 
-    if (! position.hasValue() || ! hostTransportPlaying)
+    if ((! position.hasValue() || ! hostTransportPlaying) && ! performanceMode)
     {
         hasCurrentPick = false; // transport stopped — fresh chain next time it starts
         clockModeInitialized = false;
@@ -513,7 +580,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         return;
     }
 
-    const double hostBpm = position->getBpm().hasValue() ? *position->getBpm() : 120.0;
+    // position may be absent, or reporting "not playing," here -- only
+    // possible for a Performance mode block, since the gate above already
+    // returned for every other mode in that case. Same 120bpm/0ppq fallback
+    // this line already used for a host that simply doesn't report BPM
+    // while playing, extended to cover "doesn't report position at all."
+    const double hostBpm = (position.hasValue() && position->getBpm().hasValue()) ? *position->getBpm() : 120.0;
 
     if (hostBpm <= 0.0 || hostSampleRate <= 0.0)
         return;
@@ -546,6 +618,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     const bool clockMode = (triggerMode.load() == TriggerMode::clock);
     const bool sequencedMode = (triggerMode.load() == TriggerMode::sequenced);
+    // performanceMode was already determined above, ahead of the transport gates it needs to bypass
 
     // Time-Stretch (Step 17): grain scheduling derived from the same
     // playbackRate math above — a grain spawns every outputHopSamples
@@ -579,7 +652,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // periodic-reset boundary tracking below -- previously Slice Length
     // mode paced itself purely from slice content length and never looked
     // at ppq at all.
-    const double ppqStart = position->getPpqPosition().hasValue() ? *position->getPpqPosition() : 0.0;
+    const double ppqStart = (position.hasValue() && position->getPpqPosition().hasValue()) ? *position->getPpqPosition() : 0.0;
     const double ppqPerSample = (hostBpm / 60.0) / hostSampleRate;
 
     if (clockMode)
@@ -596,13 +669,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             clockModeInitialized = true;
         }
 
-        resetWindowInitialized = false; // the other two modes' own init state is meaningless here; re-entering either later starts fresh
+        resetWindowInitialized = false; // the other modes' own init state is meaningless here; re-entering any of them later starts fresh
         sequencedModeInitialized = false;
+        performanceModeInitialized = false;
     }
     else if (sequencedMode)
     {
         clockModeInitialized = false;
         resetWindowInitialized = false;
+        performanceModeInitialized = false;
 
         // Sequenced Trigger Mode (Step 37) — same "just entered / transport
         // just started" treatment Clock mode gives itself above: force the
@@ -623,10 +698,28 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         if ((int) sequencerGrid.size() != getSequencerNumRows() * getSequencerNumSteps())
             resetSequencerGrid();
     }
+    else if (performanceMode)
+    {
+        clockModeInitialized = false;
+        resetWindowInitialized = false;
+        sequencedModeInitialized = false;
+
+        // Just entered Performance mode, or transport just started --
+        // unlike every other mode's own init above, this does NOT force an
+        // immediate fresh pick: Performance mode has nothing to play until
+        // a note-on recalls a state (performanceRecallPending, consumed in
+        // the per-sample dispatch below), so it starts and stays silent.
+        if (! performanceModeInitialized)
+        {
+            performanceModeInitialized = true;
+            hasCurrentPick = false;
+        }
+    }
     else
     {
         clockModeInitialized = false; // so re-entering Clock mode later starts fresh
         sequencedModeInitialized = false;
+        performanceModeInitialized = false; // so re-entering Performance mode later starts fresh (silent) again
 
         // Slice Length periodic reset (Step 34) — same "just entered /
         // transport just started, snap to the current window and force an
@@ -739,6 +832,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // toggle, Step 24/26) never applies in Clock mode -- its
                     // own tick system already enforces beat-alignment.
                     currentPickBeatQuantized = false;
+                    currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
 
                     // Filter Sweep resonance/filter type + Curve Shape
                     // (Step 45/46) -- Clock mode always uses the global
@@ -1128,6 +1222,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // DURATION, not start time, and would be redundant
                         // here rather than serve any purpose.
                         currentPickBeatQuantized = false;
+                        currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
 
                         samplesSincePickStart = 0.0;
                         const double naturalLengthHostSamples =
@@ -1437,6 +1532,154 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 }
             }
         }
+        else if (performanceMode)
+        {
+            // Performance mode: no probability engine, no slices -- one
+            // hand-trimmed segment, one style, that style's own independent
+            // parameter values, driven purely by MIDI note-on
+            // (performanceRecallPending, set by handlePerformanceStateNoteOn()
+            // in dispatchNoteOn()'s routing) rather than by anything
+            // time/position-based. Physical MIDI is playback-only (the
+            // on-screen keyboard is the only thing that ever changes focus
+            // -- see setFocusedPerformanceStateSlot()): pressing the FOCUSED
+            // slot's key plays performanceWorkingState itself (live
+            // in-progress edits, via the shared trim atomics every other
+            // mode also edits through); pressing any OTHER slot's key plays
+            // a frozen copy of ITS saved snapshot
+            // (currentlyPlayingPerformanceSnapshot, including its own saved
+            // trim), captured at note-on time so auditioning it never
+            // disturbs performanceWorkingState or focus. Starts and stays
+            // silent (hasCurrentPick == false) until the first note-on this
+            // session -- see the performanceMode block-level init above,
+            // which is the one place that sets it false; nothing here does.
+            bool needsFreshPick = performanceRecallPending;
+            performanceRecallPending = false;
+
+            // Whichever source governs the CURRENTLY sounding (or about to
+            // start) pick -- resolved once here so every reference below,
+            // whether checking for completion or starting a fresh pick,
+            // agrees on the same one. Follows performancePlaybackIsFocused,
+            // set once at the note-on that actually started this pick (see
+            // handlePerformanceStateNoteOn()), not re-derived from whatever
+            // has focus right now -- so a focus change made from the UI
+            // thread while a non-focused slot's pick is still sounding can
+            // never retroactively swap what that pick is playing out from
+            // under it.
+            const PerformanceStateSnapshot& performanceActiveState = performancePlaybackIsFocused
+                ? performanceWorkingState : currentlyPlayingPerformanceSnapshot;
+
+            if (! needsFreshPick && hasCurrentPick)
+            {
+                // Same per-style "has this pick run its course" condition
+                // Slice Length's own while-loop uses just below -- re-derived
+                // here, same convention this function already follows per
+                // mode, rather than shared, since each mode's surrounding
+                // context (loop vs. one-shot, retry-on-empty-slice vs. not)
+                // differs enough that sharing it would need its own
+                // indirection to paper over those differences.
+                const bool pickFinished = (currentPlaybackStyle == PlaybackStyle::tapeStop)
+                    ? (samplesSincePickStart >= currentPickTapeStopDurationHostSamples)
+                    : (currentPosition >= (double) (((currentPlaybackStyle == PlaybackStyle::pingPong
+                                                           || currentPlaybackStyle == PlaybackStyle::stretch
+                                                           || currentPlaybackStyle == PlaybackStyle::scratch)
+                                                          ? currentEndSample
+                                                          : juce::jmin (currentEndSample, sourceLength)) - 1));
+
+                if (pickFinished)
+                {
+                    if (performanceActiveState.loop)
+                        needsFreshPick = true; // Loop on: rechain the SAME segment+style, Slice Length's own "finishing is the cue" mechanic
+                    else
+                        hasCurrentPick = false; // Loop off: go silent and stay silent until the next note-on retriggers it
+                }
+            }
+
+            if (needsFreshPick && performanceActiveState.populated)
+            {
+                currentPlaybackStyle = indexToPlaybackStyle (performanceActiveState.style);
+                const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
+                const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
+                const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
+
+                // Sync toggle: on follows whichever global Pitch Mode is
+                // currently selected (playbackRate, unchanged); off forces
+                // native/unsynced playback for this pick. Captured once
+                // here, consulted uniformly at every downstream render site
+                // via currentPickNativeRateActive/effectivePickPlaybackRate,
+                // rather than re-checked inline at each one.
+                currentPickNativeRateActive = ! performanceActiveState.sync;
+                const double perfPlaybackRate = currentPickNativeRateActive
+                    ? (sampleSampleRate / hostSampleRate) : playbackRate;
+
+                // Own independent parameter storage -- indexed exactly as
+                // getSequencerCellParameterName() documents, NEVER the
+                // global default atomics Slice Length/Clock read (those
+                // three lines above) or Sequenced mode's per-cell overrides.
+                currentPickStretchGrainSizeMs = performanceActiveState.parameterValues[3];
+                currentPickStretchSpeedMultiplier = performanceActiveState.parameterValues[4];
+
+                // The focused slot's segment IS the shared trim atomics
+                // (edited live via the same waveform trim handles every
+                // other mode uses); any OTHER slot's segment is its own
+                // saved trim, captured independently in its snapshot --
+                // never the shared atomics, which stay owned by whichever
+                // slot actually has focus.
+                const int performanceSegmentStart = performancePlaybackIsFocused
+                    ? trimStartSample.load() : performanceActiveState.trimStartSample;
+                const int performanceSegmentEnd = performancePlaybackIsFocused
+                    ? trimEndSample.load() : performanceActiveState.trimEndSample;
+
+                currentSliceStartSample = performanceSegmentStart;
+                currentSliceLength = performanceSegmentEnd - performanceSegmentStart;
+                currentPosition = (double) currentSliceStartSample;
+
+                currentPickScratchCycleLengthHostSamples = scratch
+                    ? computeScratchCycleLengthHostSamples (juce::roundToInt (performanceActiveState.parameterValues[10]),
+                                                             currentSliceLength, hostBpm, hostSampleRate, perfPlaybackRate)
+                    : 0.0;
+
+                currentPickScratchForwardCurve = easingCurveFromIndex (juce::roundToInt (performanceActiveState.parameterValues[11]));
+                currentPickScratchBackwardCurve = easingCurveFromIndex (juce::roundToInt (performanceActiveState.parameterValues[12]));
+
+                currentEndSample = pingPong ? (2 * (currentSliceStartSample + currentSliceLength) - currentSliceStartSample)
+                                 : stretch ? (int) (currentSliceStartSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
+                                 : scratch ? (int) (currentSliceStartSample + currentPickScratchCycleLengthHostSamples * perfPlaybackRate)
+                                           : (currentSliceStartSample + currentSliceLength);
+
+                hasCurrentPick = true;
+                pickJustStarted = true;
+                currentlyPlayingSliceIndexForUI.store (-1); // this pick isn't drawn from `slices` -- no index to report
+
+                currentPickBeatQuantized = false; // Performance mode's own Sync toggle governs rate instead (currentPickNativeRateActive above)
+
+                currentPickFilterSweepResonance = performanceActiveState.parameterValues[0];
+                currentPickFilterSweepType = juce::roundToInt (performanceActiveState.parameterValues[1]);
+                currentPickCurveShape = juce::roundToInt (performanceActiveState.parameterValues[2]);
+
+                currentPickBitcrushRateValue = performanceActiveState.parameterValues[6];
+                currentPickBitcrushRateMode = juce::roundToInt (performanceActiveState.parameterValues[7]);
+                currentPickBitcrushBitDepthValue = performanceActiveState.parameterValues[8];
+                currentPickBitcrushBitDepthMode = juce::roundToInt (performanceActiveState.parameterValues[9]);
+
+                currentPickFlangerDelayValue = performanceActiveState.parameterValues[13];
+                currentPickFlangerDelayMode = juce::roundToInt (performanceActiveState.parameterValues[14]);
+                currentPickFlangerMixValue = performanceActiveState.parameterValues[15];
+                currentPickFlangerMixMode = juce::roundToInt (performanceActiveState.parameterValues[16]);
+                currentPickFlangerFeedbackValue = performanceActiveState.parameterValues[17];
+                currentPickFlangerFeedbackMode = juce::roundToInt (performanceActiveState.parameterValues[18]);
+
+                samplesSincePickStart = 0.0;
+                const double naturalLengthHostSamples =
+                    (perfPlaybackRate > 0.0) ? ((double) currentSliceLength / perfPlaybackRate) : 0.0;
+                currentPickMidpointHostSamples = scratch
+                    ? (currentPickScratchCycleLengthHostSamples * 0.5) : naturalLengthHostSamples;
+                currentPickTapeStopDurationHostSamples = naturalLengthHostSamples;
+                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
+                                                : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
+                                                : scratch ? currentPickScratchCycleLengthHostSamples
+                                                          : naturalLengthHostSamples;
+            }
+        }
         else
         {
             // Slice Length mode: pick a fresh slice whenever nothing's
@@ -1589,6 +1832,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // current pitch mode. Computed once here, at pick-start,
                 // and consulted for the rest of this pick's life.
                 currentPickBeatQuantized = false;
+                currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
 
                 const bool beatQuantizeWanted = timeStretchMode ? beatQuantizeSliceLengthEnabled.load()
                                                                  : beatQuantizeSliceLengthEnabledRepitch.load();
@@ -1680,6 +1924,15 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const bool bitcrushActive = (currentPlaybackStyle == PlaybackStyle::bitcrush);
         const bool scratchActive = (currentPlaybackStyle == PlaybackStyle::scratch);
         const bool flangerActive = (currentPlaybackStyle == PlaybackStyle::flanger);
+
+        // Performance mode's Sync toggle (Pass 1): currentPickNativeRateActive
+        // was captured once at this pick's own pick-start (false for every
+        // other mode's picks) -- substitutes a native (unsynced) rate for
+        // playbackRate at every downstream render site that would otherwise
+        // read it directly, so a Sync-off Performance pick can never read as
+        // synced at one site and unsynced at another.
+        const double effectivePickPlaybackRate = currentPickNativeRateActive
+            ? (sampleSampleRate / hostSampleRate) : playbackRate;
 
         // Scratch (v1) reuses Ping-Pong's exact bounce mechanism -- same
         // foldPosition() fold, same turnaround click-avoidance fade, same
@@ -2283,7 +2536,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // build it in the first place, so the two stay consistent
             // sample for sample.
             const double scratchFoldLengthSamples = scratchActive
-                ? (currentPickScratchCycleLengthHostSamples * 0.5 * playbackRate)
+                ? (currentPickScratchCycleLengthHostSamples * 0.5 * effectivePickPlaybackRate)
                 : 0.0;
 
             // Shared fold length actually passed to foldPosition()/
@@ -2301,7 +2554,20 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             const EasingCurve scratchForwardCurveForRender = scratchActive ? currentPickScratchForwardCurve : EasingCurve::linear;
             const EasingCurve scratchBackwardCurveForRender = scratchActive ? currentPickScratchBackwardCurve : EasingCurve::linear;
 
-            if (timeStretchMode || stretchActive)
+            // Performance mode's Sync-off override (currentPickNativeRateActive)
+            // excludes the Time-Stretch granular path the same way stretchActive
+            // already forces INTO it regardless of the global Pitch Mode --
+            // a per-pick override of which render path runs, not just of the
+            // rate value used within one. Native/unsynced playback means
+            // neither pitch-shifted nor tempo-matched, which the direct-read
+            // path below already gives for free; the granular path's default
+            // (non-Stretch) branch derives its own rate from block-level
+            // sourceHopSamples/repitchRatio, which a per-pick rate override
+            // can't reach by substitution alone. Stretch itself is
+            // deliberately exempt (see its own doc comment just below) --
+            // its character is independent of Sync, same as it's already
+            // independent of Pitch Mode.
+            if ((timeStretchMode && ! currentPickNativeRateActive) || stretchActive)
             {
                 // Stretch (Step 22) always renders through GranularStretcher,
                 // even in Repitch mode -- it's a deliberate character
@@ -2372,7 +2638,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // grainPlaybackStyle (loop, above) repeating this same
                     // pass for as long as the render-continue gate keeps
                     // rendering.
-                    grainSourceHopSamples = grainOutputHopSamples * (playbackRate / (double) currentPickStretchSpeedMultiplier);
+                    grainSourceHopSamples = grainOutputHopSamples * (effectivePickPlaybackRate / (double) currentPickStretchSpeedMultiplier);
 
                     grainPitchRatio = 1.0; // no user pitch shift for this style -- fully self-contained/hardcoded
                     grainWindowShapeToUse = GranularStretcher::WindowShape::hardEdge;
@@ -2513,9 +2779,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // other style/mode; see the halved fold-length above/below
             // instead, which is what actually compresses the round trip
             // into a normal pick's timeframe.
-            const double effectivePlaybackRate = tapeStopActive ? (playbackRate * tapeStopRateMultiplier)
+            const double effectivePlaybackRate = tapeStopActive ? (effectivePickPlaybackRate * tapeStopRateMultiplier)
                                                 : currentPickBeatQuantized ? ((sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
-                                                                           : playbackRate;
+                                                                           : effectivePickPlaybackRate;
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
         }
@@ -2577,6 +2843,8 @@ void SlicerAudioProcessor::loadSample (const juce::File& file)
         // behaviour is unchanged until the user actually drags a handle.
         trimStartSample.store (0);
         trimEndSample.store (sampleBuffer.getNumSamples());
+        tempoTrimStartSample.store (0);
+        tempoTrimEndSample.store (sampleBuffer.getNumSamples());
 
         manualPoints.clear(); // positions from the old sample don't mean anything here
         excludedPoints.clear();
@@ -2610,8 +2878,8 @@ double SlicerAudioProcessor::computeSourceSpanSeconds() const
         return (beats * 60.0) / bpm;
     }
 
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
+    const int trimStart = tempoTrimStartSample.load();
+    const int trimEnd = tempoTrimEndSample.load();
     const int spanSamples = juce::jmax (0, trimEnd - trimStart);
     return (double) spanSamples / sampleSampleRate;
 }
@@ -2817,10 +3085,8 @@ void SlicerAudioProcessor::handleIncomingMidi (const juce::MidiBuffer& midiMessa
 void SlicerAudioProcessor::dispatchNoteOn (int noteNumber)
 {
     // The routing point: checks current context (TriggerMode) and calls
-    // whichever handler applies. Sequenced mode's pattern bank is the only
-    // handler today -- a future Perform mode or MIDI Control sequencing
-    // mode just adds another case here, without touching
-    // handleIncomingMidi() or this switch's surrounding structure.
+    // whichever handler applies. Sequenced mode's pattern bank and
+    // Performance mode's state bank (Pass 1) are the two handlers today.
     switch (triggerMode.load())
     {
         case TriggerMode::sequenced:
@@ -2830,10 +3096,14 @@ void SlicerAudioProcessor::dispatchNoteOn (int noteNumber)
                 handlePatternSwitchNoteOn (noteNumber);
             break;
 
+        case TriggerMode::performance:
+            handlePerformanceStateNoteOn (noteNumber);
+            break;
+
         case TriggerMode::sliceLength:
         case TriggerMode::clock:
         default:
-            break; // reserved for future Perform/Control modes -- MIDI ignored entirely here
+            break; // MIDI ignored entirely here
     }
 }
 
@@ -2919,6 +3189,193 @@ std::array<bool, 128> SlicerAudioProcessor::getPopulatedPatternBankSlots() const
         populated[i] = patternBank[i].populated;
 
     return populated;
+}
+
+//==============================================================================
+// Performance mode state bank (click-to-focus + auto-save)
+//==============================================================================
+
+void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber)
+{
+    // Physical MIDI in Performance mode is playback-only -- the on-screen
+    // keyboard's click handler (setFocusedPerformanceStateSlot(), below) is
+    // the only thing that ever changes focus. Pressing the FOCUSED slot's
+    // own key live-auditions whatever's currently being edited
+    // (performanceWorkingState, played via the shared trim atomics --
+    // exactly the same live objects the parameter panel/waveform trim
+    // handles write into); pressing any OTHER slot's key plays back
+    // whatever's already saved there, via a frozen copy of its own
+    // independent snapshot (including its own saved trim), so auditioning
+    // it can never disturb performanceWorkingState or the focused slot's
+    // in-progress edits.
+    if (noteNumber == focusedPerformanceStateSlot.load())
+    {
+        performancePlaybackIsFocused = true;
+    }
+    else
+    {
+        const auto& snapshot = performanceStateBank[(size_t) noteNumber];
+
+        if (! snapshot.populated)
+            return; // empty, unfocused slot -- no-op, whatever's already playing keeps playing undisturbed
+
+        currentlyPlayingPerformanceSnapshot = snapshot;
+        performancePlaybackIsFocused = false;
+    }
+
+    // Force the very next per-sample check in processBlock()'s
+    // performanceMode branch to start a fresh pick from whichever source
+    // was just selected above -- same same-call, same-lock handoff
+    // handleSequencerPatternRecallNoteOn() already uses via
+    // sequencedModeInitialized.
+    performanceRecallPending = true;
+}
+
+void SlicerAudioProcessor::setFocusedPerformanceStateSlot (int noteNumber)
+{
+    if (noteNumber < 0 || noteNumber >= 128)
+        return;
+
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG (Performance mode freeze investigation) -- this
+    // function runs on the message thread, so I/O here is safe (unlike
+    // inside processBlock()); marks the window during which this thread
+    // might be blocked waiting for sampleLock, for freezeWatchdog to report.
+    debugFocusChangeNoteNumber.store (noteNumber, std::memory_order_relaxed);
+    debugFocusChangeStartMs.store ((juce::int64) juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
+    debugFocusChangeInProgress.store (true, std::memory_order_relaxed);
+    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- about to acquire sampleLock" << std::endl;
+#endif
+
+    const juce::ScopedLock sl (sampleLock);
+
+#if JUCE_DEBUG
+    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- sampleLock acquired" << std::endl;
+#endif
+
+    const int previous = focusedPerformanceStateSlot.load();
+
+    if (noteNumber == previous)
+    {
+#if JUCE_DEBUG
+        std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- already focused, no-op" << std::endl;
+        debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
+#endif
+        return; // already focused -- nothing to save away from or load
+    }
+
+    // Auto-save (replaces the old MIDI-Learn "Save to..." button entirely):
+    // whatever was being edited in the previously-focused slot is captured
+    // now, the instant focus moves away from it.
+    if (previous >= 0)
+    {
+        PerformanceStateSnapshot saved = performanceWorkingState;
+        saved.populated = true;
+        saved.trimStartSample = trimStartSample.load();
+        saved.trimEndSample = trimEndSample.load();
+        performanceStateBank[(size_t) previous] = saved;
+    }
+
+    // Load the new slot: its existing saved state, or a fresh default to
+    // start editing from if it has none yet (matching the Artillery 2
+    // reference) -- the same seed values the constructor gives
+    // performanceWorkingState initially. Deliberately does NOT write this
+    // default into performanceStateBank[noteNumber] -- it only becomes a
+    // real saved slot (and lights up the keyboard's populated highlight)
+    // once focus actually moves away from it, same as every other slot.
+    const auto& existing = performanceStateBank[(size_t) noteNumber];
+
+    if (existing.populated)
+    {
+        performanceWorkingState = existing;
+        trimStartSample.store (existing.trimStartSample);
+        trimEndSample.store (existing.trimEndSample);
+    }
+    else
+    {
+        performanceWorkingState = PerformanceStateSnapshot {};
+        performanceWorkingState.populated = true; // lets this slot's own key live-audition immediately, even before its first auto-save
+
+        for (int i = 0; i < numSequencerCellParameters; ++i)
+            performanceWorkingState.parameterValues[(size_t) i] = getSequencerCellParameterGlobalValue (i);
+
+        trimStartSample.store (0);
+        trimEndSample.store (sampleBuffer.getNumSamples());
+    }
+
+    focusedPerformanceStateSlot.store (noteNumber);
+
+#if JUCE_DEBUG
+    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- done" << std::endl;
+    debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
+#endif
+}
+
+std::array<bool, 128> SlicerAudioProcessor::getPopulatedPerformanceStateBankSlots() const
+{
+    const juce::ScopedLock sl (sampleLock);
+    std::array<bool, 128> populated {};
+
+    for (size_t i = 0; i < performanceStateBank.size(); ++i)
+        populated[i] = performanceStateBank[i].populated;
+
+    return populated;
+}
+
+int SlicerAudioProcessor::getPerformanceWorkingStyle() const
+{
+    const juce::ScopedLock sl (sampleLock);
+    return performanceWorkingState.style;
+}
+
+void SlicerAudioProcessor::setPerformanceWorkingStyle (int style)
+{
+    const juce::ScopedLock sl (sampleLock);
+    performanceWorkingState.style = style;
+}
+
+float SlicerAudioProcessor::getPerformanceWorkingParameterValue (int index) const
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    if (index < 0 || index >= numSequencerCellParameters)
+        return 0.0f;
+
+    return performanceWorkingState.parameterValues[(size_t) index];
+}
+
+void SlicerAudioProcessor::setPerformanceWorkingParameterValue (int index, float value)
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    if (index < 0 || index >= numSequencerCellParameters)
+        return;
+
+    performanceWorkingState.parameterValues[(size_t) index] = value;
+}
+
+bool SlicerAudioProcessor::getPerformanceWorkingLoop() const
+{
+    const juce::ScopedLock sl (sampleLock);
+    return performanceWorkingState.loop;
+}
+
+void SlicerAudioProcessor::setPerformanceWorkingLoop (bool loop)
+{
+    const juce::ScopedLock sl (sampleLock);
+    performanceWorkingState.loop = loop;
+}
+
+bool SlicerAudioProcessor::getPerformanceWorkingSync() const
+{
+    const juce::ScopedLock sl (sampleLock);
+    return performanceWorkingState.sync;
+}
+
+void SlicerAudioProcessor::setPerformanceWorkingSync (bool sync)
+{
+    const juce::ScopedLock sl (sampleLock);
+    performanceWorkingState.sync = sync;
 }
 
 int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const

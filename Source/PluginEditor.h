@@ -9,6 +9,7 @@
 #include "PlaybackStylePalette.h"
 #include "PlaybackStyleParameterPanel.h"
 #include "PatternBankPanel.h"
+#include "PerformanceKeyboardPanel.h"
 
 //==============================================================================
 /** Step-41 editor: load button, reset-edits safety net, undo/redo, an
@@ -301,9 +302,42 @@ private:
     // width, same as it did alone before this existed.
     PlaybackStylePalette playbackStylePalette;
 
+    // BankSource adapter -- PatternBankPanel (see its own class doc
+    // comment) is generic over what a slot holds; this is the only place
+    // that generic interface gets tied back to SlicerAudioProcessor's
+    // Sequencer pattern bank. Performance mode's own bank now uses
+    // PerformanceKeyboardPanel::Source instead (see below) -- click-to-focus
+    // + auto-save, not MIDI Learn, so it isn't a BankSource at all anymore.
+    struct SequencerBankSource : public PatternBankPanel::BankSource
+    {
+        explicit SequencerBankSource (SlicerAudioProcessor& p) : processor (p) {}
+        void armSave() override { processor.armMidiLearnForPatternSave(); }
+        void cancelLearn() override { processor.cancelMidiLearn(); }
+        bool isLearnArmed() const override { return processor.isMidiLearnArmed(); }
+        std::array<bool, 128> getPopulatedSlots() const override { return processor.getPopulatedPatternBankSlots(); }
+        int getActiveSlot() const override { return processor.getActivePatternBankSlot(); }
+        int getPendingSlot() const override { return processor.getPendingPatternSwitchSlot(); }
+        SlicerAudioProcessor& processor;
+    };
+
+    // PerformanceKeyboardPanel::Source adapter -- the only place that
+    // generic interface gets tied back to SlicerAudioProcessor's
+    // Performance mode state bank. focusSlot() is the ENTIRE interaction
+    // model now: clicking a key auto-saves whatever was being edited in the
+    // previously-focused slot and loads (or creates) the clicked one.
+    struct PerformanceKeyboardSource : public PerformanceKeyboardPanel::Source
+    {
+        explicit PerformanceKeyboardSource (SlicerAudioProcessor& p) : processor (p) {}
+        void focusSlot (int noteNumber) override { processor.setFocusedPerformanceStateSlot (noteNumber); }
+        std::array<bool, 128> getPopulatedSlots() const override { return processor.getPopulatedPerformanceStateBankSlots(); }
+        int getFocusedSlot() const override { return processor.getFocusedPerformanceStateSlot(); }
+        SlicerAudioProcessor& processor;
+    };
+
     // MIDI pattern bank (Sequenced mode only) -- populated/active slot
     // indicators plus the "Save to..." MIDI Learn control. See its own
     // class doc comment for the note-layout/interaction details.
+    SequencerBankSource sequencerBankSource;
     PatternBankPanel patternBankPanel;
 
     // Pattern Switch Timing (Pass 2) -- governs WHEN a pattern-bank recall
@@ -319,6 +353,21 @@ private:
     juce::ComboBox patternSwitchTimingSelector;
     juce::Label patternSwitchIntervalLabel;
     juce::ComboBox patternSwitchIntervalSelector;
+
+    // Performance mode -- reuses PlaybackStyleParameterPanel, pointed at
+    // Performance mode's own working-state storage instead of the global
+    // default values Slice Length/Clock use (see its constructor call in
+    // the .cpp), and the on-screen keyboard (PerformanceKeyboardPanel) via
+    // performanceKeyboardSource above for click-to-focus + auto-save.
+    // Loop/Sync are simple toggles -- no existing component fits either.
+    // Own row/section in layoutControlsContent(), visible only in
+    // Performance mode (see updateTriggerModeVisibility()).
+    juce::Label performanceStyleParametersLabel;
+    PlaybackStyleParameterPanel performanceStyleParameterPanel;
+    juce::ToggleButton performanceLoopToggle { "Loop" };
+    juce::ToggleButton performanceSyncToggle { "Sync" };
+    PerformanceKeyboardSource performanceKeyboardSource;
+    PerformanceKeyboardPanel performanceKeyboardPanel;
 
     juce::Viewport sequencerViewport;
     SequencerGrid sequencerGrid;

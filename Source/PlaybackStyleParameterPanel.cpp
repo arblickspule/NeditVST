@@ -1,15 +1,32 @@
 #include "PlaybackStyleParameterPanel.h"
 
-PlaybackStyleParameterPanel::PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+PlaybackStyleParameterPanel::PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse,
+                                                            GetParameterValue getValueIn,
+                                                            SetParameterValue setValueIn,
+                                                            int initialStyleId,
+                                                            std::function<void (int)> onStyleChangedIn)
+    : processor (processorToUse),
+      getValue (getValueIn ? std::move (getValueIn)
+                            : GetParameterValue ([&processorToUse] (int paramIndex)
+                                                  { return processorToUse.getSequencerCellParameterGlobalValue (paramIndex); })),
+      setValue (setValueIn ? std::move (setValueIn)
+                            : SetParameterValue ([&processorToUse] (int paramIndex, float value)
+                                                  { processorToUse.setSequencerCellParameterGlobalValue (paramIndex, value); })),
+      onStyleChanged (std::move (onStyleChangedIn))
 {
     addAndMakeVisible (styleSelector);
 
     for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
         styleSelector.addItem (SlicerAudioProcessor::getPlaybackStyleName (i), i + 1); // JUCE item IDs are 1-based
 
-    styleSelector.setSelectedId (1, juce::dontSendNotification); // Forward
-    styleSelector.onChange = [this] { repaint(); };
+    styleSelector.setSelectedId (initialStyleId, juce::dontSendNotification);
+    styleSelector.onChange = [this]
+    {
+        repaint();
+
+        if (onStyleChanged)
+            onStyleChanged (styleSelector.getSelectedId() - 1);
+    };
 }
 
 std::vector<PlaybackStyleParameterPanel::PanelRow> PlaybackStyleParameterPanel::buildRowsForStyle (int style)
@@ -41,6 +58,17 @@ std::vector<PlaybackStyleParameterPanel::PanelRow> PlaybackStyleParameterPanel::
     }
 
     return rows;
+}
+
+void PlaybackStyleParameterPanel::setSelectedStyle (int styleIndex)
+{
+    const int newId = styleIndex + 1;
+
+    if (styleSelector.getSelectedId() == newId)
+        return;
+
+    styleSelector.setSelectedId (newId, juce::dontSendNotification);
+    repaint();
 }
 
 int PlaybackStyleParameterPanel::getPreferredHeight()
@@ -86,7 +114,7 @@ void PlaybackStyleParameterPanel::paint (juce::Graphics& g)
 
         if (row.discrete)
         {
-            const int currentOption = juce::roundToInt (processor.getSequencerCellParameterGlobalValue (row.paramIndex));
+            const int currentOption = juce::roundToInt (getValue (row.paramIndex));
             const juce::String optionName = SlicerAudioProcessor::getSequencerCellParameterOptionName (row.paramIndex, currentOption);
 
             g.setColour (juce::Colours::black.withAlpha (0.7f));
@@ -104,7 +132,7 @@ void PlaybackStyleParameterPanel::paint (juce::Graphics& g)
         }
         else
         {
-            const float currentValue = processor.getSequencerCellParameterGlobalValue (row.paramIndex);
+            const float currentValue = getValue (row.paramIndex);
             const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (row.paramIndex);
             const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (row.paramIndex);
             const float range = maxValue - minValue;
@@ -128,7 +156,7 @@ void PlaybackStyleParameterPanel::paint (juce::Graphics& g)
 void PlaybackStyleParameterPanel::showDiscreteOptionsMenu (const PanelRow& row, juce::Rectangle<int> rowBounds)
 {
     const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (row.paramIndex);
-    const int currentOption = juce::roundToInt (processor.getSequencerCellParameterGlobalValue (row.paramIndex));
+    const int currentOption = juce::roundToInt (getValue (row.paramIndex));
 
     juce::PopupMenu menu;
 
@@ -151,7 +179,7 @@ void PlaybackStyleParameterPanel::showDiscreteOptionsMenu (const PanelRow& row, 
         if (result <= 0)
             return; // dismissed without choosing anything
 
-        processor.setSequencerCellParameterGlobalValue (paramIndex, (float) (result - 1));
+        setValue (paramIndex, (float) (result - 1));
         repaint();
     });
 }
@@ -164,7 +192,7 @@ void PlaybackStyleParameterPanel::updateContinuousValueFromMouseX (int paramInde
 
     const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
     const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
-    processor.setSequencerCellParameterGlobalValue (paramIndex, minValue + t * (maxValue - minValue));
+    setValue (paramIndex, minValue + t * (maxValue - minValue));
 }
 
 void PlaybackStyleParameterPanel::mouseDown (const juce::MouseEvent& event)

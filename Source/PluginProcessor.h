@@ -140,6 +140,15 @@ public:
     // dragging a handle just re-triggers the same rebuild pathway sensitivity
     // changes already use, which naturally drops any existing slice boundary
     // (manual or auto) that now falls outside the new range.
+    //
+    // One exception: the sample's established TEMPO no longer reads these
+    // atomics directly -- see tempoTrimStartSample's own comment. Performance
+    // mode repoints trimStartSample/trimEndSample at whichever state slot has
+    // editing focus (still the right atomics for detection/manual
+    // points/"what's playing right now"), while tempoTrimStartSample/
+    // tempoTrimEndSample stay pinned to the last REAL trim edit, so per-state
+    // playback rate keeps measuring against one stable tempo instead of
+    // whichever slot you last clicked.
     int getTrimStartSample() const { return trimStartSample.load(); }
     int getTrimEndSample() const { return trimEndSample.load(); }
 
@@ -169,6 +178,16 @@ public:
         }
 
         trimStartSample.store (target);
+
+        // Performance mode reuses these same atomics to edit whichever
+        // state slot currently has focus (its own, generally much shorter,
+        // segment) -- that's never a real change to the sample's
+        // established tempo, so the tempo-trim copy sits this one out. See
+        // tempoTrimStartSample's own comment for why this distinction
+        // exists at all.
+        if (triggerMode.load() != TriggerMode::performance)
+            tempoTrimStartSample.store (target);
+
         rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
@@ -186,6 +205,11 @@ public:
         }
 
         trimEndSample.store (target);
+
+        // See setTrimStartSample() above -- same reasoning, same guard.
+        if (triggerMode.load() != TriggerMode::performance)
+            tempoTrimEndSample.store (target);
+
         rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
     }
 
@@ -456,7 +480,15 @@ public:
     //     engine (per-slice weights, playback style table, subdivision
     //     table) sits unused while this mode is active, same as it already
     //     does for whichever OTHER mode's features don't apply to it.
-    enum class TriggerMode { sliceLength, clock, sequenced };
+    //   performance (Pass 1) — same "nothing here is randomized" precedent
+    //     as sequenced, applied to a single hand-defined segment instead of
+    //     a step grid: transient detection and the probability engine are
+    //     both unused; the current trim window IS the one segment, and a
+    //     128-note-indexed bank of saved (trim, style+params, loop, sync)
+    //     states plays back on MIDI recall (see the Performance State Bank
+    //     section below). See its own class doc comment on
+    //     PerformanceStateSnapshot for the full design.
+    enum class TriggerMode { sliceLength, clock, sequenced, performance };
 
     void setTriggerMode (TriggerMode mode)
     {
@@ -465,6 +497,7 @@ public:
         clockCurrentPickValid = false;
         resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
         sequencedModeInitialized = false; // Step 37 -- same guarantee entering Sequenced mode
+        performanceModeInitialized = false; // Pass 1 -- same guarantee entering Performance mode
 
         // Pattern bank MIDI Learn only makes sense while Sequenced mode is
         // selected (it's the only mode whose UI can arm it) -- leaving the
@@ -479,6 +512,13 @@ public:
             midiLearnArmed.store (false);
             pendingPatternSwitchNote.store (-1);
         }
+
+        // Performance mode's own editing focus (focusedPerformanceStateSlot)
+        // deliberately persists across a mode change -- unlike Sequenced
+        // mode's MIDI Learn above, there's nothing here that would go stale
+        // by staying armed, since focus isn't a transient "waiting for the
+        // next note-on" state; it just remembers which slot to resume
+        // editing next time Performance mode is selected again.
     }
 
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
@@ -1431,6 +1471,71 @@ public:
     // while patternSwitchTiming is setInterval or endOfPattern.
     int getPendingPatternSwitchSlot() const { return pendingPatternSwitchNote.load(); }
 
+    //=== Performance mode state bank (click-to-focus + auto-save) ===
+    // A 128-note-indexed, lazily-populated bank, same shape as the
+    // Sequencer pattern bank above, reused via dispatchNoteOn()'s own
+    // TriggerMode::performance case -- but each slot is a self-contained
+    // PERFORMANCE STATE rather than a grid: one hand-trimmed segment, one
+    // PlaybackStyle, that style's own independent 21-parameter values (NOT
+    // the global defaults Slice Length/Clock use, NOT Sequenced mode's
+    // per-cell overrides -- genuinely independent storage, since Performance
+    // mode must stay fully independent of the other three), a Loop toggle,
+    // and a Sync toggle (on: follows whichever global Pitch Mode is active;
+    // off: native/unsynced playback -- see processBlock()'s
+    // currentPickNativeRateActive).
+    //
+    // Slots are no longer assigned via MIDI Learn -- editing focus (which
+    // slot the parameter panel/trim handles are currently shaping) is set
+    // exclusively by clicking a key on Performance mode's on-screen keyboard
+    // (setFocusedPerformanceStateSlot(), below), and physical MIDI is
+    // playback-only (see handlePerformanceStateNoteOn() in the private
+    // section). Trim is deliberately NOT duplicated as a separate "working"
+    // value while a slot has focus -- editing happens on the same shared
+    // trimStartSample/trimEndSample atomics + waveform trim handles every
+    // other mode already uses; only each SAVED slot gets its own
+    // independent copy, captured automatically the instant focus moves to a
+    // different slot (setFocusedPerformanceStateSlot()'s auto-save) and
+    // restored (or defaulted, for a never-before-focused slot) the instant
+    // focus moves back in -- exactly the same "one shared live surface,
+    // many independent saved snapshots of it" shape the Sequencer pattern
+    // bank already uses for sequencerGrid.
+    struct PerformanceStateSnapshot
+    {
+        bool populated = false;
+        int trimStartSample = 0, trimEndSample = 0;
+        int style = 0; // PlaybackStyle index
+        std::array<float, numSequencerCellParameters> parameterValues {}; // indexed exactly as getSequencerCellParameterName()
+        bool loop = false;
+        bool sync = true;
+    };
+
+    // Click-to-focus (replaces the old MIDI-Learn "Save to..." button +
+    // arm-and-assign flow entirely): moves editing focus to noteNumber,
+    // auto-saving whatever was being edited in the previously-focused slot
+    // first, then loading noteNumber's own saved state (or a fresh default,
+    // if it has none yet) into performanceWorkingState + the shared trim
+    // atomics. UI-thread entry point (the on-screen keyboard's click
+    // handler); takes sampleLock itself.
+    void setFocusedPerformanceStateSlot (int noteNumber);
+    int getFocusedPerformanceStateSlot() const { return focusedPerformanceStateSlot.load(); } // -1 = nothing focused yet
+
+    std::array<bool, 128> getPopulatedPerformanceStateBankSlots() const;
+
+    // The "working state" -- style/params/loop/sync currently being edited
+    // via performanceStyleParameterPanel/the Loop+Sync toggles, ahead of
+    // whatever the next Save captures. Parameter values are seeded once, in
+    // the constructor, from getSequencerCellParameterGlobalValue() (sane
+    // starting values, not zeros -- zero is a broken default for parameters
+    // like Bit Depth); independent storage from that point on.
+    int getPerformanceWorkingStyle() const;
+    void setPerformanceWorkingStyle (int style);
+    float getPerformanceWorkingParameterValue (int index) const;
+    void setPerformanceWorkingParameterValue (int index, float value);
+    bool getPerformanceWorkingLoop() const;
+    void setPerformanceWorkingLoop (bool loop);
+    bool getPerformanceWorkingSync() const;
+    void setPerformanceWorkingSync (bool sync);
+
 #if JUCE_DEBUG
     // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
     // done. Call from a UI-thread timer (SequencerGrid's own 30fps poll)
@@ -1646,11 +1751,23 @@ private:
     // scramble every cell. Assumes sampleLock already held.
     SequencerPatternSnapshot captureCurrentSequencerPatternSnapshot() const;
 
+    // Performance mode's own note-on entry point -- dispatched from
+    // dispatchNoteOn()'s TriggerMode::performance case. Playback-only now:
+    // if noteNumber is the currently FOCUSED slot, it live-auditions
+    // performanceWorkingState (in-progress edits, via the shared trim
+    // atomics); otherwise it plays a frozen copy of that OTHER slot's own
+    // saved snapshot (empty slot -> no-op), never touching focus or
+    // performanceWorkingState. Either way, sets performanceRecallPending =
+    // true for the per-sample loop in processBlock() to consume on its very
+    // next check (same same-call, same-lock handoff sequencedModeInitialized
+    // already uses for its own pattern recall, just below).
+    void handlePerformanceStateNoteOn (int noteNumber);
+
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
     //   sourceSpanSeconds = manualBpmOverrideEnabled
     //       ? (loopLengthBars * 4 * 60) / manualBpmOverrideValue
-    //       : (trimEndSample - trimStartSample) / sampleSampleRate
+    //       : (tempoTrimEndSample - tempoTrimStartSample) / sampleSampleRate
     // Used by both getCalculatedOriginalBpm() (the UI's "~X BPM" label) and
     // processBlock()'s repitchRatio — replaces the old calculation, which
     // used the whole buffer's length regardless of trim (the bug this
@@ -1659,6 +1776,14 @@ private:
     // never computes tempo itself — it only ever receives the ratios
     // (repitchRatio, srConversionRatio) this feeds into, so it stays
     // consistent with the direct-read path "for free."
+    //
+    // Deliberately reads tempoTrimStartSample/tempoTrimEndSample, NOT the
+    // plain trimStartSample/trimEndSample -- see tempoTrimStartSample's own
+    // comment (Performance mode's per-state trim fix). The two pairs are
+    // identical outside Performance mode; they only diverge once Performance
+    // mode starts repointing the shared trim atomics at whichever state slot
+    // has editing focus, which must NOT feed back into "the sample's
+    // original tempo."
     double computeSourceSpanSeconds() const;
 
     // Tempo-relative minimum holdoff between consecutive detected
@@ -1746,6 +1871,27 @@ private:
     std::atomic<int> trimStartSample { 0 };
     std::atomic<int> trimEndSample { 0 };
     static constexpr int minTrimGapSamples = 64;
+
+    // Tempo trim (Performance mode Pass 1 fix) — a second copy of the trim
+    // markers, updated in lockstep with trimStartSample/trimEndSample by
+    // every REAL trim edit (setTrimStartSample()/setTrimEndSample() while
+    // outside Performance mode) and by loadSample()'s reset, but otherwise
+    // left alone. This is what computeSourceSpanSeconds() actually reads
+    // (see its own comment) — the sample's one true, already-established
+    // tempo basis, kept stable even while Performance mode repoints the
+    // shared trimStartSample/trimEndSample atomics at whichever state slot
+    // currently has editing focus (see setFocusedPerformanceStateSlot() and
+    // the "focused slot's segment IS the shared trim atomics" comment in
+    // processBlock()). Without this second copy, switching Performance
+    // focus to a state with a much shorter saved trim would make that short
+    // span itself look like the whole loop, independently re-deriving a
+    // bogus "original tempo" from it (combined with loopLengthBars) instead
+    // of measuring it as a segment of the sample's real tempo — corrupting
+    // getCalculatedOriginalBpm() and, since processBlock()'s repitchRatio is
+    // shared by every trigger mode, the actual playback rate of whatever is
+    // sounding at that moment too, Performance or not.
+    std::atomic<int> tempoTrimStartSample { 0 };
+    std::atomic<int> tempoTrimEndSample { 0 };
 
     // Audition (Step 25) — auditionActive is checked/cleared from the
     // audio thread (auto-stop) and set from the UI thread (button click);
@@ -1841,6 +1987,31 @@ private:
     SequencerPatternSnapshot pendingSaveSnapshot;
     std::atomic<bool> midiLearnArmed { false };
     std::atomic<int> activePatternBankSlot { -1 }; // -1 = no recall yet this session
+
+    // Performance mode state bank -- same guard/lifecycle as patternBank
+    // just above, just holding PerformanceStateSnapshot instead of
+    // SequencerPatternSnapshot. performanceWorkingState is the one slot
+    // with no counterpart in the Sequencer bank: since Performance mode has
+    // no live grid of its own to capture wholesale (unlike sequencerGrid),
+    // its style/params/loop/sync need somewhere to live WHILE being edited,
+    // ahead of the next auto-save -- this is that somewhere. Whenever the
+    // FOCUSED slot's own key is what's sounding, it's ALSO what
+    // processBlock()'s performanceMode branch renders directly (deliberately
+    // the same object, not a frozen copy -- see performancePlaybackIsFocused/
+    // currentlyPlayingPerformanceSnapshot below for the OTHER-slot case), so
+    // a parameter tweak made while the focused slot is still sounding (e.g.
+    // Loop on) is heard on its very next pick with no explicit save required
+    // -- the same "hear it as you shape it" contract every other
+    // live-editable surface in this plugin already gives (waveform
+    // probability drag, etc.). focusedPerformanceStateSlot tracks WHICH slot
+    // currently has editing focus (set only by setFocusedPerformanceStateSlot(),
+    // called from the on-screen keyboard's click handler) -- for the
+    // keyboard's own focus highlight, and to decide, on each physical
+    // note-on, whether that note IS the focused slot (live-audition) or some
+    // OTHER slot (frozen snapshot playback) in handlePerformanceStateNoteOn().
+    std::array<PerformanceStateSnapshot, 128> performanceStateBank;
+    PerformanceStateSnapshot performanceWorkingState;
+    std::atomic<int> focusedPerformanceStateSlot { -1 }; // -1 = nothing focused yet
 
     // Pattern Switch Timing (Pass 2) -- see the public enum's own doc
     // comment above. patternSwitchIntervalIndex defaults to index 19 ("1n",
@@ -2052,6 +2223,31 @@ private:
     // first time.
     bool sequencedModeInitialized = false;
     int sequencedLastStepIndex = -1;
+
+    // Performance mode (audio thread only) -- performanceModeInitialized
+    // false forces the very first per-sample check on next block to start
+    // SILENT (hasCurrentPick = false), NOT with an immediately-forced pick
+    // the way clockModeInitialized/resetWindowInitialized/sequencedModeInitialized
+    // all do for their own modes -- Performance mode has nothing to play
+    // until a note-on triggers a pick. performanceRecallPending is the
+    // same-call handoff from handlePerformanceStateNoteOn() (set true
+    // there, consumed and cleared on the very next per-sample check below)
+    // that sequencedModeInitialized already models for pattern recall.
+    bool performanceModeInitialized = false;
+    bool performanceRecallPending = false;
+
+    // Which source governs the pick that performanceRecallPending is about
+    // to start (or that's already sounding) -- true: performanceWorkingState,
+    // the focused slot's own live/in-progress edits (played via the shared
+    // trim atomics every other mode also edits through); false:
+    // currentlyPlayingPerformanceSnapshot, a frozen copy of some OTHER
+    // slot's saved state (including its own saved trim), copied in at the
+    // note-on that started this pick so auditioning it can never disturb
+    // performanceWorkingState/focus. Both set together, only from
+    // handlePerformanceStateNoteOn() -- audio-thread-only, same convention
+    // as every other currentPick*/performance* field in this section.
+    bool performancePlaybackIsFocused = false;
+    PerformanceStateSnapshot currentlyPlayingPerformanceSnapshot;
 
     // Set Interval pattern-switch scheduling (Pass 2, audio thread only) --
     // patternSwitchIntervalBoundaryArmed false means "next occurrence not
@@ -2289,6 +2485,32 @@ private:
     std::atomic<double> debugLoopStylePickStartFinalLengthHostSamples { 0.0 };
 #endif
 
+#if JUCE_DEBUG
+    // TEMPORARY DEBUG (Performance mode click-to-focus freeze investigation)
+    // -- remove once this is done. Same "lock-free mailbox, no I/O on the
+    // audio thread" discipline as the Tape Stop/Stretch debug members
+    // above (see their own doc comment) -- the audio thread only ever does
+    // atomic stores here. A dedicated juce::HighResolutionTimer thread
+    // (deliberately NOT the message thread, which is the one under
+    // suspicion of being the one that's stuck) polls these once a second
+    // and prints directly, so the log keeps updating even if the message
+    // thread is wedged inside setFocusedPerformanceStateSlot().
+    std::atomic<juce::int64> debugAudioProcessBlockEntries { 0 }; // incremented at the very top of processBlock(), before sampleLock is even attempted
+    std::atomic<juce::int64> debugAudioLockAcquiredCount { 0 };   // incremented immediately after processBlock() acquires sampleLock
+    std::atomic<bool> debugFocusChangeInProgress { false };       // true for the duration of setFocusedPerformanceStateSlot() -- set before attempting sampleLock, cleared at the very end
+    std::atomic<juce::int64> debugFocusChangeStartMs { 0 };
+    std::atomic<int> debugFocusChangeNoteNumber { -1 };
+
+    struct FreezeWatchdog : public juce::HighResolutionTimer
+    {
+        explicit FreezeWatchdog (SlicerAudioProcessor& ownerToUse) : owner (ownerToUse) {}
+        void hiResTimerCallback() override;
+        SlicerAudioProcessor& owner;
+    };
+
+    FreezeWatchdog freezeWatchdog { *this };
+#endif
+
     // Lock-free copy of currentSliceIndex, written by the audio thread
     // whenever a new pick begins, read by the UI thread for the playhead
     // highlight. Separate from currentSliceIndex itself so the UI never
@@ -2332,6 +2554,18 @@ private:
     // rate — see processBlock().
     bool currentPickBeatQuantized = false;
     double currentPickQuantizedStretchRatio = 1.0;
+
+    // Performance mode's Sync toggle (Pass 1, audio thread only) -- captured
+    // once at pick-start, same shape as currentPickBeatQuantized just above:
+    // explicitly false for every OTHER mode's picks (Clock/Sequenced/Slice
+    // Length), and set to `! performanceWorkingState.sync` for a Performance
+    // pick. When true, processBlock() substitutes a native (sampleSampleRate/
+    // hostSampleRate) rate for playbackRate at every downstream use, instead
+    // of whichever global Pitch Mode (Repitch/Time-Stretch) is currently
+    // selected -- captured once here, rather than checked inline at each of
+    // those several downstream sites, so a pick's rate can never read as one
+    // thing at pick-start and another mid-render.
+    bool currentPickNativeRateActive = false;
 
     static constexpr float defaultSensitivity = 0.5f; // sensible starting sensitivity
 

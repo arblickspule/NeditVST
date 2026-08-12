@@ -2,7 +2,16 @@
 #include "PluginEditor.h"
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), waveformDisplay (p), subdivisionGrid (p), playbackStyleGrid (p), playbackStyleParameterPanel (p), sequencerGrid (p), playbackStylePalette (p), patternBankPanel (p)
+    : AudioProcessorEditor (&p), processor (p),
+      playbackStyleGrid (p), playbackStyleParameterPanel (p), subdivisionGrid (p), playbackStylePalette (p),
+      sequencerBankSource (p), patternBankPanel (sequencerBankSource),
+      performanceStyleParameterPanel (p,
+          [&p] (int i) { return p.getPerformanceWorkingParameterValue (i); },
+          [&p] (int i, float v) { p.setPerformanceWorkingParameterValue (i, v); },
+          p.getPerformanceWorkingStyle() + 1,
+          [&p] (int style) { p.setPerformanceWorkingStyle (style); }),
+      performanceKeyboardSource (p), performanceKeyboardPanel (performanceKeyboardSource),
+      sequencerGrid (p), waveformDisplay (p)
 {
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
@@ -270,20 +279,36 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     triggerModeSelector.addItem ("Slice Length", 1);
     triggerModeSelector.addItem ("Clock", 2);
     triggerModeSelector.addItem ("Sequenced", 3);
+    triggerModeSelector.addItem ("Performance", 4);
     {
         const auto currentMode = processor.getTriggerMode();
         const int selectedId = currentMode == SlicerAudioProcessor::TriggerMode::clock ? 2
                               : currentMode == SlicerAudioProcessor::TriggerMode::sequenced ? 3
+                              : currentMode == SlicerAudioProcessor::TriggerMode::performance ? 4
                                                                                              : 1;
         triggerModeSelector.setSelectedId (selectedId, juce::dontSendNotification);
     }
     triggerModeSelector.onChange = [this]
     {
+        const bool wasPerformance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
+
         const int selectedId = triggerModeSelector.getSelectedId();
         const auto mode = selectedId == 2 ? SlicerAudioProcessor::TriggerMode::clock
                          : selectedId == 3 ? SlicerAudioProcessor::TriggerMode::sequenced
+                         : selectedId == 4 ? SlicerAudioProcessor::TriggerMode::performance
                                             : SlicerAudioProcessor::TriggerMode::sliceLength;
         processor.setTriggerMode (mode);
+
+        // Leaving Performance mode: Performance's own focus-change path
+        // deliberately raw-stores trim (see setFocusedPerformanceStateSlot()'s
+        // own doc comment) rather than rebuilding slices, so `slices` can be
+        // stale against wherever Performance mode left the trim. Force one
+        // rebuild here -- a one-off UI-thread action, not a hot path -- by
+        // re-invoking the existing public trim setter with the same value
+        // it already has, purely for its rebuild side effect.
+        if (wasPerformance && mode != SlicerAudioProcessor::TriggerMode::performance)
+            processor.setTrimEndSample (processor.getTrimEndSample(), false);
+
         updateTriggerModeVisibility();
     };
 
@@ -433,6 +458,31 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     {
         processor.setPatternSwitchIntervalIndex (patternSwitchIntervalSelector.getSelectedId() - 1);
     };
+
+    // Performance mode (Pass 1) -- style/params panel points at Performance
+    // mode's own working-state storage (see the constructor init list
+    // above), never the global default values Slice Length/Clock use.
+    controlsContent.addAndMakeVisible (performanceStyleParametersLabel);
+    performanceStyleParametersLabel.setText ("Style parameters", juce::dontSendNotification);
+    performanceStyleParametersLabel.setJustificationType (juce::Justification::centredLeft);
+
+    controlsContent.addAndMakeVisible (performanceStyleParameterPanel);
+
+    controlsContent.addAndMakeVisible (performanceLoopToggle);
+    performanceLoopToggle.setToggleState (processor.getPerformanceWorkingLoop(), juce::dontSendNotification);
+    performanceLoopToggle.onClick = [this]
+    {
+        processor.setPerformanceWorkingLoop (performanceLoopToggle.getToggleState());
+    };
+
+    controlsContent.addAndMakeVisible (performanceSyncToggle);
+    performanceSyncToggle.setToggleState (processor.getPerformanceWorkingSync(), juce::dontSendNotification);
+    performanceSyncToggle.onClick = [this]
+    {
+        processor.setPerformanceWorkingSync (performanceSyncToggle.getToggleState());
+    };
+
+    controlsContent.addAndMakeVisible (performanceKeyboardPanel);
 
     controlsContent.addAndMakeVisible (sequencerViewport);
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
@@ -751,6 +801,24 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     patternSwitchIntervalSelector.setBounds (patternSwitchIntervalRow.removeFromLeft (150));
     area.removeFromTop (10);
 
+    // Performance mode (Pass 1) -- own row/section, same reserved-space/
+    // hide pattern as every other mode-specific group above.
+    performanceStyleParametersLabel.setBounds (area.removeFromTop (20));
+    performanceStyleParameterPanel.setBounds (area.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
+    area.removeFromTop (20);
+
+    auto performanceToggleRow = area.removeFromTop (24);
+    performanceLoopToggle.setBounds (performanceToggleRow.removeFromLeft (100));
+    performanceToggleRow.removeFromLeft (10);
+    performanceSyncToggle.setBounds (performanceToggleRow.removeFromLeft (100));
+    area.removeFromTop (10);
+
+    // Full contentWidth, unlike the old compact bank grid -- a real
+    // keyboard needs the room to be usable.
+    auto performanceKeyboardRow = area.removeFromTop (PerformanceKeyboardPanel::getPreferredHeight());
+    performanceKeyboardPanel.setBounds (performanceKeyboardRow);
+    area.removeFromTop (20);
+
     auto undoRedoRow = area.removeFromTop (30);
     undoButton.setBounds (undoRedoRow.removeFromLeft (100));
     undoRedoRow.removeFromLeft (10);
@@ -830,6 +898,28 @@ void SlicerAudioProcessorEditor::timerCallback()
     const int processorPatternLengthId = processor.getPatternLengthBarsIndex() + 1;
     if (patternLengthSelector.getSelectedId() != processorPatternLengthId)
         patternLengthSelector.setSelectedId (processorPatternLengthId, juce::dontSendNotification);
+
+    // Performance mode's working state -- same "poll and resync" reasoning
+    // as the pair just above: a click on the on-screen keyboard
+    // (setFocusedPerformanceStateSlot()) loads a new slot straight into
+    // performanceWorkingState from the keyboard panel's own click handler,
+    // out from under this parameter panel/these toggles, so a focus change
+    // made from the keyboard has to be reflected here too, not just heard.
+    // Also unconditionally repaints the parameter panel -- its rows read
+    // performanceWorkingState live via
+    // the getValue lambda passed to its constructor, but nothing else
+    // triggers a repaint when that value changes from outside a drag on
+    // this panel itself.
+    performanceStyleParameterPanel.setSelectedStyle (processor.getPerformanceWorkingStyle());
+    performanceStyleParameterPanel.repaint();
+
+    const bool processorPerformanceLoop = processor.getPerformanceWorkingLoop();
+    if (performanceLoopToggle.getToggleState() != processorPerformanceLoop)
+        performanceLoopToggle.setToggleState (processorPerformanceLoop, juce::dontSendNotification);
+
+    const bool processorPerformanceSync = processor.getPerformanceWorkingSync();
+    if (performanceSyncToggle.getToggleState() != processorPerformanceSync)
+        performanceSyncToggle.setToggleState (processorPerformanceSync, juce::dontSendNotification);
 }
 
 void SlicerAudioProcessorEditor::chooseAndLoadFile()
@@ -860,6 +950,7 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     const bool sliceLength = selectedId == 1;
     const bool clock = selectedId == 2;
     const bool sequenced = selectedId == 3;
+    const bool performance = selectedId == 4;
 
     clockReferenceLabel.setVisible (clock);
     clockReferenceSelector.setVisible (clock);
@@ -877,20 +968,25 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     resetEveryLabel.setVisible (sliceLength);
     resetEverySelector.setVisible (sliceLength);
 
-    // Playback style (Step 37) — visible in ALL THREE trigger modes,
-    // including Sequenced (Step 42 fix): it stays the same control, just
-    // its role shifts there from "live per-note weighted pick" to "what
-    // Randomize Sequence draws each hit's style from" (see
-    // randomizeSequence()'s use of playbackStyleProbabilities).
-    playbackStyleLabel.setVisible (true);
-    playbackStyleGrid.setVisible (true);
+    // Playback style (Step 37) — visible in Slice Length/Clock/Sequenced
+    // (Step 42 fix): it stays the same control, just its role shifts in
+    // Sequenced mode from "live per-note weighted pick" to "what Randomize
+    // Sequence draws each hit's style from" (see randomizeSequence()'s use
+    // of playbackStyleProbabilities). Hidden in Performance mode -- the
+    // probability engine this represents never runs there (Pass 1: one
+    // explicit style per state, no random pick).
+    playbackStyleLabel.setVisible (! performance);
+    playbackStyleGrid.setVisible (! performance);
 
-    // Playback Style parameter panel -- the mirror image of the
-    // Sequenced-only group below: visible in Slice Length/Clock modes,
-    // hidden in Sequenced mode, which keeps its own per-step right-click
-    // editing on the grid instead (see SequencerGrid's doc comment).
-    playbackStyleParametersLabel.setVisible (! sequenced);
-    playbackStyleParameterPanel.setVisible (! sequenced);
+    // Playback Style parameter panel -- visible in Slice Length/Clock
+    // modes only. Hidden in Sequenced mode, which keeps its own per-step
+    // right-click editing on the grid instead (see SequencerGrid's doc
+    // comment); hidden in Performance mode, which uses its own separate
+    // instance (performanceStyleParameterPanel, below) pointed at its own
+    // independent working-state storage instead of the global default
+    // values this instance edits.
+    playbackStyleParametersLabel.setVisible (! sequenced && ! performance);
+    playbackStyleParameterPanel.setVisible (! sequenced && ! performance);
 
     // Sequenced-only controls (Step 37/38/41).
     stepResolutionLabel.setVisible (sequenced);
@@ -915,6 +1011,15 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
                == static_cast<int> (SlicerAudioProcessor::PatternSwitchTiming::setInterval) + 1;
     patternSwitchIntervalLabel.setVisible (setInterval);
     patternSwitchIntervalSelector.setVisible (setInterval);
+
+    // Performance mode (Pass 1) -- own style/params panel, Loop/Sync
+    // toggles, and its own note-indexed bank (Immediate recall only, so no
+    // Pattern Switch Timing equivalent shown here).
+    performanceStyleParametersLabel.setVisible (performance);
+    performanceStyleParameterPanel.setVisible (performance);
+    performanceLoopToggle.setVisible (performance);
+    performanceSyncToggle.setVisible (performance);
+    performanceKeyboardPanel.setVisible (performance);
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()

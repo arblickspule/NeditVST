@@ -1,37 +1,57 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include <array>
 
 //==============================================================================
-/** MIDI pattern bank (Sequenced mode only) -- shows, at a glance, which of
-    the 128 note-indexed Sequencer pattern slots are populated and which one
-    is currently active, and provides the "Save to..." control that arms
-    MIDI Learn for assigning the current pattern to whichever note the user
-    next plays.
+/** A 128-note-indexed MIDI bank UI -- shows, at a glance, which slots are
+    populated and which one is currently active, and provides the "Save
+    to..." control that arms MIDI Learn for assigning whatever the caller's
+    context currently holds to whichever note is played next.
 
     Slots are laid out piano-style: 12 columns (pitch class, C at the left)
     by 11 rows (octave, low notes at the top), matching MIDI note number
     directly (row = note / 12, column = note % 12) -- no separate remapping
     UI needed. An empty cell is a plain outline; a populated cell is filled;
-    the active cell (SlicerAudioProcessor::getActivePatternBankSlot()) also
-    gets a bright border. A slot with a switch pending against it (Pattern
-    Switch Timing set to Set Interval/End of Pattern --
-    SlicerAudioProcessor::getPendingPatternSwitchSlot()) gets its own amber
-    dashed ring instead -- deliberately a different colour/style from the
-    active cell's solid white border, so "headed there" is never mistaken
-    for "already there." Hovering a cell updates the status label below the
-    grid with that note's name, so identifying a slot doesn't require
-    memorizing raw MIDI note numbers.
+    the active cell also gets a bright border. A slot with a switch pending
+    against it gets its own amber dashed ring instead -- deliberately a
+    different colour/style from the active cell's solid white border, so
+    "headed there" is never mistaken for "already there." Hovering a cell
+    updates the status label below the grid with that note's name, so
+    identifying a slot doesn't require memorizing raw MIDI note numbers.
 
-    Polls the processor on a timer (same reasoning as SequencerGrid's own
-    30fps poll -- the audio thread can populate/activate slots on its own,
-    via an incoming note-on, with nothing else to push a repaint). */
+    Deliberately generic over WHAT gets saved/recalled -- everything specific
+    to a slot's own contents (Sequencer patterns, Performance states, or any
+    future context) lives entirely on the BankSource side; this class only
+    ever asks BankSource for slot occupancy/active/pending state and to
+    arm/cancel Learn. Two contexts share this today: the Sequencer pattern
+    bank (whose BankSource wraps SlicerAudioProcessor's own pattern-bank
+    methods, including its real Pattern Switch Timing pending slot) and
+    Performance mode's state bank (Pass 1 -- Immediate switching only, so its
+    BankSource::getPendingSlot() always returns -1).
+
+    Polls the source on a timer (same reasoning as SequencerGrid's own 30fps
+    poll -- the audio thread can populate/activate slots on its own, via an
+    incoming note-on, with nothing else to push a repaint). */
 class PatternBankPanel : public juce::Component,
                           private juce::Timer
 {
 public:
-    explicit PatternBankPanel (SlicerAudioProcessor& processorToUse);
+    // Everything this panel needs from whatever context it's showing a bank
+    // for -- see class doc comment above. getPendingSlot() returns -1 for a
+    // context with no quantized-switch concept (Performance mode, Pass 1).
+    struct BankSource
+    {
+        virtual ~BankSource() = default;
+        virtual void armSave() = 0;
+        virtual void cancelLearn() = 0;
+        virtual bool isLearnArmed() const = 0;
+        virtual std::array<bool, 128> getPopulatedSlots() const = 0;
+        virtual int getActiveSlot() const = 0;
+        virtual int getPendingSlot() const = 0;
+    };
+
+    explicit PatternBankPanel (BankSource& sourceToUse);
     ~PatternBankPanel() override;
 
     void paint (juce::Graphics&) override;
@@ -53,7 +73,7 @@ private:
     void updateStatusLabelForHoveredNote (int noteNumber);
     void updateSaveButtonText();
 
-    SlicerAudioProcessor& processor;
+    BankSource& source;
 
     juce::TextButton saveButton { "Save to..." };
     juce::Label statusLabel;

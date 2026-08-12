@@ -49,6 +49,10 @@
             file="../Source/PatternBankPanel.cpp"/>
       <FILE id="m4Vd7T" name="PatternBankPanel.h" compile="0" resource="0"
             file="../Source/PatternBankPanel.h"/>
+      <FILE id="n5Wq8H" name="PerformanceKeyboardPanel.cpp" compile="1" resource="0"
+            file="../Source/PerformanceKeyboardPanel.cpp"/>
+      <FILE id="p2Xr6D" name="PerformanceKeyboardPanel.h" compile="0" resource="0"
+            file="../Source/PerformanceKeyboardPanel.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

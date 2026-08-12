@@ -84,6 +84,8 @@ target_sources(NeditVST
         Source/PlaybackStyleParameterPanel.h
         Source/PatternBankPanel.cpp
         Source/PatternBankPanel.h
+        Source/PerformanceKeyboardPanel.cpp
+        Source/PerformanceKeyboardPanel.h
         Source/EasingCurve.h
 )
 
