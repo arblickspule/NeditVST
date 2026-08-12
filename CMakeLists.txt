@@ -87,6 +87,13 @@ target_sources(NeditVST
         Source/PerformanceKeyboardPanel.cpp
         Source/PerformanceKeyboardPanel.h
         Source/EasingCurve.h
+        Source/NeditPalette.h
+        Source/SegmentedButtonRow.cpp
+        Source/SegmentedButtonRow.h
+        Source/RotaryKnob.cpp
+        Source/RotaryKnob.h
+        Source/SectionPanel.cpp
+        Source/SectionPanel.h
 )
 
 juce_generate_juce_header(NeditVST)

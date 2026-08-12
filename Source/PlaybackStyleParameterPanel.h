@@ -93,6 +93,16 @@ public:
     // never reflows anything laid out below this panel.
     static int getPreferredHeight();
 
+    // Hides (or reshows) the panel's own internal style-picker ComboBox
+    // (Pass 1) -- for a caller that drives style selection with its own
+    // external control instead (the Generate page's playbackStyleSegments,
+    // a SegmentedButtonRow, via setSelectedStyle() below), so the two
+    // pickers don't sit redundantly on top of each other. Purely a
+    // visibility toggle -- row layout/getPreferredHeight() are unchanged,
+    // still reserve the same top strip regardless, so hiding this doesn't
+    // reflow anything else in the panel.
+    void setStyleSelectorVisible (bool shouldBeVisible) { styleSelector.setVisible (shouldBeVisible); }
+
     // Resyncs the style selector to styleIndex without firing onStyleChanged
     // -- needed by a caller whose underlying value can change out from under
     // this panel (Performance mode's working state can change via a MIDI

@@ -1,6 +1,16 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+void SlicerAudioProcessorEditor::ComingSoonPanel::paint (juce::Graphics& g)
+{
+    g.setColour (NeditPalette::tungsten);
+    g.fillRect (getLocalBounds());
+
+    g.setColour (NeditPalette::textOnTungsten.withAlpha (0.6f));
+    g.setFont (16.0f);
+    g.drawFittedText (message, getLocalBounds(), juce::Justification::centred, 1);
+}
+
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), processor (p),
       playbackStyleGrid (p), playbackStyleParameterPanel (p), subdivisionGrid (p), playbackStylePalette (p),
@@ -16,6 +26,44 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     addAndMakeVisible (controlsViewport);
     controlsViewport.setViewedComponent (&controlsContent, false); // we own it, don't let the viewport delete it
     controlsViewport.setScrollBarsShown (true, false); // vertical only, shown when needed
+    controlsContent.setLookAndFeel (&neditLookAndFeel); // Tungsten/Salmon palette for every native-widget control below (Pass 1)
+
+    // Pass 1 tab structure -- added first so every page/section beneath it
+    // paints on top (SectionPanel/ComingSoonPanel are pure backdrops, added
+    // here purely for correct paint z-order, not for layout).
+    controlsContent.addAndMakeVisible (topLevelModeTabs);
+    topLevelModeTabs.setOptions ({ { "Beats", std::nullopt }, { "Textures", std::nullopt } });
+
+    controlsContent.addAndMakeVisible (subModeTabs);
+    subModeTabs.setOptions ({ { "Generate", std::nullopt }, { "Sequence", std::nullopt },
+                               { "Control", std::nullopt }, { "Perform", std::nullopt } });
+
+    // Seed both tab rows from the processor's own current trigger mode so
+    // the initial syncTriggerModeToActiveTab() call below is a no-op --
+    // e.g. if the processor is already in Performance mode (persisted
+    // state), land on Beats>Perform at startup rather than silently
+    // resetting it back to Slice Length.
+    {
+        const auto mode = processor.getTriggerMode();
+        const int subModeIndex = mode == SlicerAudioProcessor::TriggerMode::sequenced ? 1
+                                : mode == SlicerAudioProcessor::TriggerMode::performance ? 3
+                                                                                          : 0; // Generate
+        subModeTabs.setSelectedIndex (subModeIndex, juce::dontSendNotification);
+
+        if (mode == SlicerAudioProcessor::TriggerMode::clock)
+            lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::clock;
+    }
+
+    topLevelModeTabs.onSelectionChanged = [this] (int) { updateActiveTabVisibility(); syncTriggerModeToActiveTab(); resized(); };
+    subModeTabs.onSelectionChanged = [this] (int) { updateActiveTabVisibility(); syncTriggerModeToActiveTab(); resized(); };
+
+    controlsContent.addAndMakeVisible (sampleSectionPanel);
+    controlsContent.addAndMakeVisible (trimTempoSectionPanel);
+    controlsContent.addAndMakeVisible (detectionSectionPanel);
+    controlsContent.addAndMakeVisible (engineSectionPanel);
+    controlsContent.addAndMakeVisible (playbackStyleSectionPanel);
+    controlsContent.addAndMakeVisible (controlPlaceholder);
+    controlsContent.addAndMakeVisible (texturesPlaceholder);
 
     controlsContent.addAndMakeVisible (loadButton);
     loadButton.addListener (this);
@@ -46,14 +94,14 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     loopLengthLabel.setText ("Loop length (bars)", juce::dontSendNotification);
     loopLengthLabel.setJustificationType (juce::Justification::centredLeft);
 
-    controlsContent.addAndMakeVisible (loopLengthSlider);
-    loopLengthSlider.setSliderStyle (juce::Slider::IncDecButtons);
-    loopLengthSlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
-    loopLengthSlider.setRange (1.0, 8.0, 1.0);
-    loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
-    loopLengthSlider.onValueChange = [this]
+    controlsContent.addAndMakeVisible (loopLengthKnob);
+    loopLengthKnob.setRange (1.0, 8.0, 1.0);
+    loopLengthKnob.setNumDecimalPlacesToDisplay (0);
+    loopLengthKnob.setLabel ("bars");
+    loopLengthKnob.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
+    loopLengthKnob.onValueChange = [this]
     {
-        processor.setLoopLengthBars ((int) loopLengthSlider.getValue());
+        processor.setLoopLengthBars ((int) loopLengthKnob.getValue());
 
         const double bpm = processor.getCalculatedOriginalBpm();
         calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
@@ -66,7 +114,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         loopLengthNeedsAttention = false;
         repaint();
     };
-    loopLengthSlider.onDragEnd = [this]
+    loopLengthKnob.onDragEnd = [this]
     {
         loopLengthNeedsAttention = false;
         repaint();
@@ -104,19 +152,17 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     pitchModeLabel.setText ("Pitch mode", juce::dontSendNotification);
     pitchModeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    controlsContent.addAndMakeVisible (pitchModeSelector);
-    pitchModeSelector.addItem ("Repitch", 1);
-    pitchModeSelector.addItem ("Time-Stretch", 2);
+    controlsContent.addAndMakeVisible (pitchModeSegments);
+    pitchModeSegments.setOptions ({ { "Repitch", std::nullopt }, { "Time-Stretch", std::nullopt } });
     {
         const auto currentMode = processor.getPitchMode();
-        const int selectedId = currentMode == SlicerAudioProcessor::PitchMode::timeStretch ? 2 : 1;
-        pitchModeSelector.setSelectedId (selectedId, juce::dontSendNotification);
+        const int selectedIndex = currentMode == SlicerAudioProcessor::PitchMode::timeStretch ? 1 : 0;
+        pitchModeSegments.setSelectedIndex (selectedIndex, juce::dontSendNotification);
     }
-    pitchModeSelector.onChange = [this]
+    pitchModeSegments.onSelectionChanged = [this] (int selectedIndex)
     {
-        const int selectedId = pitchModeSelector.getSelectedId();
-        const auto mode = selectedId == 2 ? SlicerAudioProcessor::PitchMode::timeStretch
-                                           : SlicerAudioProcessor::PitchMode::repitch;
+        const auto mode = selectedIndex == 1 ? SlicerAudioProcessor::PitchMode::timeStretch
+                                              : SlicerAudioProcessor::PitchMode::repitch;
         processor.setPitchMode (mode);
         updatePitchModeVisibility();
     };
@@ -185,13 +231,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     sensitivityLabel.setText ("Transient sensitivity", juce::dontSendNotification);
     sensitivityLabel.setJustificationType (juce::Justification::centredLeft);
 
-    controlsContent.addAndMakeVisible (sensitivitySlider);
-    sensitivitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    sensitivitySlider.setScrollWheelEnabled (false); // scrolling the controlsViewport over this shouldn't also nudge the value
-    sensitivitySlider.setRange (0.0, 1.0, 0.01);
-    sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
-    sensitivitySlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
-    sensitivitySlider.onValueChange = [this]
+    controlsContent.addAndMakeVisible (sensitivityKnob);
+    sensitivityKnob.setRange (0.0, 1.0, 0.01);
+    sensitivityKnob.setNumDecimalPlacesToDisplay (2);
+    sensitivityKnob.setValue (processor.getSensitivity(), juce::dontSendNotification);
+    sensitivityKnob.onValueChange = [this]
     {
         // Committing (which resets every slice probability and briefly
         // restarts the chain) on EVERY value change would fire many times
@@ -201,20 +245,20 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         // every pixel of movement. While actually dragging, just show a
         // live PREVIEW of where slices would land — no commit, no sound,
         // no lost edits — and only commit for real on release (onDragEnd)
-        // or for non-drag changes (keyboard nudge, text box entry).
-        if (sensitivitySlider.isMouseButtonDown())
+        // or for non-drag changes.
+        if (sensitivityKnob.isDragging())
         {
-            auto preview = processor.previewSlicesAtSensitivity ((float) sensitivitySlider.getValue());
+            auto preview = processor.previewSlicesAtSensitivity ((float) sensitivityKnob.getValue());
             waveformDisplay.showPreviewSlices (preview);
             return;
         }
 
-        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        processor.setSensitivityAndRedetect ((float) sensitivityKnob.getValue());
         updateAfterSampleOrSliceChange();
     };
-    sensitivitySlider.onDragEnd = [this]
+    sensitivityKnob.onDragEnd = [this]
     {
-        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        processor.setSensitivityAndRedetect ((float) sensitivityKnob.getValue());
         updateAfterSampleOrSliceChange();
     };
 
@@ -275,41 +319,45 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     triggerModeLabel.setText ("Trigger mode", juce::dontSendNotification);
     triggerModeLabel.setJustificationType (juce::Justification::centredLeft);
 
-    controlsContent.addAndMakeVisible (triggerModeSelector);
-    triggerModeSelector.addItem ("Slice Length", 1);
-    triggerModeSelector.addItem ("Clock", 2);
-    triggerModeSelector.addItem ("Sequenced", 3);
-    triggerModeSelector.addItem ("Performance", 4);
+    controlsContent.addAndMakeVisible (triggerModeSegments);
+    triggerModeSegments.setOptions ({ { "Slice Length", std::nullopt }, { "Clock", std::nullopt }, { "Sequenced", std::nullopt } });
     {
         const auto currentMode = processor.getTriggerMode();
-        const int selectedId = currentMode == SlicerAudioProcessor::TriggerMode::clock ? 2
-                              : currentMode == SlicerAudioProcessor::TriggerMode::sequenced ? 3
-                              : currentMode == SlicerAudioProcessor::TriggerMode::performance ? 4
-                                                                                             : 1;
-        triggerModeSelector.setSelectedId (selectedId, juce::dontSendNotification);
+        const int selectedIndex = currentMode == SlicerAudioProcessor::TriggerMode::clock ? 1
+                                 : currentMode == SlicerAudioProcessor::TriggerMode::sequenced ? 2
+                                                                                                : 0;
+        triggerModeSegments.setSelectedIndex (selectedIndex, juce::dontSendNotification);
     }
-    triggerModeSelector.onChange = [this]
+    triggerModeSegments.onSelectionChanged = [this] (int selectedIndex)
     {
-        const bool wasPerformance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
+        if (selectedIndex == 2) // Sequenced
+        {
+            // No Sequenced-specific controls render on Generate this pass
+            // (they live on the Sequence tab) -- jump there directly.
+            // subModeTabs' own onSelectionChanged calls
+            // syncTriggerModeToActiveTab() for us, which sets
+            // processor.setTriggerMode(sequenced) faithfully (including the
+            // wasPerformance trim-rebuild side effect, if applicable).
+            subModeTabs.setSelectedIndex (1, juce::sendNotification);
+            return;
+        }
 
-        const int selectedId = triggerModeSelector.getSelectedId();
-        const auto mode = selectedId == 2 ? SlicerAudioProcessor::TriggerMode::clock
-                         : selectedId == 3 ? SlicerAudioProcessor::TriggerMode::sequenced
-                         : selectedId == 4 ? SlicerAudioProcessor::TriggerMode::performance
-                                            : SlicerAudioProcessor::TriggerMode::sliceLength;
-        processor.setTriggerMode (mode);
+        lastGenerateTriggerMode = selectedIndex == 1 ? SlicerAudioProcessor::TriggerMode::clock
+                                                      : SlicerAudioProcessor::TriggerMode::sliceLength;
+        syncTriggerModeToActiveTab();
+    };
 
-        // Leaving Performance mode: Performance's own focus-change path
-        // deliberately raw-stores trim (see setFocusedPerformanceStateSlot()'s
-        // own doc comment) rather than rebuilding slices, so `slices` can be
-        // stale against wherever Performance mode left the trim. Force one
-        // rebuild here -- a one-off UI-thread action, not a hot path -- by
-        // re-invoking the existing public trim setter with the same value
-        // it already has, purely for its rebuild side effect.
-        if (wasPerformance && mode != SlicerAudioProcessor::TriggerMode::performance)
-            processor.setTrimEndSample (processor.getTrimEndSample(), false);
-
-        updateTriggerModeVisibility();
+    controlsContent.addAndMakeVisible (playbackStyleSegments);
+    {
+        std::vector<SegmentedButtonRow::Option> styleOptions;
+        for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
+            styleOptions.push_back ({ SlicerAudioProcessor::getPlaybackStyleName (i), PlaybackStylePalette::getStyleColour (i) });
+        playbackStyleSegments.setOptions (std::move (styleOptions));
+    }
+    playbackStyleSegments.onSelectionChanged = [this] (int selectedIndex)
+    {
+        playbackStyleParameterPanel.setSelectedStyle (selectedIndex);
+        playbackStyleParameterPanel.repaint();
     };
 
     controlsContent.addAndMakeVisible (playbackStyleLabel);
@@ -323,6 +371,10 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     playbackStyleParametersLabel.setJustificationType (juce::Justification::centredLeft);
 
     controlsContent.addAndMakeVisible (playbackStyleParameterPanel);
+    // playbackStyleSegments above is the real selector now -- hide the
+    // panel's own internal style ComboBox so the two don't sit redundantly
+    // on top of each other (see setStyleSelectorVisible()'s own doc comment).
+    playbackStyleParameterPanel.setStyleSelectorVisible (false);
 
     controlsContent.addAndMakeVisible (clockReferenceLabel);
     clockReferenceLabel.setText ("Clock reference", juce::dontSendNotification);
@@ -440,7 +492,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     {
         processor.setPatternSwitchTiming (
             static_cast<SlicerAudioProcessor::PatternSwitchTiming> (patternSwitchTimingSelector.getSelectedId() - 1));
-        updateTriggerModeVisibility(); // Set Interval's own note-value picker only shows for that one timing mode
+        updateActiveTabVisibility(); // Set Interval's own note-value picker only shows for that one timing mode (Sequence tab)
     };
 
     // Set Interval's grid point -- same note-value palette as Clock
@@ -552,10 +604,43 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     sequencerViewport.setViewedComponent (&sequencerGrid, false); // we own it, don't let the viewport delete it
     sequencerViewport.setScrollBarsShown (true, true);
 
-    updateTriggerModeVisibility(); // also calls updatePerformanceTrimSnapVisibility()/updatePerformanceQuantizeRecallVisibility()
-    updatePitchModeVisibility();
-    updateManualBpmOverrideVisibility();
-    updateQuantizeTransientsVisibility();
+    // Pass 1 tab structure -- every component belonging to each of
+    // Generate/Sequence/Perform, for updateActiveTabVisibility()'s blanket
+    // show/hide (see its own doc comment). Populated here, now that every
+    // control referenced below is fully constructed.
+    generateComponents = {
+        &sampleSectionPanel, &trimTempoSectionPanel, &detectionSectionPanel, &engineSectionPanel, &playbackStyleSectionPanel,
+        &loadButton, &resetEditsButton, &statusLabel, &undoButton, &redoButton,
+        &auditionButton, &loopLengthLabel, &loopLengthKnob, &calculatedBpmLabel,
+        &manualBpmOverrideToggle, &manualBpmOverrideLabel, &manualBpmOverrideSlider,
+        &fadeInLabel, &fadeInSlider, &fadeOutLabel, &fadeOutSlider,
+        &sensitivityLabel, &sensitivityKnob, &quantizeTransientsToggle, &quantizeGridLabel, &quantizeGridSelector,
+        &pitchModeLabel, &pitchModeSegments, &beatQuantizeToggleRepitch,
+        &grainSizeLabel, &grainSizeSlider, &windowShapeLabel, &windowShapeSelector, &beatQuantizeToggle,
+        &pitchShiftLabel, &pitchShiftSlider,
+        &triggerModeLabel, &triggerModeSegments,
+        &clockReferenceLabel, &clockReferenceSelector, &tapeStopScopeLabel, &tapeStopScopeSelector,
+        &filterSweepScopeLabel, &filterSweepScopeSelector, &resetEveryLabel, &resetEverySelector,
+        &subdivisionTableLabel, &subdivisionGrid,
+        &playbackStyleSegments, &playbackStyleLabel, &playbackStyleGrid,
+        &playbackStyleParametersLabel, &playbackStyleParameterPanel
+    };
+
+    sequenceComponents = {
+        &stepResolutionLabel, &stepResolutionSelector, &patternLengthLabel, &patternLengthSelector,
+        &randomizeSequenceButton, &clearSequenceButton, &playbackStylePalette, &sequencerViewport, &patternBankPanel,
+        &patternSwitchTimingLabel, &patternSwitchTimingSelector, &patternSwitchIntervalLabel, &patternSwitchIntervalSelector
+    };
+
+    performComponents = {
+        &performanceStyleParametersLabel, &performanceStyleParameterPanel, &performanceLoopToggle, &performanceSyncToggle,
+        &performanceTrimSnapLabel, &performanceTrimSnapSelector, &performanceTrimGridLabel, &performanceTrimGridSelector,
+        &performanceQuantizeRecallToggle, &performanceQuantizeRecallIntervalLabel, &performanceQuantizeRecallIntervalSelector,
+        &performanceKeyboardPanel
+    };
+
+    syncTriggerModeToActiveTab(); // no-op: both tab rows were already seeded from processor.getTriggerMode() above
+    updateActiveTabVisibility(); // also drives updateTriggerModeVisibility()/updatePitchModeVisibility()/updateManualBpmOverrideVisibility()/updateQuantizeTransientsVisibility() for whichever tab is active
 
     // Zoom/pan (Step 31) — live directly on the editor, not controlsContent,
     // so they stay visible next to the waveform regardless of scroll
@@ -575,7 +660,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         // Loop Length (bars) doesn't auto-adjust when the trim range
         // changes -- there's no way to guess the right new value -- so
         // flag it as needing a fresh look instead (Step 33), cleared the
-        // moment the user touches loopLengthSlider (see its onValueChange/
+        // moment the user touches loopLengthKnob (see its onValueChange/
         // onDragEnd above).
         loopLengthNeedsAttention = true;
         repaint();
@@ -615,24 +700,28 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
     g.drawFittedText ("NeditVST - step 46: Filter Type, Curve Shape, Stretch Grain step editing",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
-    // Loop Length staleness highlight (Step 33). loopLengthLabel/Slider
-    // live inside controlsContent, scrolled by controlsViewport -- rather
-    // than computing their position by hand, getLocalArea() walks the
-    // whole parent chain (including the viewport's current scroll
-    // offset) to get their real on-screen rectangle in THIS component's
-    // coordinate space, so the highlight tracks correctly regardless of
-    // scroll position. Clipped to the viewport's own bounds so nothing
-    // is drawn if the control is currently scrolled out of view; the
-    // isVisible() guard is defensive (nothing currently hides Loop Length)
-    // but stays cheap to keep either way.
-    if (loopLengthNeedsAttention && loopLengthLabel.isVisible())
+    // Loop Length staleness highlight (Step 33). loopLengthLabel/Knob live
+    // inside controlsContent, scrolled by controlsViewport -- rather than
+    // computing their position by hand, getLocalArea() walks the whole
+    // parent chain (including the viewport's current scroll offset) to get
+    // their real on-screen rectangle in THIS component's coordinate space,
+    // so the highlight tracks correctly regardless of scroll position and
+    // regardless of how deeply nested inside a SectionPanel's visual area
+    // the knob ends up (getLocalArea() doesn't care, only real bounds
+    // matter -- see SectionPanel's own class doc comment). Clipped to the
+    // viewport's own bounds so nothing is drawn if scrolled out of view.
+    // Loop Length only exists on the Generate page (Pass 1) -- guarded so
+    // this doesn't draw a highlight around a hidden, off-tab control.
+    const bool generateTabActive = topLevelModeTabs.getSelectedIndex() == 0 && subModeTabs.getSelectedIndex() == 0;
+
+    if (loopLengthNeedsAttention && generateTabActive && loopLengthLabel.isVisible())
     {
         juce::Graphics::ScopedSaveState saveState (g);
         g.reduceClipRegion (controlsViewport.getBounds());
 
         const auto labelBounds = getLocalArea (&loopLengthLabel, loopLengthLabel.getLocalBounds());
-        const auto sliderBounds = getLocalArea (&loopLengthSlider, loopLengthSlider.getLocalBounds());
-        const auto highlightBounds = labelBounds.getUnion (sliderBounds).expanded (4);
+        const auto knobBounds = getLocalArea (&loopLengthKnob, loopLengthKnob.getLocalBounds());
+        const auto highlightBounds = labelBounds.getUnion (knobBounds).expanded (4);
 
         g.setColour (juce::Colours::orange);
         g.drawRect (highlightBounds, 2);
@@ -684,129 +773,217 @@ void SlicerAudioProcessorEditor::resized()
     waveformDisplay.setBounds (area); // takes up all remaining space, always fully visible
 }
 
+juce::Rectangle<int> SlicerAudioProcessorEditor::sectionContentArea (const SectionPanel& panel)
+{
+    return panel.getBounds().withTrimmedTop (SectionPanel::titleBarHeight).reduced (8, 6);
+}
+
 int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
 {
-    // Every control below lives inside controlsContent, not the editor
-    // itself — this lays them out in ITS local coordinate space (starting
-    // at 0,0) exactly the way they used to lay out directly in the
-    // editor's own area, then reports how much total height they actually
-    // needed so the caller can size controlsContent to fit (it scrolls
-    // inside controlsViewport's fixed height rather than the window
-    // growing to match).
+    // Tab rows sit above whichever page is active, always laid out
+    // regardless of selection. Below them, exactly one of the five
+    // per-page layout functions runs -- the tab-driven analogue of the old
+    // single flat control list, now split so each page only pays for (and
+    // only needs scroll height for) its own content.
+    topLevelModeTabs.setBounds (0, 0, contentWidth, SegmentedButtonRow::preferredHeight);
+    int y = SegmentedButtonRow::preferredHeight + 10;
+
+    const bool beats = topLevelModeTabs.getSelectedIndex() == 0;
+
+    if (beats)
+    {
+        subModeTabs.setBounds (0, y, contentWidth, SegmentedButtonRow::preferredHeight);
+        y += SegmentedButtonRow::preferredHeight + 14;
+    }
+
+
+    int pageHeight = 0;
+
+    if (! beats)
+    {
+        pageHeight = layoutTexturesPlaceholder (contentWidth, y);
+    }
+    else
+    {
+        switch (subModeTabs.getSelectedIndex())
+        {
+            case 1: pageHeight = layoutSequenceTab (contentWidth, y); break;
+            case 2: pageHeight = layoutControlPlaceholder (contentWidth, y); break;
+            case 3: pageHeight = layoutPerformTab (contentWidth, y); break;
+            default: pageHeight = layoutGenerateTab (contentWidth, y); break;
+        }
+    }
+
+    return y + pageHeight;
+}
+
+int SlicerAudioProcessorEditor::layoutGenerateTab (int contentWidth, int startY)
+{
     constexpr int sacrificialHeight = 4000; // comfortably larger than any realistic total content height
-    juce::Rectangle<int> area (0, 0, contentWidth, sacrificialHeight);
+    constexpr int panelGap = 14;
+    constexpr int sectionSacrificialHeight = 1200;
 
-    auto topButtonRow = area.removeFromTop (40);
-    loadButton.setBounds (topButtonRow.removeFromLeft (topButtonRow.getWidth() - 110));
-    topButtonRow.removeFromLeft (10);
-    resetEditsButton.setBounds (topButtonRow);
-    area.removeFromTop (10);
-    auditionButton.setBounds (area.removeFromTop (30));
-    area.removeFromTop (10);
-    statusLabel.setBounds (area.removeFromTop (30));
-    area.removeFromTop (20);
+    juce::Rectangle<int> area (0, startY, contentWidth, sacrificialHeight);
 
-    auto loopRow = area.removeFromTop (30);
-    loopLengthLabel.setBounds (loopRow.removeFromLeft (140));
-    loopLengthSlider.setBounds (loopRow.removeFromLeft (100));
-    loopRow.removeFromLeft (10);
-    calculatedBpmLabel.setBounds (loopRow);
-    area.removeFromTop (10);
+    // Sizes a SectionPanel to fit exactly whatever layoutFn lays out inside
+    // its content area (see SectionPanel's own class doc comment for why
+    // the real controls stay direct children of controlsContent rather than
+    // being reparented into the panel) -- a two-pass measure-then-shrink,
+    // so each section's own row layout below can stay a plain top-to-bottom
+    // removeFromTop() sequence, same style every other layout function in
+    // this file already uses, without hand-computing its total height.
+    auto layoutSection = [&] (SectionPanel& panel, auto&& layoutFn)
+    {
+        panel.setBounds (area.getX(), area.getY(), area.getWidth(), sectionSacrificialHeight);
+        auto content = sectionContentArea (panel);
+        const int startHeight = content.getHeight();
 
-    auto manualBpmToggleRow = area.removeFromTop (24);
-    manualBpmOverrideToggle.setBounds (manualBpmToggleRow);
-    area.removeFromTop (6);
+        layoutFn (content);
 
-    auto manualBpmValueRow = area.removeFromTop (30);
-    manualBpmOverrideLabel.setBounds (manualBpmValueRow.removeFromLeft (140));
-    manualBpmOverrideSlider.setBounds (manualBpmValueRow);
-    area.removeFromTop (20);
+        const int consumed = startHeight - content.getHeight();
+        const int panelHeight = SectionPanel::titleBarHeight + consumed + 12; // 12 = getContentArea()'s reduced(8,6) top+bottom padding
+        panel.setBounds (area.getX(), area.getY(), area.getWidth(), panelHeight);
+        area.removeFromTop (panelHeight);
+        area.removeFromTop (panelGap);
+    };
 
-    auto pitchModeRow = area.removeFromTop (30);
-    pitchModeLabel.setBounds (pitchModeRow.removeFromLeft (140));
-    pitchModeSelector.setBounds (pitchModeRow.removeFromLeft (150));
-    area.removeFromTop (10);
+    layoutSection (sampleSectionPanel, [this] (juce::Rectangle<int>& content)
+    {
+        auto topButtonRow = content.removeFromTop (40);
+        loadButton.setBounds (topButtonRow.removeFromLeft (topButtonRow.getWidth() - 110));
+        topButtonRow.removeFromLeft (10);
+        resetEditsButton.setBounds (topButtonRow);
+        content.removeFromTop (10);
 
-    beatQuantizeToggleRepitch.setBounds (area.removeFromTop (24));
-    area.removeFromTop (10);
+        statusLabel.setBounds (content.removeFromTop (30));
+        content.removeFromTop (10);
 
-    auto grainSizeRow = area.removeFromTop (30);
-    grainSizeLabel.setBounds (grainSizeRow.removeFromLeft (140));
-    grainSizeSlider.setBounds (grainSizeRow);
-    area.removeFromTop (10);
+        auto undoRedoRow = content.removeFromTop (30);
+        undoButton.setBounds (undoRedoRow.removeFromLeft (100));
+        undoRedoRow.removeFromLeft (10);
+        redoButton.setBounds (undoRedoRow.removeFromLeft (100));
+    });
 
-    auto windowShapeRow = area.removeFromTop (30);
-    windowShapeLabel.setBounds (windowShapeRow.removeFromLeft (140));
-    windowShapeSelector.setBounds (windowShapeRow.removeFromLeft (150));
-    area.removeFromTop (10);
+    layoutSection (trimTempoSectionPanel, [this] (juce::Rectangle<int>& content)
+    {
+        auditionButton.setBounds (content.removeFromTop (30));
+        content.removeFromTop (10);
 
-    beatQuantizeToggle.setBounds (area.removeFromTop (24));
-    area.removeFromTop (10);
+        auto loopRow = content.removeFromTop (juce::jmax (30, RotaryKnob::preferredSize + 14));
+        loopLengthLabel.setBounds (loopRow.removeFromLeft (140).withSizeKeepingCentre (140, 20));
+        loopLengthKnob.setBounds (loopRow.removeFromLeft (90));
+        loopRow.removeFromLeft (10);
+        calculatedBpmLabel.setBounds (loopRow);
+        content.removeFromTop (14);
 
-    auto pitchShiftRow = area.removeFromTop (30);
-    pitchShiftLabel.setBounds (pitchShiftRow.removeFromLeft (140));
-    pitchShiftSlider.setBounds (pitchShiftRow);
-    area.removeFromTop (20);
+        manualBpmOverrideToggle.setBounds (content.removeFromTop (24));
+        content.removeFromTop (6);
 
-    auto sensitivityRow = area.removeFromTop (30);
-    sensitivityLabel.setBounds (sensitivityRow.removeFromLeft (140));
-    sensitivitySlider.setBounds (sensitivityRow);
-    area.removeFromTop (10);
+        auto manualBpmValueRow = content.removeFromTop (30);
+        manualBpmOverrideLabel.setBounds (manualBpmValueRow.removeFromLeft (140));
+        manualBpmOverrideSlider.setBounds (manualBpmValueRow);
+        content.removeFromTop (14);
 
-    quantizeTransientsToggle.setBounds (area.removeFromTop (24));
-    area.removeFromTop (10);
+        auto fadeInRow = content.removeFromTop (30);
+        fadeInLabel.setBounds (fadeInRow.removeFromLeft (140));
+        fadeInSlider.setBounds (fadeInRow);
+        content.removeFromTop (10);
 
-    auto quantizeGridRow = area.removeFromTop (30);
-    quantizeGridLabel.setBounds (quantizeGridRow.removeFromLeft (140));
-    quantizeGridSelector.setBounds (quantizeGridRow.removeFromLeft (150));
-    area.removeFromTop (20);
+        auto fadeOutRow = content.removeFromTop (30);
+        fadeOutLabel.setBounds (fadeOutRow.removeFromLeft (140));
+        fadeOutSlider.setBounds (fadeOutRow);
+    });
 
-    auto fadeInRow = area.removeFromTop (30);
-    fadeInLabel.setBounds (fadeInRow.removeFromLeft (140));
-    fadeInSlider.setBounds (fadeInRow);
-    area.removeFromTop (10);
+    layoutSection (detectionSectionPanel, [this] (juce::Rectangle<int>& content)
+    {
+        auto sensitivityRow = content.removeFromTop (juce::jmax (30, RotaryKnob::preferredSize + 14));
+        sensitivityLabel.setBounds (sensitivityRow.removeFromLeft (140).withSizeKeepingCentre (140, 20));
+        sensitivityKnob.setBounds (sensitivityRow.removeFromLeft (90));
+        content.removeFromTop (14);
 
-    auto fadeOutRow = area.removeFromTop (30);
-    fadeOutLabel.setBounds (fadeOutRow.removeFromLeft (140));
-    fadeOutSlider.setBounds (fadeOutRow);
-    area.removeFromTop (20);
+        quantizeTransientsToggle.setBounds (content.removeFromTop (24));
+        content.removeFromTop (6);
 
-    auto triggerModeRow = area.removeFromTop (30);
-    triggerModeLabel.setBounds (triggerModeRow.removeFromLeft (140));
-    triggerModeSelector.setBounds (triggerModeRow.removeFromLeft (150));
-    area.removeFromTop (10);
+        auto quantizeGridRow = content.removeFromTop (30);
+        quantizeGridLabel.setBounds (quantizeGridRow.removeFromLeft (140));
+        quantizeGridSelector.setBounds (quantizeGridRow.removeFromLeft (150));
+    });
 
-    playbackStyleLabel.setBounds (area.removeFromTop (20));
-    playbackStyleGrid.setBounds (area.removeFromTop (PlaybackStyleGrid::getPreferredHeight()));
-    area.removeFromTop (20);
+    layoutSection (engineSectionPanel, [this] (juce::Rectangle<int>& content)
+    {
+        pitchModeLabel.setBounds (content.removeFromTop (20));
+        pitchModeSegments.setBounds (content.removeFromTop (SegmentedButtonRow::preferredHeight));
+        content.removeFromTop (10);
 
-    playbackStyleParametersLabel.setBounds (area.removeFromTop (20));
-    playbackStyleParameterPanel.setBounds (area.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
-    area.removeFromTop (20);
+        beatQuantizeToggleRepitch.setBounds (content.removeFromTop (24));
+        content.removeFromTop (10);
 
-    auto clockReferenceRow = area.removeFromTop (30);
-    clockReferenceLabel.setBounds (clockReferenceRow.removeFromLeft (140));
-    clockReferenceSelector.setBounds (clockReferenceRow.removeFromLeft (150));
-    area.removeFromTop (10);
+        auto grainSizeRow = content.removeFromTop (30);
+        grainSizeLabel.setBounds (grainSizeRow.removeFromLeft (140));
+        grainSizeSlider.setBounds (grainSizeRow);
+        content.removeFromTop (10);
 
-    auto tapeStopScopeRow = area.removeFromTop (30);
-    tapeStopScopeLabel.setBounds (tapeStopScopeRow.removeFromLeft (140));
-    tapeStopScopeSelector.setBounds (tapeStopScopeRow.removeFromLeft (150));
-    area.removeFromTop (10);
+        auto windowShapeRow = content.removeFromTop (30);
+        windowShapeLabel.setBounds (windowShapeRow.removeFromLeft (140));
+        windowShapeSelector.setBounds (windowShapeRow.removeFromLeft (150));
+        content.removeFromTop (10);
 
-    auto filterSweepScopeRow = area.removeFromTop (30);
-    filterSweepScopeLabel.setBounds (filterSweepScopeRow.removeFromLeft (140));
-    filterSweepScopeSelector.setBounds (filterSweepScopeRow.removeFromLeft (150));
-    area.removeFromTop (10);
+        beatQuantizeToggle.setBounds (content.removeFromTop (24));
+        content.removeFromTop (10);
 
-    auto resetEveryRow = area.removeFromTop (30);
-    resetEveryLabel.setBounds (resetEveryRow.removeFromLeft (140));
-    resetEverySelector.setBounds (resetEveryRow.removeFromLeft (150));
-    area.removeFromTop (10);
+        auto pitchShiftRow = content.removeFromTop (30);
+        pitchShiftLabel.setBounds (pitchShiftRow.removeFromLeft (140));
+        pitchShiftSlider.setBounds (pitchShiftRow);
+        content.removeFromTop (16);
 
-    subdivisionTableLabel.setBounds (area.removeFromTop (20));
-    subdivisionGrid.setBounds (area.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
-    area.removeFromTop (20);
+        triggerModeLabel.setBounds (content.removeFromTop (20));
+        triggerModeSegments.setBounds (content.removeFromTop (SegmentedButtonRow::preferredHeight));
+        content.removeFromTop (10);
+
+        auto clockReferenceRow = content.removeFromTop (30);
+        clockReferenceLabel.setBounds (clockReferenceRow.removeFromLeft (140));
+        clockReferenceSelector.setBounds (clockReferenceRow.removeFromLeft (150));
+        content.removeFromTop (10);
+
+        auto tapeStopScopeRow = content.removeFromTop (30);
+        tapeStopScopeLabel.setBounds (tapeStopScopeRow.removeFromLeft (140));
+        tapeStopScopeSelector.setBounds (tapeStopScopeRow.removeFromLeft (150));
+        content.removeFromTop (10);
+
+        auto filterSweepScopeRow = content.removeFromTop (30);
+        filterSweepScopeLabel.setBounds (filterSweepScopeRow.removeFromLeft (140));
+        filterSweepScopeSelector.setBounds (filterSweepScopeRow.removeFromLeft (150));
+        content.removeFromTop (10);
+
+        auto resetEveryRow = content.removeFromTop (30);
+        resetEveryLabel.setBounds (resetEveryRow.removeFromLeft (140));
+        resetEverySelector.setBounds (resetEveryRow.removeFromLeft (150));
+        content.removeFromTop (10);
+
+        subdivisionTableLabel.setBounds (content.removeFromTop (20));
+        subdivisionGrid.setBounds (content.removeFromTop (SubdivisionProbabilityGrid::getPreferredHeight()));
+    });
+
+    layoutSection (playbackStyleSectionPanel, [this] (juce::Rectangle<int>& content)
+    {
+        playbackStyleSegments.setBounds (content.removeFromTop (SegmentedButtonRow::preferredHeight));
+        content.removeFromTop (10);
+
+        playbackStyleLabel.setBounds (content.removeFromTop (20));
+        playbackStyleGrid.setBounds (content.removeFromTop (PlaybackStyleGrid::getPreferredHeight()));
+        content.removeFromTop (14);
+
+        playbackStyleParametersLabel.setBounds (content.removeFromTop (20));
+        playbackStyleParameterPanel.setBounds (content.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
+    });
+
+    return sacrificialHeight - area.getHeight(); // total consumed height, independent of startY (only position, not the height field, is offset by it)
+}
+
+int SlicerAudioProcessorEditor::layoutSequenceTab (int contentWidth, int startY)
+{
+    constexpr int sacrificialHeight = 4000;
+    juce::Rectangle<int> area (0, startY, contentWidth, sacrificialHeight);
 
     auto stepResolutionRow = area.removeFromTop (30);
     stepResolutionLabel.setBounds (stepResolutionRow.removeFromLeft (140));
@@ -847,10 +1024,8 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     sequencerGrid.setAvailableHeight (sequencerViewport.getHeight());
     area.removeFromTop (20);
 
-    // Pattern bank (MIDI input, Sequenced mode only) -- its own row, same
-    // pattern as every other Sequenced-only control above, rather than
-    // squeezed into sequencerRow where it'd fight sequencerViewport for
-    // width.
+    // Pattern bank (MIDI input) -- its own row, rather than squeezed into
+    // sequencerRow where it'd fight sequencerViewport for width.
     auto patternBankRow = area.removeFromTop (PatternBankPanel::getPreferredHeight());
     patternBankPanel.setBounds (patternBankRow.removeFromLeft (PatternBankPanel::preferredWidth));
     area.removeFromTop (20);
@@ -865,8 +1040,14 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     patternSwitchIntervalSelector.setBounds (patternSwitchIntervalRow.removeFromLeft (150));
     area.removeFromTop (10);
 
-    // Performance mode (Pass 1) -- own row/section, same reserved-space/
-    // hide pattern as every other mode-specific group above.
+    return sacrificialHeight - area.getHeight(); // total consumed height, independent of startY (only position, not the height field, is offset by it)
+}
+
+int SlicerAudioProcessorEditor::layoutPerformTab (int contentWidth, int startY)
+{
+    constexpr int sacrificialHeight = 4000;
+    juce::Rectangle<int> area (0, startY, contentWidth, sacrificialHeight);
+
     performanceStyleParametersLabel.setBounds (area.removeFromTop (20));
     performanceStyleParameterPanel.setBounds (area.removeFromTop (PlaybackStyleParameterPanel::getPreferredHeight()));
     area.removeFromTop (20);
@@ -877,8 +1058,7 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     performanceSyncToggle.setBounds (performanceToggleRow.removeFromLeft (100));
     area.removeFromTop (10);
 
-    // Trim Snap mode + its Grid-resolution picker -- same row shape as
-    // Pattern Switch Timing/Set Interval above.
+    // Trim Snap mode + its Grid-resolution picker.
     auto performanceTrimSnapRow = area.removeFromTop (30);
     performanceTrimSnapLabel.setBounds (performanceTrimSnapRow.removeFromLeft (140));
     performanceTrimSnapSelector.setBounds (performanceTrimSnapRow.removeFromLeft (150));
@@ -889,8 +1069,7 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     performanceTrimGridSelector.setBounds (performanceTrimGridRow.removeFromLeft (150));
     area.removeFromTop (10);
 
-    // Quantize Recall toggle + its own note-value picker -- same row shape
-    // as Trim Snap/Pattern Switch Timing above.
+    // Quantize Recall toggle + its own note-value picker.
     auto performanceQuantizeRecallRow = area.removeFromTop (24);
     performanceQuantizeRecallToggle.setBounds (performanceQuantizeRecallRow.removeFromLeft (150));
     area.removeFromTop (10);
@@ -904,15 +1083,22 @@ int SlicerAudioProcessorEditor::layoutControlsContent (int contentWidth)
     // keyboard needs the room to be usable.
     auto performanceKeyboardRow = area.removeFromTop (PerformanceKeyboardPanel::getPreferredHeight());
     performanceKeyboardPanel.setBounds (performanceKeyboardRow);
-    area.removeFromTop (20);
 
-    auto undoRedoRow = area.removeFromTop (30);
-    undoButton.setBounds (undoRedoRow.removeFromLeft (100));
-    undoRedoRow.removeFromLeft (10);
-    redoButton.setBounds (undoRedoRow.removeFromLeft (100));
-    area.removeFromTop (10);
+    return sacrificialHeight - area.getHeight(); // total consumed height, independent of startY (only position, not the height field, is offset by it)
+}
 
-    return sacrificialHeight - area.getHeight();
+int SlicerAudioProcessorEditor::layoutControlPlaceholder (int contentWidth, int startY)
+{
+    constexpr int height = 200;
+    controlPlaceholder.setBounds (0, startY, contentWidth, height);
+    return height;
+}
+
+int SlicerAudioProcessorEditor::layoutTexturesPlaceholder (int contentWidth, int startY)
+{
+    constexpr int height = 200;
+    texturesPlaceholder.setBounds (0, startY, contentWidth, height);
+    return height;
 }
 
 void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
@@ -1033,11 +1219,15 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
 
 void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
 {
-    const int selectedId = triggerModeSelector.getSelectedId();
-    const bool sliceLength = selectedId == 1;
-    const bool clock = selectedId == 2;
-    const bool sequenced = selectedId == 3;
-    const bool performance = selectedId == 4;
+    // Generate-page-only now (Pass 1) -- Sequenced/Performance's own
+    // controls moved to the Sequence/Perform tabs, gated by
+    // updateActiveTabVisibility() instead. Only called while Generate is
+    // actually the active tab (from updateActiveTabVisibility() itself, or
+    // from triggerModeSegments' own onSelectionChanged, which can only fire
+    // while that control is visible) -- no need to re-check that here.
+    const int selectedIndex = triggerModeSegments.getSelectedIndex();
+    const bool sliceLength = selectedIndex == 0;
+    const bool clock = selectedIndex == 1;
 
     clockReferenceLabel.setVisible (clock);
     clockReferenceSelector.setVisible (clock);
@@ -1049,76 +1239,9 @@ void SlicerAudioProcessorEditor::updateTriggerModeVisibility()
     subdivisionGrid.setVisible (clock);
 
     // Reset every (Step 34) — Slice Length mode only, since Clock mode
-    // already has its own window-boundary mechanism and Sequenced mode's
-    // step scheduling is host-ppq-driven the same way, needing no separate
-    // periodic resync.
+    // already has its own window-boundary mechanism.
     resetEveryLabel.setVisible (sliceLength);
     resetEverySelector.setVisible (sliceLength);
-
-    // Playback style (Step 37) — visible in Slice Length/Clock/Sequenced
-    // (Step 42 fix): it stays the same control, just its role shifts in
-    // Sequenced mode from "live per-note weighted pick" to "what Randomize
-    // Sequence draws each hit's style from" (see randomizeSequence()'s use
-    // of playbackStyleProbabilities). Hidden in Performance mode -- the
-    // probability engine this represents never runs there (Pass 1: one
-    // explicit style per state, no random pick).
-    playbackStyleLabel.setVisible (! performance);
-    playbackStyleGrid.setVisible (! performance);
-
-    // Playback Style parameter panel -- visible in Slice Length/Clock
-    // modes only. Hidden in Sequenced mode, which keeps its own per-step
-    // right-click editing on the grid instead (see SequencerGrid's doc
-    // comment); hidden in Performance mode, which uses its own separate
-    // instance (performanceStyleParameterPanel, below) pointed at its own
-    // independent working-state storage instead of the global default
-    // values this instance edits.
-    playbackStyleParametersLabel.setVisible (! sequenced && ! performance);
-    playbackStyleParameterPanel.setVisible (! sequenced && ! performance);
-
-    // Sequenced-only controls (Step 37/38/41).
-    stepResolutionLabel.setVisible (sequenced);
-    stepResolutionSelector.setVisible (sequenced);
-    patternLengthLabel.setVisible (sequenced);
-    patternLengthSelector.setVisible (sequenced);
-    randomizeSequenceButton.setVisible (sequenced);
-    clearSequenceButton.setVisible (sequenced);
-    playbackStylePalette.setVisible (sequenced);
-    sequencerViewport.setVisible (sequenced);
-    patternBankPanel.setVisible (sequenced);
-
-    // Pattern Switch Timing (Pass 2) -- the timing mode selector is visible
-    // whenever the pattern bank itself is (Sequenced mode); Set Interval's
-    // own note-value picker only additionally shows when that specific
-    // timing is the one selected.
-    patternSwitchTimingLabel.setVisible (sequenced);
-    patternSwitchTimingSelector.setVisible (sequenced);
-
-    const bool setInterval = sequenced
-        && patternSwitchTimingSelector.getSelectedId()
-               == static_cast<int> (SlicerAudioProcessor::PatternSwitchTiming::setInterval) + 1;
-    patternSwitchIntervalLabel.setVisible (setInterval);
-    patternSwitchIntervalSelector.setVisible (setInterval);
-
-    // Performance mode (Pass 1) -- own style/params panel, Loop/Sync
-    // toggles, and its own note-indexed bank (Immediate recall only, so no
-    // Pattern Switch Timing equivalent shown here).
-    performanceStyleParametersLabel.setVisible (performance);
-    performanceStyleParameterPanel.setVisible (performance);
-    performanceLoopToggle.setVisible (performance);
-    performanceSyncToggle.setVisible (performance);
-    performanceTrimSnapLabel.setVisible (performance);
-    performanceTrimSnapSelector.setVisible (performance);
-    performanceQuantizeRecallToggle.setVisible (performance);
-    performanceKeyboardPanel.setVisible (performance);
-
-    // Trim Snap's own Grid-resolution picker additionally depends on which
-    // snap mode is selected -- same "own function, called both here and
-    // from its selector's onChange" split Set Interval's picker above uses.
-    updatePerformanceTrimSnapVisibility();
-
-    // Quantize Recall's own note-value picker additionally depends on
-    // whether the toggle is on -- same split as Trim Snap's picker above.
-    updatePerformanceQuantizeRecallVisibility();
 }
 
 void SlicerAudioProcessorEditor::updateManualBpmOverrideVisibility()
@@ -1141,8 +1264,12 @@ void SlicerAudioProcessorEditor::updatePerformanceTrimSnapVisibility()
 {
     // Grid resolution only matters -- and is only shown -- while Performance
     // mode is the active trigger mode AND Grid is the selected Trim Snap
-    // mode; Transients needs no resolution picker at all.
-    const bool performance = triggerModeSelector.getSelectedId() == 4;
+    // mode; Transients needs no resolution picker at all. Reads
+    // processor.getTriggerMode() directly now (Pass 1) rather than a UI
+    // selector's index -- more robust than re-deriving "is Performance
+    // active" from tab state, and this control only exists (and this
+    // function is only called) while the Perform tab is actually showing it.
+    const bool performance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
     const bool grid = performanceTrimSnapSelector.getSelectedId() == 2;
 
     performanceTrimGridLabel.setVisible (performance && grid);
@@ -1154,7 +1281,7 @@ void SlicerAudioProcessorEditor::updatePerformanceQuantizeRecallVisibility()
     // Recall interval only matters -- and is only shown -- while Performance
     // mode is the active trigger mode AND Quantize Recall is switched on;
     // off needs no interval picker at all (immediate, unchanged behaviour).
-    const bool performance = triggerModeSelector.getSelectedId() == 4;
+    const bool performance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
     const bool quantized = performanceQuantizeRecallToggle.getToggleState();
 
     performanceQuantizeRecallIntervalLabel.setVisible (performance && quantized);
@@ -1163,9 +1290,9 @@ void SlicerAudioProcessorEditor::updatePerformanceQuantizeRecallVisibility()
 
 void SlicerAudioProcessorEditor::updatePitchModeVisibility()
 {
-    const int selectedId = pitchModeSelector.getSelectedId();
-    const bool repitch = selectedId == 1;
-    const bool timeStretch = selectedId == 2;
+    const int selectedIndex = pitchModeSegments.getSelectedIndex();
+    const bool repitch = selectedIndex == 0;
+    const bool timeStretch = selectedIndex == 1;
 
     beatQuantizeToggleRepitch.setVisible (repitch);
 
@@ -1176,6 +1303,94 @@ void SlicerAudioProcessorEditor::updatePitchModeVisibility()
     beatQuantizeToggle.setVisible (timeStretch);
     pitchShiftLabel.setVisible (timeStretch);
     pitchShiftSlider.setVisible (timeStretch);
+}
+
+void SlicerAudioProcessorEditor::updateActiveTabVisibility()
+{
+    const bool beats = topLevelModeTabs.getSelectedIndex() == 0;
+    const int subIndex = subModeTabs.getSelectedIndex();
+    const bool generateActive = beats && subIndex == 0;
+    const bool sequenceActive = beats && subIndex == 1;
+    const bool controlActive = beats && subIndex == 2;
+    const bool performActive = beats && subIndex == 3;
+
+    subModeTabs.setVisible (beats);
+    texturesPlaceholder.setVisible (! beats);
+    controlPlaceholder.setVisible (controlActive);
+
+    for (auto* c : generateComponents)
+        c->setVisible (generateActive);
+
+    if (generateActive)
+    {
+        // Fine-grained sub-visibility WITHIN Generate (Clock-only vs
+        // Slice-Length-only groups, Repitch vs Time-Stretch, Grid dropdown,
+        // BPM field) -- same functions this editor always had, just now
+        // run after the blanket show above rather than unconditionally.
+        updateTriggerModeVisibility();
+        updatePitchModeVisibility();
+        updateManualBpmOverrideVisibility();
+        updateQuantizeTransientsVisibility();
+    }
+
+    for (auto* c : sequenceComponents)
+        c->setVisible (sequenceActive);
+
+    if (sequenceActive)
+    {
+        const bool setInterval = patternSwitchTimingSelector.getSelectedId()
+            == static_cast<int> (SlicerAudioProcessor::PatternSwitchTiming::setInterval) + 1;
+        patternSwitchIntervalLabel.setVisible (setInterval);
+        patternSwitchIntervalSelector.setVisible (setInterval);
+    }
+
+    for (auto* c : performComponents)
+        c->setVisible (performActive);
+
+    if (performActive)
+    {
+        updatePerformanceTrimSnapVisibility();
+        updatePerformanceQuantizeRecallVisibility();
+    }
+}
+
+void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
+{
+    using TM = SlicerAudioProcessor::TriggerMode;
+
+    if (topLevelModeTabs.getSelectedIndex() != 0) // Textures: no trigger-mode implication
+        return;
+
+    const TM desired = subModeTabs.getSelectedIndex() == 1 ? TM::sequenced   // Sequence tab
+                      : subModeTabs.getSelectedIndex() == 3 ? TM::performance // Perform tab
+                                                             : lastGenerateTriggerMode; // Generate/Control
+
+    if (processor.getTriggerMode() == desired)
+        return; // guard: setTriggerMode() unconditionally resets clock/reset/sequenced/performance init flags even for a no-op mode
+
+    const bool wasPerformance = processor.getTriggerMode() == TM::performance;
+    processor.setTriggerMode (desired);
+
+    // Leaving Performance mode: Performance's own focus-change path
+    // deliberately raw-stores trim (see setFocusedPerformanceStateSlot()'s
+    // own doc comment) rather than rebuilding slices, so `slices` can be
+    // stale against wherever Performance mode left the trim. Force one
+    // rebuild here -- a one-off UI-thread action, not a hot path -- by
+    // re-invoking the existing public trim setter with the same value it
+    // already has, purely for its rebuild side effect (same fix the old
+    // old triggerModeSelector.onChange applied).
+    if (wasPerformance)
+        processor.setTrimEndSample (processor.getTrimEndSample(), false);
+
+    // Only refresh Generate's own Clock-only/Slice-Length-only sub-groups if
+    // Generate is actually the active tab right now -- updateTriggerModeVisibility()
+    // has no active-tab guard of its own (it trusts callers, same convention
+    // this editor always used), so calling it while e.g. the Sequence tab is
+    // active would incorrectly re-show Generate-only controls that
+    // updateActiveTabVisibility()'s blanket hide (called just before this,
+    // from both tab rows' onSelectionChanged) already turned off.
+    if (topLevelModeTabs.getSelectedIndex() == 0 && subModeTabs.getSelectedIndex() == 0)
+        updateTriggerModeVisibility();
 }
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()

@@ -53,6 +53,20 @@
             file="../Source/PerformanceKeyboardPanel.cpp"/>
       <FILE id="p2Xr6D" name="PerformanceKeyboardPanel.h" compile="0" resource="0"
             file="../Source/PerformanceKeyboardPanel.h"/>
+      <FILE id="q7Zm4T" name="NeditPalette.h" compile="0" resource="0"
+            file="../Source/NeditPalette.h"/>
+      <FILE id="r8An5U" name="SegmentedButtonRow.cpp" compile="1" resource="0"
+            file="../Source/SegmentedButtonRow.cpp"/>
+      <FILE id="s9Bo6V" name="SegmentedButtonRow.h" compile="0" resource="0"
+            file="../Source/SegmentedButtonRow.h"/>
+      <FILE id="t1Cp7W" name="RotaryKnob.cpp" compile="1" resource="0"
+            file="../Source/RotaryKnob.cpp"/>
+      <FILE id="u2Dq8X" name="RotaryKnob.h" compile="0" resource="0"
+            file="../Source/RotaryKnob.h"/>
+      <FILE id="v3Er9Y" name="SectionPanel.cpp" compile="1" resource="0"
+            file="../Source/SectionPanel.cpp"/>
+      <FILE id="w4Fs1Z" name="SectionPanel.h" compile="0" resource="0"
+            file="../Source/SectionPanel.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

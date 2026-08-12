@@ -10,6 +10,10 @@
 #include "PlaybackStyleParameterPanel.h"
 #include "PatternBankPanel.h"
 #include "PerformanceKeyboardPanel.h"
+#include "NeditPalette.h"
+#include "SegmentedButtonRow.h"
+#include "RotaryKnob.h"
+#include "SectionPanel.h"
 
 //==============================================================================
 /** Step-41 editor: load button, reset-edits safety net, undo/redo, an
@@ -116,7 +120,46 @@ private:
     void updateQuantizeTransientsVisibility(); // shows/hides the Grid dropdown
     void updatePerformanceTrimSnapVisibility(); // shows/hides the Trim Snap Grid-resolution dropdown
     void updatePerformanceQuantizeRecallVisibility(); // shows/hides the Quantize Recall note-value dropdown
-    int layoutControlsContent (int contentWidth); // lays out every control below; returns the total height they need
+    int layoutControlsContent (int contentWidth); // dispatches to whichever tab is active below; returns the total height it needs
+
+    // Pass 1 tab structure -- lays out ONLY the active tab's controls,
+    // starting at local y == startY (below the tab row(s), which
+    // layoutControlsContent() itself positions). All other tabs' controls
+    // keep whatever bounds they last had, but stay invisible via
+    // updateActiveTabVisibility() below, so stale bounds are harmless. Each
+    // returns the total height its own content needs (not including
+    // startY), same contract layoutControlsContent() itself always had.
+    int layoutGenerateTab (int contentWidth, int startY);
+    int layoutSequenceTab (int contentWidth, int startY); // existing Sequenced-mode flow, extracted verbatim
+    int layoutPerformTab (int contentWidth, int startY); // existing Performance-mode flow, extracted verbatim
+    int layoutControlPlaceholder (int contentWidth, int startY);
+    int layoutTexturesPlaceholder (int contentWidth, int startY);
+
+    // Absolute (controlsContent-local) content rect for a SectionPanel
+    // that's already had setBounds() called -- title bar trimmed, standard
+    // padding applied, same math as SectionPanel::getContentArea() but
+    // translated into controlsContent's coordinate space (children of a
+    // SectionPanel's content stay direct children of controlsContent, not
+    // of the panel itself -- see SectionPanel's own class doc comment).
+    static juce::Rectangle<int> sectionContentArea (const SectionPanel& panel);
+
+    // Shows/hides every top-level page (5 Generate sections, Sequence's
+    // controls, Perform's controls, Control/Textures placeholders) based on
+    // topLevelModeTabs/subModeTabs' current selection -- the tab-driven
+    // analogue of updateTriggerModeVisibility()'s mode-driven show/hide,
+    // called whenever either tab row changes.
+    void updateActiveTabVisibility();
+
+    // Maps the active tab combination onto processor.setTriggerMode() --
+    // Sequence tab -> sequenced, Perform tab -> performance, Generate/Control
+    // -> whichever of Slice Length/Clock Generate's own Trigger Mode row last
+    // selected. Guards against calling setTriggerMode() with the mode it's
+    // already in, since that method unconditionally resets clock/reset/
+    // sequenced/performance init flags and MIDI-learn state even for a
+    // same-mode call (see SlicerAudioProcessor::setTriggerMode()'s own doc
+    // comment) -- every tab-driven mode change must go through this, never
+    // call processor.setTriggerMode() directly from a tab callback.
+    void syncTriggerModeToActiveTab();
 
     SlicerAudioProcessor& processor;
 
@@ -130,6 +173,67 @@ private:
     juce::Viewport controlsViewport;
     juce::Component controlsContent;
     static constexpr int controlsViewportHeight = 420;
+
+    // Applies the Tungsten/Salmon palette to every ComboBox/ToggleButton/
+    // TextButton/Label/Slider still using its native JUCE widget type this
+    // pass -- scoped to controlsContent only (see NeditPalette::LookAndFeel's
+    // own doc comment for why), applied once in the constructor.
+    NeditPalette::LookAndFeel neditLookAndFeel;
+
+    // Pass 1 tab structure: top-level Beats/Textures, and beneath it (only
+    // while Beats is selected) Generate/Sequence/Control/Perform. Both rows
+    // reuse SegmentedButtonRow directly rather than a separate TabBar class
+    // -- a tab bar is exactly that component's use case (mutually exclusive,
+    // click-to-select, get/set index for poll-and-resync). Only Generate has
+    // real content this pass; Sequence/Perform keep their existing controls
+    // (unstyled, just regated onto tab visibility instead of triggerMode);
+    // Control/Textures are trivial placeholders.
+    SegmentedButtonRow topLevelModeTabs; // "Beats" / "Textures"
+    SegmentedButtonRow subModeTabs; // "Generate" / "Sequence" / "Control" / "Perform"
+
+    // Remembers which of Slice Length/Clock Generate's own Trigger Mode row
+    // last selected -- processor.getTriggerMode() gets forced to sequenced/
+    // performance while the Sequence/Perform tabs are active (see
+    // syncTriggerModeToActiveTab()), so returning to the Generate tab needs
+    // this to restore the right mode rather than always defaulting back to
+    // Slice Length.
+    SlicerAudioProcessor::TriggerMode lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::sliceLength;
+
+    // Generate page's 5 labelled, visually grouped sections (Pass 1) -- pure
+    // visual backdrops; the real controls below stay direct children of
+    // controlsContent, positioned inside each panel's getContentArea() by
+    // layoutGenerateTab() (see SectionPanel's own class doc comment for why
+    // it doesn't own/reparent them).
+    SectionPanel sampleSectionPanel { "Sample" };
+    SectionPanel trimTempoSectionPanel { "Trim & Tempo" };
+    SectionPanel detectionSectionPanel { "Detection" };
+    SectionPanel engineSectionPanel { "Engine" };
+    SectionPanel playbackStyleSectionPanel { "Playback Style" };
+
+    // Trivial stub placeholders (Pass 1) -- Beats>Control has no existing
+    // content to migrate yet; Textures' engine doesn't exist at all yet.
+    // Both get real custom-painted content in a later pass.
+    struct ComingSoonPanel : public juce::Component
+    {
+        explicit ComingSoonPanel (juce::String text) : message (std::move (text)) {}
+        void paint (juce::Graphics& g) override;
+        juce::String message;
+    };
+    ComingSoonPanel controlPlaceholder { "Control - coming soon" };
+    ComingSoonPanel texturesPlaceholder { "Textures - coming soon" };
+
+    // Every component that belongs to Generate/Sequence/Perform respectively
+    // -- populated once in the constructor (after all three are fully
+    // constructed) and used purely for blanket setVisible() in
+    // updateActiveTabVisibility(), so leaving a tab doesn't require
+    // remembering to individually hide each of its controls one by one.
+    // Fine-grained sub-visibility WITHIN an active tab (Clock-only controls,
+    // Set Interval's own picker, etc.) is still handled by the existing
+    // updateTriggerModeVisibility()/updatePitchModeVisibility()/etc.
+    // functions, called after the blanket show.
+    std::vector<juce::Component*> generateComponents;
+    std::vector<juce::Component*> sequenceComponents;
+    std::vector<juce::Component*> performComponents;
 
     juce::TextButton loadButton { "Load Sample..." };
     juce::TextButton resetEditsButton { "Reset edits" };
@@ -148,7 +252,7 @@ private:
     juce::TextButton auditionButton { "Audition" };
 
     juce::Label loopLengthLabel;
-    juce::Slider loopLengthSlider; // integer bars, e.g. 1-8
+    RotaryKnob loopLengthKnob; // integer bars, e.g. 1-8 -- custom-painted, replaces the old IncDecButtons-style juce::Slider (Pass 1)
     juce::Label calculatedBpmLabel;
 
     // Loop length staleness flag (Step 33) — Loop Length (bars) drives the
@@ -159,7 +263,7 @@ private:
     // the right value), so instead this makes the now-possibly-wrong
     // value impossible to miss: set true whenever waveformDisplay reports
     // an actual trim change, cleared the moment the user acknowledges by
-    // touching loopLengthSlider at all (even re-entering the same value —
+    // touching loopLengthKnob at all (even re-entering the same value —
     // the point is acknowledgment, not a real change). Purely a
     // visibility aid; doesn't affect any tempo/audio calculation itself.
     bool loopLengthNeedsAttention = false;
@@ -173,7 +277,7 @@ private:
     juce::Slider manualBpmOverrideSlider;
 
     juce::Label pitchModeLabel;
-    juce::ComboBox pitchModeSelector; // "Repitch" / "Time-Stretch"
+    SegmentedButtonRow pitchModeSegments; // "Repitch" / "Time-Stretch" -- custom-painted, replaces the old juce::ComboBox (Pass 1)
 
     // Beat-quantized slice length — Repitch mode (Step 26). Same label and
     // concept as the Time-Stretch toggle below, but its own separate
@@ -203,7 +307,7 @@ private:
     juce::Slider pitchShiftSlider; // semitones, -24 to +24
 
     juce::Label sensitivityLabel;
-    juce::Slider sensitivitySlider;
+    RotaryKnob sensitivityKnob; // custom-painted, replaces the old juce::Slider (Pass 1)
 
     // Quantize detected transients to grid (Step 35) — auto-detected
     // transients only, never manual points (see PluginProcessor.h's
@@ -220,13 +324,27 @@ private:
     juce::Slider fadeOutSlider;
 
     juce::Label triggerModeLabel;
-    juce::ComboBox triggerModeSelector; // "Slice Length" / "Clock"
+    // "Slice Length" / "Clock" / "Sequenced" -- custom-painted, replaces the
+    // old juce::ComboBox (Pass 1). Performance is no longer offered here at
+    // all -- it's reached only via the top-level Perform tab now (see
+    // subModeTabs below and syncTriggerModeToActiveTab()).
+    SegmentedButtonRow triggerModeSegments;
 
     // Playback style (Step 19/21) — visible in both Slice Length and Clock
     // modes, unlike the Clock-only controls below: it's rolled once per
     // pick in Slice Length mode too, not just once per Clock window.
     // Hidden in Sequenced mode (Step 37) — deliberately deferred there,
     // see SequencerGrid's doc comment.
+    // Which style's PARAMETERS are currently shown in
+    // playbackStyleParameterPanel below (Pass 1) -- purely a UI navigation
+    // concept, independent of playbackStyleGrid's own per-style trigger
+    // probability weights just below (not mutually exclusive -- multiple
+    // styles can have nonzero probability at once, so that control can't
+    // become this segmented row itself). Coloured per-style via
+    // PlaybackStylePalette::getStyleColour() so the two rows read as two
+    // views onto the same 9 styles.
+    SegmentedButtonRow playbackStyleSegments;
+
     juce::Label playbackStyleLabel;
     PlaybackStyleGrid playbackStyleGrid;
 
