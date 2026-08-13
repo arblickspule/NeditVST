@@ -129,3 +129,66 @@ target_link_libraries(NeditVST
         juce::juce_gui_basics
         juce::juce_gui_extra
 )
+
+# --- Unit tests (doctest) -----------------------------------------------------
+# A separate console executable that compiles the non-UI engine/model sources
+# directly against JUCE -- no plugin client, no GUI -- so the DSP and model
+# logic can be exercised headlessly and runnable from ctest.
+FetchContent_Declare(
+    doctest
+    GIT_REPOSITORY https://github.com/doctest/doctest.git
+    GIT_TAG v2.4.11
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(doctest)
+
+enable_testing()
+
+# juce_add_console_app (not plain add_executable) so the target gets the
+# generated-sources dir juce_generate_juce_header() below requires.
+juce_add_console_app(NeditVST_tests)
+
+target_sources(NeditVST_tests
+    PRIVATE
+    tests/test_main.cpp
+    tests/test_smoke.cpp
+    tests/test_engine_statics.cpp
+    tests/test_model_tempo.cpp
+    Source/SlicerModel.cpp
+    Source/SlicerModel.h
+    Source/SlicerEngine.cpp
+    Source/SlicerEngine.h
+    Source/TransientDetector.cpp
+    Source/TransientDetector.h
+    Source/GranularStretcher.cpp
+    Source/GranularStretcher.h
+    Source/EasingCurve.h
+)
+
+# SlicerModel/SlicerEngine/TransientDetector reference no GUI or plugin-client
+# code (AudioPlayHead comes from juce_audio_processors, which is linkable
+# standalone without the VST3 client juce_add_plugin wires up for the plugin).
+target_link_libraries(NeditVST_tests
+    PRIVATE
+        juce::juce_audio_basics
+        juce::juce_audio_formats
+        juce::juce_audio_processors
+        juce::juce_core
+        juce::juce_data_structures
+        juce::juce_dsp
+        juce::juce_events
+        doctest::doctest
+)
+
+# Generates the <JuceHeader.h> the model/engine includes, configured for the
+# module set linked above (same macro the plugin target uses).
+juce_generate_juce_header(NeditVST_tests)
+
+# The model/engine include each other by bare filename, so the source dir has
+# to be on the test target's include path too.
+target_include_directories(NeditVST_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
+)
+
+add_test(NAME NeditVST_tests COMMAND NeditVST_tests)

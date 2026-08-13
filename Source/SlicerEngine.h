@@ -67,6 +67,12 @@ private:
     // Moved verbatim from SlicerAudioProcessor's private section (Phase 2):
     // audio-thread helper declarations + all per-pick/effect/scheduling/
     // debug state. Callers of the MIDI handlers etc. hold model.sampleLock.
+
+public:
+    // Pure helper functions -- exposed for unit testing (Phase 3). The UI
+    // and processBlock() both depend on this math, so it gets direct
+    // coverage rather than only indirect smoke coverage; these are
+    // read-only and safe to call from any thread.
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
     // and stalling). Used for both slice selection and, in Clock mode,
@@ -166,6 +172,7 @@ private:
     static double computeScratchCycleLengthHostSamples (int rateIndex, int sliceLength,
                                                           double hostBpm, double hostSampleRate, double playbackRate);
 
+private:
     // Sequenced Trigger Mode (Step 37) -- clears the pattern to all-off,
     // sized to the CURRENT grid dimensions (getSequencerNumRows()/
     // getSequencerNumSteps()). Called whenever either dimension changes:
