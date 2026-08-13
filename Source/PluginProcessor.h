@@ -4,6 +4,7 @@
 #include "TransientDetector.h"
 #include "GranularStretcher.h"
 #include "EasingCurve.h"
+#include "SlicerModel.h"
 #include <array>
 #include <map>
 #include <vector>
@@ -13,7 +14,7 @@
 // recall in Sequenced mode (see the MIDI input / Pattern bank section below).
 //
 // How it works (Step 8 revision — self-chaining weighted playback):
-//   - The loaded sample is treated as `loopLengthBars` bars long (set by the
+//   - The loaded sample is treated as `model.loopLengthBars` bars long (set by the
 //     user). That, plus the sample's actual length, gives us its original
 //     tempo, which is repitched (varispeed — pitch follows speed) to match
 //     whatever tempo the host is running at.
@@ -38,6 +39,9 @@ class SlicerAudioProcessor : public juce::AudioProcessor
 public:
     SlicerAudioProcessor();
     ~SlicerAudioProcessor() override;
+
+    // Shared audio state + model.sampleLock, moved to SlicerModel (Phase 1).
+    SlicerModel model;
 
     //=== Standard AudioProcessor overrides ===
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
@@ -64,21 +68,21 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     //=== Sample loading (called from the editor) ===
-    void loadSample (const juce::File& file);
-    bool hasSample() const { return sampleLoaded; }
-    juce::String getLoadedFileName() const { return loadedFileName; }
-    const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
+    void loadSample (const juce::File& file) { model.loadSample (file); }
+    bool hasSample() const { return model.sampleLoaded; }
+    juce::String getLoadedFileName() const { return model.loadedFileName; }
+    const juce::AudioBuffer<float>& getSampleBuffer() const { return model.sampleBuffer; }
 
     // The loaded sample's own sample rate (not the host's) — needed by
     // WaveformDisplay's zoom (Step 31) to convert a minimum-zoom duration
     // in milliseconds into source samples.
-    double getSampleSampleRate() const { return sampleSampleRate; }
+    double getSampleSampleRate() const { return model.sampleSampleRate; }
 
     //=== Slicing ===
-    void redetectSlices (float sensitivity, float holdoffMs);
-    int getNumSlices() const { return (int) slices.size(); }
-    Slice getSlice (int index) const { return slices[(size_t) index]; }
-    const std::vector<Slice>& getSlices() const { return slices; }
+    void redetectSlices (float sensitivity, float holdoffMs) { model.redetectSlices (sensitivity, holdoffMs); }
+    int getNumSlices() const { return (int) model.slices.size(); }
+    Slice getSlice (int index) const { return model.slices[(size_t) index]; }
+    const std::vector<Slice>& getSlices() const { return model.slices; }
 
     // Live sensitivity control — was hardcoded until now. Re-runs detection
     // immediately (cheap, since TransientDetector caches the expensive
@@ -86,11 +90,11 @@ public:
     // as any other re-slice, since the slice boundaries themselves change.
     void setSensitivityAndRedetect (float sensitivity)
     {
-        currentSensitivity.store (juce::jlimit (0.0f, 1.0f, sensitivity));
-        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+        model.currentSensitivity.store (juce::jlimit (0.0f, 1.0f, sensitivity));
+        model.redetectSlices (model.currentSensitivity.load(), model.computeMinimumHoldoffMs());
     }
 
-    float getSensitivity() const { return currentSensitivity.load(); }
+    float getSensitivity() const { return model.currentSensitivity.load(); }
 
     //=== Quantize detected transients to grid (Step 35) ===
     // Auto-detected transients only -- manual points are deliberately
@@ -114,19 +118,19 @@ public:
     // above), since this changes the actual slice boundaries.
     void setQuantizeTransientsEnabled (bool enabled)
     {
-        quantizeTransientsEnabled.store (enabled);
-        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+        model.quantizeTransientsEnabled.store (enabled);
+        model.redetectSlices (model.currentSensitivity.load(), model.computeMinimumHoldoffMs());
     }
 
-    bool getQuantizeTransientsEnabled() const { return quantizeTransientsEnabled.load(); }
+    bool getQuantizeTransientsEnabled() const { return model.quantizeTransientsEnabled.load(); }
 
     void setQuantizeGridIndex (int index)
     {
-        quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
-        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+        model.quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        model.redetectSlices (model.currentSensitivity.load(), model.computeMinimumHoldoffMs());
     }
 
-    int getQuantizeGridIndex() const { return quantizeGridIndex.load(); }
+    int getQuantizeGridIndex() const { return model.quantizeGridIndex.load(); }
 
     //=== Trim Snap mode (Performance mode's per-state trims only) ===
     // Governs what setTrimStartSample()/setTrimEndSample() snap TO when
@@ -135,15 +139,15 @@ public:
     // (default) is the existing behaviour, used everywhere including here
     // unless Grid is explicitly selected. Grid ignores detected transients
     // altogether and instead snaps to a FIXED musical grid, spaced by
-    // performanceTrimGridIndex's note value at the sample's already-
+    // model.performanceTrimGridIndex's note value at the sample's already-
     // established tempo (getCalculatedOriginalBpm()) -- see
     // findNearestGridSample() for exactly how. Only consulted while
     // TriggerMode::performance is active; Slice Length/Clock modes' shared
     // global trim always uses Transients, regardless of this setting.
-    enum class TrimSnapMode { transients, grid };
+    using TrimSnapMode = SlicerModel::TrimSnapMode;
 
-    void setPerformanceTrimSnapMode (TrimSnapMode mode) { performanceTrimSnapMode.store (mode); }
-    TrimSnapMode getPerformanceTrimSnapMode() const { return performanceTrimSnapMode.load(); }
+    void setPerformanceTrimSnapMode (TrimSnapMode mode) { model.performanceTrimSnapMode.store (mode); }
+    TrimSnapMode getPerformanceTrimSnapMode() const { return model.performanceTrimSnapMode.load(); }
 
     // Grid resolution -- same 20-value note-value palette as Clock
     // reference/Quantize Transients' Grid/Subdivide (getNoteValueName()/
@@ -152,10 +156,10 @@ public:
     // control here uses.
     void setPerformanceTrimGridIndex (int index)
     {
-        performanceTrimGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        model.performanceTrimGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
     }
 
-    int getPerformanceTrimGridIndex() const { return performanceTrimGridIndex.load(); }
+    int getPerformanceTrimGridIndex() const { return model.performanceTrimGridIndex.load(); }
 
     //=== Trim markers (Step 23/25) ===
     // Two independent boundaries, in source-sample units, confining
@@ -171,15 +175,15 @@ public:
     // (manual or auto) that now falls outside the new range.
     //
     // One exception: the sample's established TEMPO no longer reads these
-    // atomics directly -- see tempoTrimStartSample's own comment. Performance
-    // mode repoints trimStartSample/trimEndSample at whichever state slot has
+    // atomics directly -- see model.tempoTrimStartSample's own comment. Performance
+    // mode repoints model.trimStartSample/model.trimEndSample at whichever state slot has
     // editing focus (still the right atomics for detection/manual
-    // points/"what's playing right now"), while tempoTrimStartSample/
-    // tempoTrimEndSample stay pinned to the last REAL trim edit, so per-state
+    // points/"what's playing right now"), while model.tempoTrimStartSample/
+    // model.tempoTrimEndSample stay pinned to the last REAL trim edit, so per-state
     // playback rate keeps measuring against one stable tempo instead of
     // whichever slot you last clicked.
-    int getTrimStartSample() const { return trimStartSample.load(); }
-    int getTrimEndSample() const { return trimEndSample.load(); }
+    int getTrimStartSample() const { return model.trimStartSample.load(); }
+    int getTrimEndSample() const { return model.trimEndSample.load(); }
 
     // Snapping (Step 25) reuses the exact same mechanism manual slice
     // points already use — TransientDetector::findNearestPeak, with Shift
@@ -196,59 +200,59 @@ public:
     // boundary.
     //
     // Trim Snap mode: while snapToTransient is true AND Performance mode is
-    // active AND performanceTrimSnapMode is Grid, findNearestGridSample()
+    // active AND model.performanceTrimSnapMode is Grid, findNearestGridSample()
     // replaces the transient search entirely (not layered alongside it) —
     // see its own comment. Outside those conditions (any other trigger
     // mode, or Performance mode still on Transients) behaviour is exactly
     // as before.
     void setTrimStartSample (int sample, bool snapToTransient = true)
     {
-        const int currentEnd = trimEndSample.load();
-        const int upperBound = juce::jmax (0, currentEnd - minTrimGapSamples); // guards tiny/degenerate buffers
+        const int currentEnd = model.trimEndSample.load();
+        const int upperBound = juce::jmax (0, currentEnd - model.minTrimGapSamples); // guards tiny/degenerate buffers
         int target = juce::jlimit (0, upperBound, sample);
 
         if (snapToTransient)
         {
-            target = juce::jlimit (0, upperBound, shouldGridSnapTrim()
-                ? findNearestGridSample (target)
-                : transientDetector.findNearestPeak (target, (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate)));
+            target = juce::jlimit (0, upperBound, model.shouldGridSnapTrim()
+                ? model.findNearestGridSample (target)
+                : model.transientDetector.findNearestPeak (target, (int) (model.manualSnapRadiusMs / 1000.0f * (float) model.sampleSampleRate)));
         }
 
-        trimStartSample.store (target);
+        model.trimStartSample.store (target);
 
         // Performance mode reuses these same atomics to edit whichever
         // state slot currently has focus (its own, generally much shorter,
         // segment) -- that's never a real change to the sample's
         // established tempo, so the tempo-trim copy sits this one out. See
-        // tempoTrimStartSample's own comment for why this distinction
+        // model.tempoTrimStartSample's own comment for why this distinction
         // exists at all.
-        if (triggerMode.load() != TriggerMode::performance)
-            tempoTrimStartSample.store (target);
+        if (model.triggerMode.load() != TriggerMode::performance)
+            model.tempoTrimStartSample.store (target);
 
-        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
+        model.rebuildSlicesFromDetectionAndManualPoints (model.currentSensitivity.load(), model.computeMinimumHoldoffMs());
     }
 
     void setTrimEndSample (int sample, bool snapToTransient = true)
     {
-        const int currentStart = trimStartSample.load();
-        const int bufferLength = sampleBuffer.getNumSamples();
-        const int lowerBound = juce::jmin (currentStart + minTrimGapSamples, bufferLength); // guards tiny/degenerate buffers
+        const int currentStart = model.trimStartSample.load();
+        const int bufferLength = model.sampleBuffer.getNumSamples();
+        const int lowerBound = juce::jmin (currentStart + model.minTrimGapSamples, bufferLength); // guards tiny/degenerate buffers
         int target = juce::jlimit (lowerBound, bufferLength, sample);
 
         if (snapToTransient)
         {
-            target = juce::jlimit (lowerBound, bufferLength, shouldGridSnapTrim()
-                ? findNearestGridSample (target)
-                : transientDetector.findNearestPeak (target, (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate)));
+            target = juce::jlimit (lowerBound, bufferLength, model.shouldGridSnapTrim()
+                ? model.findNearestGridSample (target)
+                : model.transientDetector.findNearestPeak (target, (int) (model.manualSnapRadiusMs / 1000.0f * (float) model.sampleSampleRate)));
         }
 
-        trimEndSample.store (target);
+        model.trimEndSample.store (target);
 
         // See setTrimStartSample() above -- same reasoning, same guard.
-        if (triggerMode.load() != TriggerMode::performance)
-            tempoTrimEndSample.store (target);
+        if (model.triggerMode.load() != TriggerMode::performance)
+            model.tempoTrimEndSample.store (target);
 
-        rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
+        model.rebuildSlicesFromDetectionAndManualPoints (model.currentSensitivity.load(), model.computeMinimumHoldoffMs());
     }
 
     //=== Audition (Step 25) ===
@@ -265,26 +269,26 @@ public:
     // about sync — and auto-stops the instant host transport starts
     // playing, so audition and the real engine never talk over each
     // other. Click Audition again to stop manually if the transport isn't
-    // running. See processBlock()'s auditionActive check, which runs
+    // running. See processBlock()'s model.auditionActive check, which runs
     // before (and instead of) everything below it.
     void setAuditionActive (bool active)
     {
-        const juce::ScopedLock sl (sampleLock); // guards auditionPosition, same lock processBlock uses
+        const juce::ScopedLock sl (model.sampleLock); // guards model.auditionPosition, same lock processBlock uses
 
         if (active)
         {
-            auditionPosition = (double) trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
-            auditionPlaybackPositionForUI.store (trimStartSample.load()); // immediate UI feedback, rather than waiting for the first rendered block
+            model.auditionPosition = (double) model.trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
+            model.auditionPlaybackPositionForUI.store (model.trimStartSample.load()); // immediate UI feedback, rather than waiting for the first rendered block
         }
         else
         {
-            auditionPlaybackPositionForUI.store (-1);
+            model.auditionPlaybackPositionForUI.store (-1);
         }
 
-        auditionActive.store (active);
+        model.auditionActive.store (active);
     }
 
-    bool getAuditionActive() const { return auditionActive.load(); }
+    bool getAuditionActive() const { return model.auditionActive.load(); }
 
     //=== Audition playhead (Step 28) ===
     // Lock-free copy of the audition engine's current read position, for
@@ -294,7 +298,7 @@ public:
     // and also set whenever audition stops — manually or auto-stopped by
     // host transport starting, per setAuditionActive()/processBlock()).
     // Written every block by renderAudition() while it's running.
-    int getAuditionPlaybackPosition() const { return auditionPlaybackPositionForUI.load(); }
+    int getAuditionPlaybackPosition() const { return model.auditionPlaybackPositionForUI.load(); }
 
     // Live preview (Step 12): shows what detection WOULD produce at a
     // given sensitivity — merged with the current manual/excluded points,
@@ -302,27 +306,23 @@ public:
     // (no probability reset, no interrupting the current pick, not added
     // to undo history). Safe to call repeatedly while a slider is being
     // dragged; the real commit only happens via setSensitivityAndRedetect().
-    std::vector<Slice> previewSlicesAtSensitivity (float sensitivity) const;
+    std::vector<Slice> previewSlicesAtSensitivity (float sensitivity) const { return model.previewSlicesAtSensitivity (sensitivity); }
 
     //=== Manual slice points (Step 10) ===
     // User-placed slice boundaries, layered on top of whatever the
-    // detector finds automatically. Unlike auto-detected slices, these
+    // detector finds automatically. Unlike auto-detected model.slices, these
     // survive a sensitivity change — redetection only regenerates the
     // auto side and re-merges it with whatever manual points already
     // exist. Each point snaps to the nearest real transient-like peak in
     // the cached derivative curve (via TransientDetector::findNearestPeak),
     // even one below the current sensitivity threshold.
-    struct ManualPointInfo
-    {
-        int id = -1;
-        int samplePosition = 0;
-    };
+    using ManualPointInfo = SlicerModel::ManualPointInfo;
 
     // Adds a new manual point near targetSample. Snaps to the nearest
     // real transient-like peak by default; pass snapToTransient = false
     // (Shift held) to place it at the exact position instead. Returns its
     // stable id, used later to move or remove it.
-    int addManualSlicePoint (int targetSample, bool snapToTransient = true);
+    int addManualSlicePoint (int targetSample, bool snapToTransient = true) { return model.addManualSlicePoint (targetSample, snapToTransient); }
 
     // Moves an existing manual point (by id) to a new target. Snaps by
     // default; pass snapToTransient = false (Shift held) for free
@@ -331,21 +331,21 @@ public:
     // don't want one undo step per pixel. Call commitManualPointMove()
     // once, at drag-end, to record the whole drag as a single undoable
     // step.
-    void moveManualSlicePoint (int id, int targetSample, bool snapToTransient = true);
+    void moveManualSlicePoint (int id, int targetSample, bool snapToTransient = true) { model.moveManualSlicePoint (id, targetSample, snapToTransient); }
 
     // Records a completed drag (from originalSamplePosition to wherever
     // the point currently is) as one undo step. Call this on mouse-up.
-    void commitManualPointMove (int id, int originalSamplePosition);
+    void commitManualPointMove (int id, int originalSamplePosition) { model.commitManualPointMove (id, originalSamplePosition); }
 
-    void removeManualSlicePoint (int id);
+    void removeManualSlicePoint (int id) { model.removeManualSlicePoint (id); }
 
     std::vector<ManualPointInfo> getManualSlicePoints() const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
         std::vector<ManualPointInfo> result;
-        result.reserve (manualPoints.size());
+        result.reserve (model.manualPoints.size());
 
-        for (const auto& mp : manualPoints)
+        for (const auto& mp : model.manualPoints)
             result.push_back ({ mp.id, mp.samplePosition });
 
         return result;
@@ -359,18 +359,18 @@ public:
     // sample or two doesn't silently un-exclude it. Position 0 (the very
     // start of the sample) can never be excluded. Returns the new
     // exclusion's id, or -1 if there was nothing nearby to exclude.
-    int excludeNearestAutoPoint (int targetSample);
+    int excludeNearestAutoPoint (int targetSample) { return model.excludeNearestAutoPoint (targetSample); }
 
     // Un-deletes a single excluded point.
-    void restoreExcludedPoint (int id);
+    void restoreExcludedPoint (int id) { model.restoreExcludedPoint (id); }
 
     std::vector<ManualPointInfo> getExcludedPoints() const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
         std::vector<ManualPointInfo> result;
-        result.reserve (excludedPoints.size());
+        result.reserve (model.excludedPoints.size());
 
-        for (const auto& ep : excludedPoints)
+        for (const auto& ep : model.excludedPoints)
             result.push_back ({ ep.id, ep.samplePosition });
 
         return result;
@@ -380,7 +380,7 @@ public:
     // go, back to exactly what the detector alone would produce at the
     // current sensitivity. Undo-tracked like everything else in this
     // section — one Undo click brings it all back if this was a mistake.
-    void resetAllManualEdits();
+    void resetAllManualEdits () { model.resetAllManualEdits (); }
 
     //=== Undo/redo (Step 12) ===
     // Covers manual point add/move/remove and auto-point exclude/restore
@@ -389,23 +389,22 @@ public:
     // sliders, loop length, or fades — those are continuous parameters,
     // not discrete "actions," and including them would flood the history
     // with noise from every pixel of a drag.
-    bool undoLastEdit() { return undoManager.undo(); }
-    bool redoLastEdit() { return undoManager.redo(); }
-    bool canUndoEdit() const { return undoManager.canUndo(); }
-    bool canRedoEdit() const { return undoManager.canRedo(); }
+    bool undoLastEdit() { return model.undoManager.undo(); }
+    bool redoLastEdit() { return model.undoManager.redo(); }
+    bool canUndoEdit() const { return model.undoManager.canUndo(); }
+    bool canRedoEdit() const { return model.undoManager.canRedo(); }
 
     // Overwrites manual + excluded point state wholesale and rebuilds —
     // the one place all undo/redo actions actually apply a snapshot.
     // Public because the undo action objects (defined in the .cpp) need
     // to call it; not intended to be called directly from the UI.
-    void applyManualState (const std::vector<ManualPointInfo>& manual,
-                            const std::vector<ManualPointInfo>& excluded);
+    void applyManualState (const std::vector<ManualPointInfo>& manual, const std::vector<ManualPointInfo>& excluded) { model.applyManualState (manual, excluded); }
 
     //=== Currently-playing slice (Step 11) ===
     // For UI highlighting — which slice is sounding right now, updated by
     // the audio thread every time a new pick begins. -1 when nothing's
     // playing (including whenever the transport is stopped).
-    int getCurrentlyPlayingSliceIndex() const { return currentlyPlayingSliceIndexForUI.load(); }
+    int getCurrentlyPlayingSliceIndex() const { return model.currentlyPlayingSliceIndexForUI.load(); }
 
     //=== Loop length / tempo sync ===
     // How many bars (assumed 4/4) the loaded sample represents. This is
@@ -413,17 +412,17 @@ public:
     // much to repitch it to match the host.
     void setLoopLengthBars (int bars)
     {
-        loopLengthBars.store (juce::jmax (1, bars));
+        model.loopLengthBars.store (juce::jmax (1, bars));
 
         // Sequenced Trigger Mode (Step 37): column count is derived from
-        // loopLengthBars, so any change here invalidates the existing
+        // model.loopLengthBars, so any change here invalidates the existing
         // pattern's meaning -- same "reset on rebuild" convention
-        // sliceProbabilities already uses.
-        const juce::ScopedLock sl (sampleLock);
-        resetSequencerGrid();
+        // model.sliceProbabilities already uses.
+        const juce::ScopedLock sl (model.sampleLock);
+        model.resetSequencerGrid();
     }
 
-    int getLoopLengthBars() const { return loopLengthBars.load(); }
+    int getLoopLengthBars() const { return model.loopLengthBars.load(); }
 
     //=== Manual BPM override (Step 23) ===
     // When enabled, REPLACES the bars-derived tempo calculation entirely
@@ -432,57 +431,42 @@ public:
     // consistently by processBlock()'s direct-read path and by whatever
     // GranularStretcher renders (via the same repitchRatio it already
     // flows through).
-    void setManualBpmOverrideEnabled (bool enabled) { manualBpmOverrideEnabled.store (enabled); }
-    bool getManualBpmOverrideEnabled() const { return manualBpmOverrideEnabled.load(); }
+    void setManualBpmOverrideEnabled (bool enabled) { model.manualBpmOverrideEnabled.store (enabled); }
+    bool getManualBpmOverrideEnabled() const { return model.manualBpmOverrideEnabled.load(); }
 
-    void setManualBpmOverrideValue (double bpm) { manualBpmOverrideValue.store (juce::jmax (1.0, bpm)); }
-    double getManualBpmOverrideValue() const { return manualBpmOverrideValue.load(); }
+    void setManualBpmOverrideValue (double bpm) { model.manualBpmOverrideValue.store (juce::jmax (1.0, bpm)); }
+    double getManualBpmOverrideValue() const { return model.manualBpmOverrideValue.load(); }
 
-    // Calculated from loopLengthBars + (the trimmed span of the sample, or
+    // Calculated from model.loopLengthBars + (the trimmed span of the sample, or
     // the manual BPM override when enabled). Exposed mainly so the editor
     // can display it — "this loop is ~140 BPM". Shows the override value
     // directly when it's active, rather than a value re-derived from it
     // (those are mathematically the same number for the *source* span, but
     // showing the raw override avoids any rounding-trip confusion).
-    double getCalculatedOriginalBpm() const
-    {
-        if (manualBpmOverrideEnabled.load())
-            return manualBpmOverrideValue.load();
-
-        if (! sampleLoaded || sampleBuffer.getNumSamples() == 0)
-            return 0.0;
-
-        const double lengthSeconds = computeSourceSpanSeconds();
-
-        if (lengthSeconds <= 0.0)
-            return 0.0;
-
-        const double beats = (double) loopLengthBars.load() * 4.0; // assumes 4/4
-        return (beats * 60.0) / lengthSeconds;
-    }
+    double getCalculatedOriginalBpm() const { return model.getCalculatedOriginalBpm(); }
 
     //=== Per-slice weight (Step 8) ===
     // Relative weight in the weighted-random draw that picks the next
     // slice to play — NOT an independent per-hit probability anymore.
     // 0 = excluded from the draw entirely. Higher = more likely relative
-    // to the other slices' weights. Defaults to 1.0 (even odds across all
-    // slices) on every re-slice.
+    // to the other model.slices' weights. Defaults to 1.0 (even odds across all
+    // model.slices) on every re-slice.
     float getSliceProbability (int index) const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index < 0 || index >= (int) sliceProbabilities.size())
+        if (index < 0 || index >= (int) model.sliceProbabilities.size())
             return 1.0f;
 
-        return sliceProbabilities[(size_t) index];
+        return model.sliceProbabilities[(size_t) index];
     }
 
     void setSliceProbability (int index, float probability)
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index >= 0 && index < (int) sliceProbabilities.size())
-            sliceProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+        if (index >= 0 && index < (int) model.sliceProbabilities.size())
+            model.sliceProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
     //=== De-clicking (Step 9) ===
@@ -494,11 +478,11 @@ public:
     // original Nedit device was that vocal material especially clicked
     // without this; drum/percussion material is the main target here but
     // the fix is free either way.
-    void setFadeInMs (float ms) { fadeInMs.store (juce::jmax (0.0f, ms)); }
-    float getFadeInMs() const { return fadeInMs.load(); }
+    void setFadeInMs (float ms) { model.fadeInMs.store (juce::jmax (0.0f, ms)); }
+    float getFadeInMs() const { return model.fadeInMs.load(); }
 
-    void setFadeOutMs (float ms) { fadeOutMs.store (juce::jmax (0.0f, ms)); }
-    float getFadeOutMs() const { return fadeOutMs.load(); }
+    void setFadeOutMs (float ms) { model.fadeOutMs.store (juce::jmax (0.0f, ms)); }
+    float getFadeOutMs() const { return model.fadeOutMs.load(); }
 
     //=== Trigger mode (Step 14/37) ===
     // Three mutually exclusive ways to decide when the next slice-pick
@@ -526,11 +510,11 @@ public:
     //     states plays back on MIDI recall (see the Performance State Bank
     //     section below). See its own class doc comment on
     //     PerformanceStateSnapshot for the full design.
-    enum class TriggerMode { sliceLength, clock, sequenced, performance };
+    using TriggerMode = SlicerModel::TriggerMode;
 
     void setTriggerMode (TriggerMode mode)
     {
-        triggerMode.store (mode);
+        model.triggerMode.store (mode);
         clockModeInitialized = false; // force a fresh window/pick on next block
         clockCurrentPickValid = false;
         resetWindowInitialized = false; // Step 34 -- same "start fresh, aligned" guarantee entering Slice Length mode
@@ -547,11 +531,11 @@ public:
         // whenever Sequenced mode is re-entered later.
         if (mode != TriggerMode::sequenced)
         {
-            midiLearnArmed.store (false);
-            pendingPatternSwitchNote.store (-1);
+            model.midiLearnArmed.store (false);
+            model.pendingPatternSwitchNote.store (-1);
         }
 
-        // Performance mode's own editing focus (focusedPerformanceStateSlot)
+        // Performance mode's own editing focus (model.focusedPerformanceStateSlot)
         // deliberately persists across a mode change -- unlike Sequenced
         // mode's MIDI Learn above, there's nothing here that would go stale
         // by staying armed, since focus isn't a transient "waiting for the
@@ -559,7 +543,7 @@ public:
         // editing next time Performance mode is selected again.
     }
 
-    TriggerMode getTriggerMode() const { return triggerMode.load(); }
+    TriggerMode getTriggerMode() const { return model.triggerMode.load(); }
 
     // Fixed palette of note values, shared between the outer clock
     // reference menu and the inner subdivision probability table —
@@ -567,35 +551,35 @@ public:
     // assume a time signature. Matches the standard Max/M4L tempo-relative
     // rate set (128n up to 1n), capped at one bar as the longest option —
     // 1nd (1.5 bars) is deliberately excluded.
-    static constexpr int numNoteValueOptions = 20;
-    static juce::String getNoteValueName (int index);
-    static double getNoteValueBeats (int index);
+    static constexpr int numNoteValueOptions = SlicerModel::numNoteValueOptions;
+    static juce::String getNoteValueName (int index) { return SlicerModel::getNoteValueName (index); }
+    static double getNoteValueBeats (int index) { return SlicerModel::getNoteValueBeats (index); }
 
     void setClockReferenceIndex (int index)
     {
-        clockReferenceIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        model.clockReferenceIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
     }
 
-    int getClockReferenceIndex() const { return clockReferenceIndex.load(); }
+    int getClockReferenceIndex() const { return model.clockReferenceIndex.load(); }
 
     // Weighted-probability table for which subdivision gets picked each
     // window in Clock mode — same 0-1 weight semantics as slice weights.
     float getSubdivisionProbability (int index) const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index < 0 || index >= (int) subdivisionProbabilities.size())
+        if (index < 0 || index >= (int) model.subdivisionProbabilities.size())
             return 1.0f;
 
-        return subdivisionProbabilities[(size_t) index];
+        return model.subdivisionProbabilities[(size_t) index];
     }
 
     void setSubdivisionProbability (int index, float probability)
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index >= 0 && index < (int) subdivisionProbabilities.size())
-            subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+        if (index >= 0 && index < (int) model.subdivisionProbabilities.size())
+            model.subdivisionProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
     //=== Playback style (Step 19/21/22/29) ===
@@ -709,27 +693,27 @@ public:
     // processBlock() -- so it glides once across an entire Clock-mode
     // window or Sequenced-mode step while Subdivide retriggers happen
     // underneath, rather than resetting on every retrigger.
-    enum class PlaybackStyle { forward, pingPong, tapeStop, stretch, filterSweepDown, filterSweepUp, bitcrush, scratch, flanger };
+    using PlaybackStyle = SlicerModel::PlaybackStyle;
 
-    static constexpr int numPlaybackStyleOptions = 9;
-    static juce::String getPlaybackStyleName (int index); // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up" / "Bitcrush" / "Scratch" / "Flanger"
+    static constexpr int numPlaybackStyleOptions = SlicerModel::numPlaybackStyleOptions;
+    static juce::String getPlaybackStyleName (int index) { return SlicerModel::getPlaybackStyleName (index); } // "Forward" / "Ping-Pong" / "Tape Stop" / "Stretch" / "Filter Down" / "Filter Up" / "Bitcrush" / "Scratch" / "Flanger"
 
     float getPlaybackStyleProbability (int index) const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index < 0 || index >= (int) playbackStyleProbabilities.size())
+        if (index < 0 || index >= (int) model.playbackStyleProbabilities.size())
             return 1.0f;
 
-        return playbackStyleProbabilities[(size_t) index];
+        return model.playbackStyleProbabilities[(size_t) index];
     }
 
     void setPlaybackStyleProbability (int index, float probability)
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
-        if (index >= 0 && index < (int) playbackStyleProbabilities.size())
-            playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
+        if (index >= 0 && index < (int) model.playbackStyleProbabilities.size())
+            model.playbackStyleProbabilities[(size_t) index] = juce::jlimit (0.0f, 1.0f, probability);
     }
 
     // Per-style "randomize parameters" opt-in (Sequenced mode's Randomize
@@ -748,7 +732,7 @@ public:
     // steps never consult this, only randomizeSequence() does.
     bool getRandomizeParametersForStyle (int index) const
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
         if (index < 0 || index >= (int) randomizeParametersForStyle.size())
             return false;
@@ -758,7 +742,7 @@ public:
 
     void setRandomizeParametersForStyle (int index, bool shouldRandomize)
     {
-        const juce::ScopedLock sl (sampleLock);
+        const juce::ScopedLock sl (model.sampleLock);
 
         if (index >= 0 && index < (int) randomizeParametersForStyle.size())
             randomizeParametersForStyle[(size_t) index] = shouldRandomize;
@@ -777,13 +761,13 @@ public:
     //     decel-to-zero-and-restart, same cadence Clock mode already
     //     retriggers at — a rapid stutter of small tape-stops rather than
     //     one long sweep.
-    enum class TapeStopScope { wholeWindow, perTick };
+    using TapeStopScope = SlicerModel::TapeStopScope;
 
-    static constexpr int numTapeStopScopeOptions = 2;
-    static juce::String getTapeStopScopeName (int index); // "Whole window" / "Per tick"
+    static constexpr int numTapeStopScopeOptions = SlicerModel::numTapeStopScopeOptions;
+    static juce::String getTapeStopScopeName (int index) { return SlicerModel::getTapeStopScopeName (index); } // "Whole window" / "Per tick"
 
-    void setTapeStopScope (TapeStopScope scope) { tapeStopScope.store (scope); }
-    TapeStopScope getTapeStopScope() const { return tapeStopScope.load(); }
+    void setTapeStopScope (TapeStopScope scope) { model.tapeStopScope.store (scope); }
+    TapeStopScope getTapeStopScope() const { return model.tapeStopScope.load(); }
 
     //=== Slice Length periodic reset (Step 34) ===
     // Mandatory (no "Off" option) -- Slice Length mode has always been
@@ -799,14 +783,14 @@ public:
     // version of Clock mode's own per-sample window-boundary detection,
     // reused directly rather than re-derived.
     // Visible only in Slice Length mode -- Clock mode already has its own
-    // window-boundary mechanism via clockReferenceIndex and doesn't need
+    // window-boundary mechanism via model.clockReferenceIndex and doesn't need
     // this at all.
-    static constexpr int numResetBarsOptions = 4;
-    static juce::String getResetBarsName (int index); // "1 bar" / "2 bars" / "4 bars" / "8 bars"
-    static int getResetBarsValue (int index);         // 1 / 2 / 4 / 8
+    static constexpr int numResetBarsOptions = SlicerModel::numResetBarsOptions;
+    static juce::String getResetBarsName (int index) { return SlicerModel::getResetBarsName (index); } // "1 bar" / "2 bars" / "4 bars" / "8 bars"
+    static int getResetBarsValue (int index) { return SlicerModel::getResetBarsValue (index); } // 1 / 2 / 4 / 8
 
-    void setResetBarsIndex (int index) { resetBarsIndex.store (juce::jlimit (0, numResetBarsOptions - 1, index)); }
-    int getResetBarsIndex() const { return resetBarsIndex.load(); }
+    void setResetBarsIndex (int index) { model.resetBarsIndex.store (juce::jlimit (0, numResetBarsOptions - 1, index)); }
+    int getResetBarsIndex() const { return model.resetBarsIndex.load(); }
 
     //=== Filter Sweep scope (Step 30) ===
     // Clock-mode-only, same visibility pattern as Tape Stop scope above —
@@ -827,13 +811,13 @@ public:
     // this scope choice existed) was already per-pick/per-tick, so this
     // default is what keeps that behaviour unchanged for anyone who's
     // already using it.
-    enum class FilterSweepScope { wholeWindow, perTick };
+    using FilterSweepScope = SlicerModel::FilterSweepScope;
 
-    static constexpr int numFilterSweepScopeOptions = 2;
-    static juce::String getFilterSweepScopeName (int index); // "Whole window" / "Per tick"
+    static constexpr int numFilterSweepScopeOptions = SlicerModel::numFilterSweepScopeOptions;
+    static juce::String getFilterSweepScopeName (int index) { return SlicerModel::getFilterSweepScopeName (index); } // "Whole window" / "Per tick"
 
-    void setFilterSweepScope (FilterSweepScope scope) { filterSweepScope.store (scope); }
-    FilterSweepScope getFilterSweepScope() const { return filterSweepScope.load(); }
+    void setFilterSweepScope (FilterSweepScope scope) { model.filterSweepScope.store (scope); }
+    FilterSweepScope getFilterSweepScope() const { return model.filterSweepScope.load(); }
 
     //=== Filter Sweep resonance (Step 45) ===
     // Was a compile-time constant (filterSweepResonance = 2.0) until now
@@ -843,33 +827,33 @@ public:
     // Slice Length/Clock modes can read/write the same value. Default
     // matches the original hardcoded constant exactly, so nothing changes
     // for existing behavior until either mechanism actually touches it.
-    static constexpr float defaultFilterSweepResonance = 2.0f;
-    static constexpr float minFilterSweepResonance = 0.5f;
-    static constexpr float maxFilterSweepResonance = 10.0f;
+    static constexpr float defaultFilterSweepResonance = SlicerModel::defaultFilterSweepResonance;
+    static constexpr float minFilterSweepResonance = SlicerModel::minFilterSweepResonance;
+    static constexpr float maxFilterSweepResonance = SlicerModel::maxFilterSweepResonance;
 
     void setFilterSweepResonance (float resonance)
     {
-        filterSweepResonanceValue.store (juce::jlimit (minFilterSweepResonance, maxFilterSweepResonance, resonance));
+        model.filterSweepResonanceValue.store (juce::jlimit (minFilterSweepResonance, maxFilterSweepResonance, resonance));
     }
 
-    float getFilterSweepResonance() const { return filterSweepResonanceValue.load(); }
+    float getFilterSweepResonance() const { return model.filterSweepResonanceValue.load(); }
 
     //=== Filter Sweep filter type (Step 46) ===
     // Extends Filter Sweep resonance's per-step-override mechanism (see
     // sequencer step parameter overrides below) to a second Filter Down/
     // Up-only parameter: which filter type the shared filterSweepFilter
     // renders through, not just its resonance. Index-based (0/1/2), same
-    // convention as resetBarsIndex/stepResolutionIndex below rather than
+    // convention as model.resetBarsIndex/model.stepResolutionIndex below rather than
     // a dedicated enum, since it's stored the same generic way sequencer
     // step overrides store every other parameter (a plain float, indexed
     // by name). Default (0 -- lowpass) matches the filter's original
     // hardcoded setType() call exactly, so nothing changes for existing
     // users until this or a per-step override actually touches it.
-    static constexpr int numFilterSweepFilterTypeOptions = 3;
-    static juce::String getFilterSweepFilterTypeName (int index); // "Low-pass" / "High-pass" / "Band-pass"
+    static constexpr int numFilterSweepFilterTypeOptions = SlicerModel::numFilterSweepFilterTypeOptions;
+    static juce::String getFilterSweepFilterTypeName (int index) { return SlicerModel::getFilterSweepFilterTypeName (index); } // "Low-pass" / "High-pass" / "Band-pass"
 
-    void setFilterSweepFilterType (int index) { filterSweepFilterTypeValue.store (juce::jlimit (0, numFilterSweepFilterTypeOptions - 1, index)); }
-    int getFilterSweepFilterType() const { return filterSweepFilterTypeValue.load(); }
+    void setFilterSweepFilterType (int index) { model.filterSweepFilterTypeValue.store (juce::jlimit (0, numFilterSweepFilterTypeOptions - 1, index)); }
+    int getFilterSweepFilterType() const { return model.filterSweepFilterTypeValue.load(); }
 
     //=== Curve shape (Step 46) ===
     // A per-step-override-capable parameter shared between Tape Stop's
@@ -879,29 +863,29 @@ public:
     // applyCurveShape() helper in PluginProcessor.cpp) rather than a
     // separate code path per style. Default (0 -- Linear) matches both
     // styles' existing behaviour exactly.
-    static constexpr int numCurveShapeOptions = 2;
-    static juce::String getCurveShapeName (int index); // "Linear" / "Exponential"
+    static constexpr int numCurveShapeOptions = SlicerModel::numCurveShapeOptions;
+    static juce::String getCurveShapeName (int index) { return SlicerModel::getCurveShapeName (index); } // "Linear" / "Exponential"
 
-    void setCurveShape (int index) { curveShapeValue.store (juce::jlimit (0, numCurveShapeOptions - 1, index)); }
-    int getCurveShape() const { return curveShapeValue.load(); }
+    void setCurveShape (int index) { model.curveShapeValue.store (juce::jlimit (0, numCurveShapeOptions - 1, index)); }
+    int getCurveShape() const { return model.curveShapeValue.load(); }
 
     //=== Stretch grain settings (Step 46) ===
     // Stretch playback style's own grain size/speed -- separate from
-    // Pitch Mode Time-Stretch's grainSizeMs/pitchShiftSemitones above,
+    // Pitch Mode Time-Stretch's model.grainSizeMs/model.pitchShiftSemitones above,
     // neither of which apply to this style (see processBlock's
     // stretchActive branch). Turns the two values that branch used to
     // hardcode (stretchCharacterGrainSizeMs/stretchDurationMultiplier,
-    // now stretchGrainSizeMsValue/stretchSpeedMultiplierValue below) into
+    // now model.stretchGrainSizeMsValue/model.stretchSpeedMultiplierValue below) into
     // stored, adjustable values with per-step overrides -- same "was a
     // compile-time constant, now overridable" treatment Filter Sweep
     // resonance got in Step 45. Defaults match the original constants
     // exactly, so nothing changes until either mechanism touches them.
-    static constexpr float defaultStretchGrainSizeMs = 10.0f; // within the ~8-15ms range originally hardcoded
-    static constexpr float minStretchGrainSizeMs = 5.0f;
-    static constexpr float maxStretchGrainSizeMs = 30.0f;
+    static constexpr float defaultStretchGrainSizeMs = SlicerModel::defaultStretchGrainSizeMs; // within the ~8-15ms range originally hardcoded
+    static constexpr float minStretchGrainSizeMs = SlicerModel::minStretchGrainSizeMs;
+    static constexpr float maxStretchGrainSizeMs = SlicerModel::maxStretchGrainSizeMs;
 
-    void setStretchGrainSizeMs (float ms) { stretchGrainSizeMsValue.store (juce::jlimit (minStretchGrainSizeMs, maxStretchGrainSizeMs, ms)); }
-    float getStretchGrainSizeMs() const { return stretchGrainSizeMsValue.load(); }
+    void setStretchGrainSizeMs (float ms) { model.stretchGrainSizeMsValue.store (juce::jlimit (minStretchGrainSizeMs, maxStretchGrainSizeMs, ms)); }
+    float getStretchGrainSizeMs() const { return model.stretchGrainSizeMsValue.load(); }
 
     // "Speed" here is a FIXED character constant -- how many times slower
     // than normal playback grains march through the source material for
@@ -914,12 +898,12 @@ public:
     // outlasts one pass, the SAME pass just repeats (GranularStretcher::
     // PlaybackStyle::loop) to fill the remainder, rather than this value
     // being stretched further to fit.
-    static constexpr float defaultStretchSpeedMultiplier = 4.0f;
-    static constexpr float minStretchSpeedMultiplier = 1.0f;
-    static constexpr float maxStretchSpeedMultiplier = 8.0f;
+    static constexpr float defaultStretchSpeedMultiplier = SlicerModel::defaultStretchSpeedMultiplier;
+    static constexpr float minStretchSpeedMultiplier = SlicerModel::minStretchSpeedMultiplier;
+    static constexpr float maxStretchSpeedMultiplier = SlicerModel::maxStretchSpeedMultiplier;
 
-    void setStretchSpeedMultiplier (float multiplier) { stretchSpeedMultiplierValue.store (juce::jlimit (minStretchSpeedMultiplier, maxStretchSpeedMultiplier, multiplier)); }
-    float getStretchSpeedMultiplier() const { return stretchSpeedMultiplierValue.load(); }
+    void setStretchSpeedMultiplier (float multiplier) { model.stretchSpeedMultiplierValue.store (juce::jlimit (minStretchSpeedMultiplier, maxStretchSpeedMultiplier, multiplier)); }
+    float getStretchSpeedMultiplier() const { return model.stretchSpeedMultiplierValue.load(); }
 
     //=== Bitcrush/Flanger/Scratch global defaults (Slice Length/Clock mode
     // parameter panel) ===
@@ -938,41 +922,41 @@ public:
     // getSequencerCellParameterMin()/Max()/NumOptions() rather than
     // duplicating per-parameter range constants here (indices 6-18 match
     // getSequencerCellParameterName()'s own ordering).
-    void setBitcrushRateReductionGlobal (float value) { bitcrushRateReductionGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (6), getSequencerCellParameterMax (6), value)); }
-    float getBitcrushRateReductionGlobal() const { return bitcrushRateReductionGlobalValue.load(); }
-    void setBitcrushRateReductionModeGlobal (int mode) { bitcrushRateReductionModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (7) - 1, mode)); }
-    int getBitcrushRateReductionModeGlobal() const { return bitcrushRateReductionModeGlobalValue.load(); }
+    void setBitcrushRateReductionGlobal (float value) { model.bitcrushRateReductionGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (6), getSequencerCellParameterMax (6), value)); }
+    float getBitcrushRateReductionGlobal() const { return model.bitcrushRateReductionGlobalValue.load(); }
+    void setBitcrushRateReductionModeGlobal (int mode) { model.bitcrushRateReductionModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (7) - 1, mode)); }
+    int getBitcrushRateReductionModeGlobal() const { return model.bitcrushRateReductionModeGlobalValue.load(); }
 
-    void setBitcrushBitDepthGlobal (float value) { bitcrushBitDepthGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (8), getSequencerCellParameterMax (8), value)); }
-    float getBitcrushBitDepthGlobal() const { return bitcrushBitDepthGlobalValue.load(); }
-    void setBitcrushBitDepthModeGlobal (int mode) { bitcrushBitDepthModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (9) - 1, mode)); }
-    int getBitcrushBitDepthModeGlobal() const { return bitcrushBitDepthModeGlobalValue.load(); }
+    void setBitcrushBitDepthGlobal (float value) { model.bitcrushBitDepthGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (8), getSequencerCellParameterMax (8), value)); }
+    float getBitcrushBitDepthGlobal() const { return model.bitcrushBitDepthGlobalValue.load(); }
+    void setBitcrushBitDepthModeGlobal (int mode) { model.bitcrushBitDepthModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (9) - 1, mode)); }
+    int getBitcrushBitDepthModeGlobal() const { return model.bitcrushBitDepthModeGlobalValue.load(); }
 
-    void setScratchRateGlobal (int index) { scratchRateGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (10) - 1, index)); }
-    int getScratchRateGlobal() const { return scratchRateGlobalValue.load(); }
-    void setScratchForwardCurveGlobal (int index) { scratchForwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (11) - 1, index)); }
-    int getScratchForwardCurveGlobal() const { return scratchForwardCurveGlobalValue.load(); }
-    void setScratchBackwardCurveGlobal (int index) { scratchBackwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (12) - 1, index)); }
-    int getScratchBackwardCurveGlobal() const { return scratchBackwardCurveGlobalValue.load(); }
+    void setScratchRateGlobal (int index) { model.scratchRateGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (10) - 1, index)); }
+    int getScratchRateGlobal() const { return model.scratchRateGlobalValue.load(); }
+    void setScratchForwardCurveGlobal (int index) { model.scratchForwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (11) - 1, index)); }
+    int getScratchForwardCurveGlobal() const { return model.scratchForwardCurveGlobalValue.load(); }
+    void setScratchBackwardCurveGlobal (int index) { model.scratchBackwardCurveGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (12) - 1, index)); }
+    int getScratchBackwardCurveGlobal() const { return model.scratchBackwardCurveGlobalValue.load(); }
 
-    void setFlangerDelayTimeGlobal (float value) { flangerDelayTimeGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (13), getSequencerCellParameterMax (13), value)); }
-    float getFlangerDelayTimeGlobal() const { return flangerDelayTimeGlobalValue.load(); }
-    void setFlangerDelayTimeModeGlobal (int mode) { flangerDelayTimeModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (14) - 1, mode)); }
-    int getFlangerDelayTimeModeGlobal() const { return flangerDelayTimeModeGlobalValue.load(); }
+    void setFlangerDelayTimeGlobal (float value) { model.flangerDelayTimeGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (13), getSequencerCellParameterMax (13), value)); }
+    float getFlangerDelayTimeGlobal() const { return model.flangerDelayTimeGlobalValue.load(); }
+    void setFlangerDelayTimeModeGlobal (int mode) { model.flangerDelayTimeModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (14) - 1, mode)); }
+    int getFlangerDelayTimeModeGlobal() const { return model.flangerDelayTimeModeGlobalValue.load(); }
 
-    void setFlangerMixGlobal (float value) { flangerMixGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (15), getSequencerCellParameterMax (15), value)); }
-    float getFlangerMixGlobal() const { return flangerMixGlobalValue.load(); }
-    void setFlangerMixModeGlobal (int mode) { flangerMixModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (16) - 1, mode)); }
-    int getFlangerMixModeGlobal() const { return flangerMixModeGlobalValue.load(); }
+    void setFlangerMixGlobal (float value) { model.flangerMixGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (15), getSequencerCellParameterMax (15), value)); }
+    float getFlangerMixGlobal() const { return model.flangerMixGlobalValue.load(); }
+    void setFlangerMixModeGlobal (int mode) { model.flangerMixModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (16) - 1, mode)); }
+    int getFlangerMixModeGlobal() const { return model.flangerMixModeGlobalValue.load(); }
 
-    void setFlangerFeedbackGlobal (float value) { flangerFeedbackGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (17), getSequencerCellParameterMax (17), value)); }
-    float getFlangerFeedbackGlobal() const { return flangerFeedbackGlobalValue.load(); }
-    void setFlangerFeedbackModeGlobal (int mode) { flangerFeedbackModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (18) - 1, mode)); }
-    int getFlangerFeedbackModeGlobal() const { return flangerFeedbackModeGlobalValue.load(); }
+    void setFlangerFeedbackGlobal (float value) { model.flangerFeedbackGlobalValue.store (juce::jlimit (getSequencerCellParameterMin (17), getSequencerCellParameterMax (17), value)); }
+    float getFlangerFeedbackGlobal() const { return model.flangerFeedbackGlobalValue.load(); }
+    void setFlangerFeedbackModeGlobal (int mode) { model.flangerFeedbackModeGlobalValue.store (juce::jlimit (0, getSequencerCellParameterNumOptions (18) - 1, mode)); }
+    int getFlangerFeedbackModeGlobal() const { return model.flangerFeedbackModeGlobalValue.load(); }
 
     //=== Pitch mode (Step 17) ===
     // Independent of Trigger Mode — only changes HOW a pick's audio gets
-    // rendered, never when slices get picked/retriggered or how they're
+    // rendered, never when model.slices get picked/retriggered or how they're
     // weighted. The scheduling logic above (weighted picks, Clock-mode
     // retriggers, fades) is shared unchanged by both:
     //   repitch — today's varispeed behaviour: a single read pointer
@@ -983,32 +967,32 @@ public:
     //     native, sample-rate-corrected-only rate (pitch-preserving),
     //     while their START positions get spaced to track tempo, so pitch
     //     stays fixed regardless of speed.
-    enum class PitchMode { repitch, timeStretch };
+    using PitchMode = SlicerModel::PitchMode;
 
     void setPitchMode (PitchMode mode)
     {
-        pitchMode.store (mode);
+        model.pitchMode.store (mode);
         granularNeedsReseed.store (true); // reseed the grain engine mid-pick, from wherever playback currently is
     }
 
-    PitchMode getPitchMode() const { return pitchMode.load(); }
+    PitchMode getPitchMode() const { return model.pitchMode.load(); }
 
     // Grain length for Time-Stretch mode. Overlap is fixed at 50% (not
     // exposed) to keep the UI minimal.
-    void setGrainSizeMs (float ms) { grainSizeMs.store (juce::jlimit (20.0f, 150.0f, ms)); }
-    float getGrainSizeMs() const { return grainSizeMs.load(); }
+    void setGrainSizeMs (float ms) { model.grainSizeMs.store (juce::jlimit (20.0f, 150.0f, ms)); }
+    float getGrainSizeMs() const { return model.grainSizeMs.load(); }
 
-    enum class GrainWindowShape { hann, triangular };
+    using GrainWindowShape = SlicerModel::GrainWindowShape;
 
-    void setGrainWindowShape (GrainWindowShape shape) { grainWindowShape.store (shape); }
-    GrainWindowShape getGrainWindowShape() const { return grainWindowShape.load(); }
+    void setGrainWindowShape (GrainWindowShape shape) { model.grainWindowShape.store (shape); }
+    GrainWindowShape getGrainWindowShape() const { return model.grainWindowShape.load(); }
 
     // Time-Stretch-only pitch control (Step 18) — a multiplier on each
     // grain's own internal read-rate, entirely separate from the hop
     // scheduling above that controls stretch amount. 0 semitones is a
     // complete no-op (pitchRatio == 1.0), same as before this existed.
-    void setPitchShiftSemitones (float semitones) { pitchShiftSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
-    float getPitchShiftSemitones() const { return pitchShiftSemitones.load(); }
+    void setPitchShiftSemitones (float semitones) { model.pitchShiftSemitones.store (juce::jlimit (-24.0f, 24.0f, semitones)); }
+    float getPitchShiftSemitones() const { return model.pitchShiftSemitones.load(); }
 
     //=== Beat-quantized slice length (Step 24) ===
     // Only takes effect for Pitch Mode == timeStretch AND Trigger Mode ==
@@ -1050,8 +1034,8 @@ public:
     // with Repitch mode's own separate toggle just below — see
     // computeBeatQuantizeTarget() — since it's identical regardless of
     // pitch mode; only what the resulting ratio gets applied TO differs.
-    void setBeatQuantizeSliceLengthEnabled (bool enabled) { beatQuantizeSliceLengthEnabled.store (enabled); }
-    bool getBeatQuantizeSliceLengthEnabled() const { return beatQuantizeSliceLengthEnabled.load(); }
+    void setBeatQuantizeSliceLengthEnabled (bool enabled) { model.beatQuantizeSliceLengthEnabled.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabled() const { return model.beatQuantizeSliceLengthEnabled.load(); }
 
     //=== Beat-quantized slice length — Repitch mode (Step 26) ===
     // Same label, same underlying target-duration calculation as the
@@ -1081,11 +1065,11 @@ public:
     // it regardless of which Pitch Mode is active, and it only applies in
     // Slice Length trigger mode (Clock mode's tick system already enforces
     // beat-alignment either way).
-    void setBeatQuantizeSliceLengthEnabledRepitch (bool enabled) { beatQuantizeSliceLengthEnabledRepitch.store (enabled); }
-    bool getBeatQuantizeSliceLengthEnabledRepitch() const { return beatQuantizeSliceLengthEnabledRepitch.load(); }
+    void setBeatQuantizeSliceLengthEnabledRepitch (bool enabled) { model.beatQuantizeSliceLengthEnabledRepitch.store (enabled); }
+    bool getBeatQuantizeSliceLengthEnabledRepitch() const { return model.beatQuantizeSliceLengthEnabledRepitch.load(); }
 
     //=== Sequenced Trigger Mode (Step 37, v1 -- monophonic) ===
-    // A mouse-drawable step grid: rows are available slices, columns are
+    // A mouse-drawable step grid: rows are available model.slices, columns are
     // steps. Structural monophony is enforced at the INPUT level (see
     // setSequencerCell() below), not just at playback -- only one cell may
     // be active per column across the whole grid, so activating a cell in
@@ -1097,27 +1081,27 @@ public:
     //
     // Grid dimensions:
     //   rows -- one per available slice (auto-detected + manual, pooled
-    //     from the existing `slices` list, same source everything else
+    //     from the existing `model.slices` list, same source everything else
     //     already reads), capped at numSequencerRows (32). If more than 32
-    //     slices exist, only the first 32 in time-order are representable
+    //     model.slices exist, only the first 32 in time-order are representable
     //     -- a known v1 limitation, not solved here.
     //   columns ("steps") -- patternLengthBars * 4 * stepsPerBeat, where
     //     stepsPerBeat comes from the Step resolution dropdown (reusing
     //     the existing note-value palette directly -- e.g. selecting 16th
     //     notes gives 4 steps per beat; 2 bars at 16th notes = 32 steps).
     //     patternLengthBars (Step 38) is its own dedicated control, NOT
-    //     loopLengthBars -- loopLengthBars governs the loaded audio's
+    //     model.loopLengthBars -- model.loopLengthBars governs the loaded audio's
     //     tempo calculation and has no reason to match how many bars the
     //     drawn pattern itself spans; conflating the two was what caused
     //     Sequenced mode to only ever offer 1 bar's worth of steps before
     //     this existed.
     //
     // The pattern is reset to all-off whenever any dimension changes
-    // (slices rebuild, pattern length changes, or step resolution changes)
+    // (model.slices rebuild, pattern length changes, or step resolution changes)
     // -- there's no way to meaningfully preserve a 2D pattern across a
     // dimension change, and this matches the same "reset to a sane
     // default whenever the underlying structure changes" convention
-    // sliceProbabilities already uses on every redetection.
+    // model.sliceProbabilities already uses on every redetection.
     //
     // See processBlock() for the playback side: it reuses the exact same
     // currentPosition/currentEndSample/hasCurrentPick single-voice render
@@ -1136,41 +1120,34 @@ public:
     // in Sequenced mode) -- this needs no extra code since both scope
     // settings are already gated to clockMode elsewhere in processBlock().
     // Polyphony and more than 32 rows remain deferred past v1.
-    static constexpr int numSequencerRows = 32;
+    static constexpr int numSequencerRows = SlicerModel::numSequencerRows;
 
     // Defensive cap purely for UI/performance sanity at extreme parameter
     // combinations (e.g. 8 bars at 128th notes would otherwise be 1024
     // columns) -- same "known v1 limitation" spirit as the row cap above,
     // just applied symmetrically to columns.
-    static constexpr int maxSequencerColumns = 256;
+    static constexpr int maxSequencerColumns = SlicerModel::maxSequencerColumns;
 
-    int getSequencerNumRows() const { return juce::jmin (numSequencerRows, (int) slices.size()); }
+    int getSequencerNumRows() const { return model.getSequencerNumRows(); }
 
-    int getSequencerNumSteps() const
-    {
-        const double gridBeats = getNoteValueBeats (stepResolutionIndex.load());
-        const double stepsPerBeat = (gridBeats > 0.0) ? (1.0 / gridBeats) : 1.0;
-        const int patternBars = getPatternLengthBarsValue (patternLengthBarsIndex.load());
-        const int rawSteps = juce::roundToInt ((double) patternBars * 4.0 * stepsPerBeat);
-        return juce::jlimit (1, maxSequencerColumns, rawSteps);
-    }
+    int getSequencerNumSteps() const { return model.getSequencerNumSteps(); }
 
     // Pattern length (Step 38) -- 1/2/4 bars, deliberately separate from
-    // loopLengthBars (see the class-level doc comment above). Changing it
+    // model.loopLengthBars (see the class-level doc comment above). Changing it
     // changes the column count, so it resets the grid the same way Step
     // resolution already does.
-    static constexpr int numPatternLengthBarsOptions = 3;
-    static juce::String getPatternLengthBarsName (int index); // "1 bar" / "2 bars" / "4 bars"
-    static int getPatternLengthBarsValue (int index);         // 1 / 2 / 4
+    static constexpr int numPatternLengthBarsOptions = SlicerModel::numPatternLengthBarsOptions;
+    static juce::String getPatternLengthBarsName (int index) { return SlicerModel::getPatternLengthBarsName (index); } // "1 bar" / "2 bars" / "4 bars"
+    static int getPatternLengthBarsValue (int index) { return SlicerModel::getPatternLengthBarsValue (index); } // 1 / 2 / 4
 
     void setPatternLengthBarsIndex (int index)
     {
-        patternLengthBarsIndex.store (juce::jlimit (0, numPatternLengthBarsOptions - 1, index));
-        const juce::ScopedLock sl (sampleLock);
-        resetSequencerGrid(); // column count just changed
+        model.patternLengthBarsIndex.store (juce::jlimit (0, numPatternLengthBarsOptions - 1, index));
+        const juce::ScopedLock sl (model.sampleLock);
+        model.resetSequencerGrid(); // column count just changed
     }
 
-    int getPatternLengthBarsIndex() const { return patternLengthBarsIndex.load(); }
+    int getPatternLengthBarsIndex() const { return model.patternLengthBarsIndex.load(); }
 
     // Step resolution -- reuses the same 20-value note-value palette as
     // Clock reference/Quantize Transients' Grid, rather than a separate
@@ -1178,23 +1155,23 @@ public:
     // spec's own worked example (16th notes -> 4 steps per beat).
     void setStepResolutionIndex (int index)
     {
-        stepResolutionIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
-        const juce::ScopedLock sl (sampleLock);
-        resetSequencerGrid(); // column count just changed
+        model.stepResolutionIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        const juce::ScopedLock sl (model.sampleLock);
+        model.resetSequencerGrid(); // column count just changed
     }
 
-    int getStepResolutionIndex() const { return stepResolutionIndex.load(); }
+    int getStepResolutionIndex() const { return model.stepResolutionIndex.load(); }
 
     // Cell state (Step 41): each cell stores -1 (empty) or a
     // PlaybackStyle index (0 to numPlaybackStyleOptions-1, same ordinal as
-    // the enum/indexToPlaybackStyle() below and playbackStyleProbabilities'
+    // the enum/indexToPlaybackStyle() below and model.playbackStyleProbabilities'
     // ordering) -- reusing the existing PlaybackStyle enum rather than a
     // parallel one. row/column outside the current grid dimensions are
     // silently ignored (defensive -- the UI should never ask for an
     // out-of-range cell, but dimensions can shift between a mouse event
     // being queued and processed).
-    int getSequencerCellStyle (int row, int column) const; // -1 if empty or out-of-range
-    void setSequencerCell (int row, int column, int style); // style -1 clears; 0 to numPlaybackStyleOptions-1 sets that PlaybackStyle
+    int getSequencerCellStyle (int row, int column) const { return model.getSequencerCellStyle (row, column); } // -1 if empty or out-of-range
+    void setSequencerCell (int row, int column, int style) { model.setSequencerCell (row, column, style); } // style -1 clears; 0 to numPlaybackStyleOptions-1 sets that PlaybackStyle
 
     // Step-extension (Pass 1, mechanism only) -- an optional per-cell
     // "extended length in steps" override, on top of the style set by
@@ -1211,8 +1188,8 @@ public:
     // own style changes (including cleared) via setSequencerCell(), or the
     // grid resets/wipes -- same lifecycle as the parameter-override map
     // above.
-    int getSequencerCellExtendedLengthSteps (int row, int column) const; // 0 if unset/empty/out-of-range
-    void setSequencerCellExtendedLengthSteps (int row, int column, int lengthSteps); // clamped into [1, numSteps - column]; no-op on an empty cell
+    int getSequencerCellExtendedLengthSteps (int row, int column) const { return model.getSequencerCellExtendedLengthSteps (row, column); } // 0 if unset/empty/out-of-range
+    void setSequencerCellExtendedLengthSteps (int row, int column, int lengthSteps) { model.setSequencerCellExtendedLengthSteps (row, column, lengthSteps); } // clamped into [1, numSteps - column]; no-op on an empty cell
 
     // `row`'s slice, expressed in steps at the current Step-resolution --
     // i.e. its natural playback length quantized to the sequencer grid,
@@ -1220,7 +1197,7 @@ public:
     // started from. Shared here (not just computed in the UI) so the audio
     // thread can read the exact same value -- see
     // getSequencerCellDeclaredLengthSteps() below.
-    int getSequencerNaturalLengthSteps (int row) const;
+    int getSequencerNaturalLengthSteps (int row) const { return model.getSequencerNaturalLengthSteps (row); }
 
     // This cell's own declared length in steps: its Step-extension
     // override if longer than natural, else natural -- the SAME value
@@ -1229,24 +1206,24 @@ public:
     // Tape Stop's decel duration in Sequenced mode is driven directly by
     // this (converted to host samples), deliberately NOT by how much
     // pattern happens to follow the step -- see its use in processBlock().
-    int getSequencerCellDeclaredLengthSteps (int row, int column) const;
+    int getSequencerCellDeclaredLengthSteps (int row, int column) const { return model.getSequencerCellDeclaredLengthSteps (row, column); }
 
     // Currently selected drawing style (Step 41) -- persistent UI state
     // for the Style Palette: whichever swatch was last clicked is what
     // subsequent clicks/drags on the grid paint with. Defaults to Forward
     // (index 0), matching every other style-related default in this
     // codebase (Forward-only, byte-identical-until-touched).
-    int getSelectedDrawingStyle() const { return selectedDrawingStyle.load(); }
+    int getSelectedDrawingStyle() const { return model.selectedDrawingStyle.load(); }
 
     void setSelectedDrawingStyle (int style)
     {
-        selectedDrawingStyle.store (juce::jlimit (0, numPlaybackStyleOptions - 1, style));
+        model.selectedDrawingStyle.store (juce::jlimit (0, numPlaybackStyleOptions - 1, style));
     }
 
     // Clear Sequence (Step 41): wipes the pattern back to all-empty, no
     // generation afterward -- the same wipe randomizeSequence() itself
     // starts with, just without anything following it.
-    void clearSequence();
+    void clearSequence () { model.clearSequence (); }
 
     // Randomize Sequence (Step 38/40/41): clears the pattern, then
     // randomly activates cells across all available rows/columns via fair
@@ -1255,7 +1232,7 @@ public:
     // row's slice-length-in-steps as an exclusion zone -- no other hit may
     // land in the columns that slice would still be ringing out in --
     // and its PlaybackStyle is drawn from the same weighted
-    // playbackStyleProbabilities table Slice Length/Clock modes already
+    // model.playbackStyleProbabilities table Slice Length/Clock modes already
     // use (Step 41), so turning a style's weight down elsewhere also
     // makes Randomize reach for it less often here. Simple constraint-
     // aware placement, not a "smart" generative algorithm -- it just
@@ -1341,8 +1318,8 @@ public:
     // Subdivide) -- see getSequencerCellParameterGlobalValue()'s own doc
     // comment -- so it's Sequenced-mode-only, not offered in Slice
     // Length/Clock mode.
-    static constexpr int numSequencerCellParameters = 21;
-    static juce::String getSequencerCellParameterName (int index); // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve" / "Delay Time" / "Delay Time Mode" / "Mix" / "Mix Mode" / "Feedback" / "Feedback Mode" / "Volume" / "Volume Mode"
+    static constexpr int numSequencerCellParameters = SlicerModel::numSequencerCellParameters;
+    static juce::String getSequencerCellParameterName (int index) { return SlicerModel::getSequencerCellParameterName (index); } // "Resonance" / "Filter Type" / "Curve Shape" / "Grain Size" / "Grain Speed" / "Subdivide" / "Sample Rate Reduction" / "Sample Rate Reduction Mode" / "Bit Depth" / "Bit Depth Mode" / "Rate" / "Forward Curve" / "Backward Curve" / "Delay Time" / "Delay Time Mode" / "Mix" / "Mix Mode" / "Feedback" / "Feedback Mode" / "Volume" / "Volume Mode"
 
     // Swept parameters (Step 49; Volume): true for indices 6 and 8 (Sample
     // Rate Reduction, Bit Depth), 13, 15, 17 (Flanger's Delay Time, Mix,
@@ -1351,7 +1328,7 @@ public:
     // Down), rather than going straight to a plain discrete-options
     // submenu or straight to the slider overlay the way every other
     // parameter here does. See SequencerGrid::showParameterMenuForCell().
-    static bool isSequencerCellParameterSwept (int index);
+    static bool isSequencerCellParameterSwept (int index) { return SlicerModel::isSequencerCellParameterSwept (index); }
 
     // Step 46: Resonance/Grain Size/Grain Speed are continuous (drive the
     // existing slider overlay); Filter Type/Curve Shape instead present
@@ -1362,9 +1339,9 @@ public:
     // Subdivide (Step 47) is also discrete (its options are the shared
     // note-value palette, plus "Off") but is NOT list-style -- see
     // isSequencerCellParameterSteppedSlider() just below.
-    static bool isSequencerCellParameterDiscrete (int index);
-    static int getSequencerCellParameterNumOptions (int index); // only meaningful when isSequencerCellParameterDiscrete() is true
-    static juce::String getSequencerCellParameterOptionName (int index, int optionIndex);
+    static bool isSequencerCellParameterDiscrete (int index) { return SlicerModel::isSequencerCellParameterDiscrete (index); }
+    static int getSequencerCellParameterNumOptions (int index) { return SlicerModel::getSequencerCellParameterNumOptions (index); } // only meaningful when isSequencerCellParameterDiscrete() is true
+    static juce::String getSequencerCellParameterOptionName (int index, int optionIndex) { return SlicerModel::getSequencerCellParameterOptionName (index, optionIndex); }
 
     // Subdivide (Step 47) alone: discrete like Filter Type/Curve Shape
     // (a fixed list of named options, not an arbitrary range), but
@@ -1375,7 +1352,7 @@ public:
     // dragging across stops reads naturally. The slider just SNAPS to
     // one of getSequencerCellParameterNumOptions()'s stops instead of an
     // arbitrary value -- see SequencerGrid::updateEditingValueFromMouseX().
-    static bool isSequencerCellParameterSteppedSlider (int index);
+    static bool isSequencerCellParameterSteppedSlider (int index) { return SlicerModel::isSequencerCellParameterSteppedSlider (index); }
 
     // Continuous parameters' slider range (Step 46) -- generalizes the
     // slider overlay's value mapping, which used to hardcode Resonance's
@@ -1383,12 +1360,12 @@ public:
     // placeholder) for discrete parameters, which never reach the slider
     // (Subdivide is the one exception -- see isSequencerCellParameterSteppedSlider()
     // above -- but it's stepped by option INDEX, not this min/max range).
-    static float getSequencerCellParameterMin (int index);
-    static float getSequencerCellParameterMax (int index);
+    static float getSequencerCellParameterMin (int index) { return SlicerModel::getSequencerCellParameterMin (index); }
+    static float getSequencerCellParameterMax (int index) { return SlicerModel::getSequencerCellParameterMax (index); }
 
     // Which of the parameters above are relevant to a given cell style
     // (PlaybackStyle ordinal, matching indexToPlaybackStyle()'s own
-    // numbering, and the same ordinal sequencerGrid itself stores) --
+    // numbering, and the same ordinal model.sequencerGrid itself stores) --
     // e.g. a Forward step offers none, Filter Down/Up offers Resonance +
     // Filter Type. An out-of-range/empty-cell style (-1) offers none.
     // Subdivide (Step 47) and Volume (index 19) are deliberately NOT
@@ -1397,14 +1374,14 @@ public:
     // tied to any one effect the way everything else here is (Subdivide
     // is a general retrigger mechanism; Volume is a pure gain stage that
     // applies identically regardless of which style's DSP is running).
-    static std::vector<int> getApplicableSequencerCellParameters (int style);
+    static std::vector<int> getApplicableSequencerCellParameters (int style) { return SlicerModel::getApplicableSequencerCellParameters (style); }
 
     // This parameter's current GLOBAL value (i.e. what applies when no
     // per-step override exists) -- used as the slider overlay's fallback/
     // starting value, generalizing the single getFilterSweepResonance()
     // call Step 45 used directly. Not static (unlike the helpers above)
     // since it reads live atomic state.
-    float getSequencerCellParameterGlobalValue (int index) const;
+    float getSequencerCellParameterGlobalValue (int index) const { return model.getSequencerCellParameterGlobalValue (index); }
 
     // Writes this parameter's GLOBAL value (the mirror-image dispatcher of
     // getSequencerCellParameterGlobalValue() above) -- used by the Slice
@@ -1415,21 +1392,21 @@ public:
     // Subdivide (index 5) and Volume/Volume Mode (indices 19/20), none of
     // which have a global dial (see getSequencerCellParameterGlobalValue()'s
     // own doc comment).
-    void setSequencerCellParameterGlobalValue (int index, float value);
+    void setSequencerCellParameterGlobalValue (int index, float value) { model.setSequencerCellParameterGlobalValue (index, value); }
 
-    bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const;
-    float getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const;
-    void setSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float value);
+    bool getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const { return model.getSequencerCellHasParameterOverride (row, column, parameterName); }
+    float getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const { return model.getSequencerCellParameterOverride (row, column, parameterName, fallbackValue); }
+    void setSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float value) { model.setSequencerCellParameterOverride (row, column, parameterName, value); }
 
     // True if the cell has ANY parameter override at all -- drives the
     // small corner marker SequencerGrid draws on customized steps.
-    bool getSequencerCellHasAnyParameterOverride (int row, int column) const;
+    bool getSequencerCellHasAnyParameterOverride (int row, int column) const { return model.getSequencerCellHasAnyParameterOverride (row, column); }
 
     // Lock-free copy of the currently active step column, for the UI's
     // playhead indicator on the sequencer grid -- same pattern as
-    // currentlyPlayingSliceIndexForUI/the Audition playhead. -1 when
+    // model.currentlyPlayingSliceIndexForUI/the Audition playhead. -1 when
     // Sequenced mode isn't active (or transport stopped).
-    int getCurrentlyPlayingStepIndex() const { return currentlyPlayingStepIndexForUI.load(); }
+    int getCurrentlyPlayingStepIndex() const { return model.currentlyPlayingStepIndexForUI.load(); }
 
     //=== MIDI input / Sequencer pattern bank (Pass 1: immediate recall; Pass 2: Set Interval/End of Pattern timing) ===
     // A small, general dispatch layer reads every incoming MidiBuffer in
@@ -1450,17 +1427,17 @@ public:
     // silent no-op -- whatever's currently playing is left completely
     // undisturbed. None of this is persisted across DAW sessions yet (see
     // getStateInformation()'s own doc comment).
-    void armMidiLearnForPatternSave(); // captures the current grid; takes sampleLock itself -- UI-thread entry point
-    void cancelMidiLearn();
-    bool isMidiLearnArmed() const { return midiLearnArmed.load(); }
+    void armMidiLearnForPatternSave () { model.armMidiLearnForPatternSave (); } // captures the current grid; takes model.sampleLock itself -- UI-thread entry point
+    void cancelMidiLearn () { model.cancelMidiLearn (); }
+    bool isMidiLearnArmed() const { return model.midiLearnArmed.load(); }
 
     // One locked snapshot copy per call, cheap enough for a UI timer to
-    // poll at a modest rate without hammering sampleLock 128 times a tick.
-    std::array<bool, 128> getPopulatedPatternBankSlots() const;
+    // poll at a modest rate without hammering model.sampleLock 128 times a tick.
+    std::array<bool, 128> getPopulatedPatternBankSlots () const { return model.getPopulatedPatternBankSlots (); }
 
     // -1 if no slot has been recalled this session (still whatever the user
     // last drew/edited by hand).
-    int getActivePatternBankSlot() const { return activePatternBankSlot.load(); }
+    int getActivePatternBankSlot() const { return model.activePatternBankSlot.load(); }
 
     // Pattern Switch Timing (Pass 2) -- governs WHEN a recall note-on for a
     // populated slot actually takes effect. Purely a timing layer on top of
@@ -1469,7 +1446,7 @@ public:
     //   immediate    -- unchanged from Pass 1: switches the instant the
     //     note-on arrives, mid-block if need be.
     //   setInterval  -- defers the switch to the next occurrence of a
-    //     chosen musical grid point (patternSwitchIntervalIndex, same
+    //     chosen musical grid point (model.patternSwitchIntervalIndex, same
     //     note-value palette as Clock reference/Step resolution), checked
     //     every sample against host ppq (see processBlock()'s sequencedMode
     //     branch) -- same per-sample boundary discipline Clock mode and the
@@ -1481,33 +1458,33 @@ public:
     // In either deferred mode, a new note-on before the boundary replaces
     // the pending target outright (last note before the boundary wins) --
     // never more than one switch pending at a time.
-    enum class PatternSwitchTiming { immediate, setInterval, endOfPattern };
+    using PatternSwitchTiming = SlicerModel::PatternSwitchTiming;
 
     void setPatternSwitchTiming (PatternSwitchTiming timing)
     {
-        patternSwitchTiming.store (timing);
-        pendingPatternSwitchNote.store (-1); // changing the timing mode abandons any switch already pending under the old one
+        model.patternSwitchTiming.store (timing);
+        model.pendingPatternSwitchNote.store (-1); // changing the timing mode abandons any switch already pending under the old one
     }
 
-    PatternSwitchTiming getPatternSwitchTiming() const { return patternSwitchTiming.load(); }
+    PatternSwitchTiming getPatternSwitchTiming() const { return model.patternSwitchTiming.load(); }
 
     // Set Interval's grid point -- same numNoteValueOptions palette as
     // Clock reference/Step resolution (see getNoteValueName()/
     // getNoteValueBeats() above). Meaningless while Immediate or End of
     // Pattern is selected, same "stored but inert unless its mode is
-    // active" convention clockReferenceIndex etc. already follow.
+    // active" convention model.clockReferenceIndex etc. already follow.
     void setPatternSwitchIntervalIndex (int index)
     {
-        patternSwitchIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        model.patternSwitchIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
     }
 
-    int getPatternSwitchIntervalIndex() const { return patternSwitchIntervalIndex.load(); }
+    int getPatternSwitchIntervalIndex() const { return model.patternSwitchIntervalIndex.load(); }
 
     // -1 if no switch is currently pending; otherwise the MIDI note number
     // (== pattern bank slot) a deferred switch is headed toward, for the UI
     // to show as "pending," distinct from "active." Only ever non-(-1)
-    // while patternSwitchTiming is setInterval or endOfPattern.
-    int getPendingPatternSwitchSlot() const { return pendingPatternSwitchNote.load(); }
+    // while model.patternSwitchTiming is setInterval or endOfPattern.
+    int getPendingPatternSwitchSlot() const { return model.pendingPatternSwitchNote.load(); }
 
     //=== Performance mode state bank (click-to-focus + auto-save) ===
     // A 128-note-indexed, lazily-populated bank, same shape as the
@@ -1529,35 +1506,27 @@ public:
     // playback-only (see handlePerformanceStateNoteOn() in the private
     // section). Trim is deliberately NOT duplicated as a separate "working"
     // value while a slot has focus -- editing happens on the same shared
-    // trimStartSample/trimEndSample atomics + waveform trim handles every
+    // model.trimStartSample/model.trimEndSample atomics + waveform trim handles every
     // other mode already uses; only each SAVED slot gets its own
     // independent copy, captured automatically the instant focus moves to a
     // different slot (setFocusedPerformanceStateSlot()'s auto-save) and
     // restored (or defaulted, for a never-before-focused slot) the instant
     // focus moves back in -- exactly the same "one shared live surface,
     // many independent saved snapshots of it" shape the Sequencer pattern
-    // bank already uses for sequencerGrid.
-    struct PerformanceStateSnapshot
-    {
-        bool populated = false;
-        int trimStartSample = 0, trimEndSample = 0;
-        int style = 0; // PlaybackStyle index
-        std::array<float, numSequencerCellParameters> parameterValues {}; // indexed exactly as getSequencerCellParameterName()
-        bool loop = false;
-        bool sync = true;
-    };
+    // bank already uses for model.sequencerGrid.
+    using PerformanceStateSnapshot = SlicerModel::PerformanceStateSnapshot;
 
     // Click-to-focus (replaces the old MIDI-Learn "Save to..." button +
     // arm-and-assign flow entirely): moves editing focus to noteNumber,
     // auto-saving whatever was being edited in the previously-focused slot
     // first, then loading noteNumber's own saved state (or a fresh default,
-    // if it has none yet) into performanceWorkingState + the shared trim
+    // if it has none yet) into model.performanceWorkingState + the shared trim
     // atomics. UI-thread entry point (the on-screen keyboard's click
-    // handler); takes sampleLock itself.
-    void setFocusedPerformanceStateSlot (int noteNumber);
-    int getFocusedPerformanceStateSlot() const { return focusedPerformanceStateSlot.load(); } // -1 = nothing focused yet
+    // handler); takes model.sampleLock itself.
+    void setFocusedPerformanceStateSlot (int noteNumber) { model.setFocusedPerformanceStateSlot (noteNumber); }
+    int getFocusedPerformanceStateSlot() const { return model.focusedPerformanceStateSlot.load(); } // -1 = nothing focused yet
 
-    std::array<bool, 128> getPopulatedPerformanceStateBankSlots() const;
+    std::array<bool, 128> getPopulatedPerformanceStateBankSlots () const { return model.getPopulatedPerformanceStateBankSlots (); }
 
     // Quantize Recall -- same mechanism as Pattern Switch Timing's Set
     // Interval mode above (see that enum's own doc comment), applied to
@@ -1565,14 +1534,14 @@ public:
     // bank. Off (immediate, the original behaviour) by default. When on, a
     // physical MIDI key press -- recalling any saved state, or
     // live-auditioning the currently-focused one -- doesn't switch right
-    // away; it arms pendingPerformanceRecallNote and waits for the next
-    // occurrence of performanceQuantizeRecallIntervalIndex's grid point,
+    // away; it arms model.pendingPerformanceRecallNote and waits for the next
+    // occurrence of model.performanceQuantizeRecallIntervalIndex's grid point,
     // checked every SAMPLE against host ppq in processBlock()'s
     // performanceMode branch -- the same per-sample boundary discipline
     // Set Interval, Clock mode, and the mandatory Reset feature all already
     // use, avoiding the Step 6 bug (a boundary computed once per block
     // silently missing one that lands mid-block). A newer note-on before
-    // that point just overwrites pendingPerformanceRecallNote in
+    // that point just overwrites model.pendingPerformanceRecallNote in
     // handlePerformanceStateNoteOn(), so the newest press always wins --
     // never more than one recall pending at a time, same rule Set Interval
     // itself follows.
@@ -1585,28 +1554,28 @@ public:
     // behaviour Performance mode already has.
     void setPerformanceQuantizeRecallEnabled (bool enabled)
     {
-        performanceQuantizeRecallEnabled.store (enabled);
-        pendingPerformanceRecallNote.store (-1); // changing the setting abandons any switch already pending under the old one, same as setPatternSwitchTiming()
+        model.performanceQuantizeRecallEnabled.store (enabled);
+        model.pendingPerformanceRecallNote.store (-1); // changing the setting abandons any switch already pending under the old one, same as setPatternSwitchTiming()
     }
 
-    bool getPerformanceQuantizeRecallEnabled() const { return performanceQuantizeRecallEnabled.load(); }
+    bool getPerformanceQuantizeRecallEnabled() const { return model.performanceQuantizeRecallEnabled.load(); }
 
     // Quantize Recall's grid point -- same numNoteValueOptions palette as
     // Clock reference/Set Interval (see getNoteValueName()/
     // getNoteValueBeats() above). Meaningless while Quantize Recall is off,
     // same "stored but inert unless its mode is active" convention
-    // patternSwitchIntervalIndex etc. already follow.
+    // model.patternSwitchIntervalIndex etc. already follow.
     void setPerformanceQuantizeRecallIntervalIndex (int index)
     {
-        performanceQuantizeRecallIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        model.performanceQuantizeRecallIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
     }
 
-    int getPerformanceQuantizeRecallIntervalIndex() const { return performanceQuantizeRecallIntervalIndex.load(); }
+    int getPerformanceQuantizeRecallIntervalIndex() const { return model.performanceQuantizeRecallIntervalIndex.load(); }
 
     // -1 if no recall is currently pending; otherwise the MIDI note number
     // (== performance state bank slot) a deferred recall is headed toward.
-    // Only ever non-(-1) while performanceQuantizeRecallEnabled is true.
-    int getPendingPerformanceRecallSlot() const { return pendingPerformanceRecallNote.load(); }
+    // Only ever non-(-1) while model.performanceQuantizeRecallEnabled is true.
+    int getPendingPerformanceRecallSlot() const { return model.pendingPerformanceRecallNote.load(); }
 
     // The "working state" -- style/params/loop/sync currently being edited
     // via performanceStyleParameterPanel/the Loop+Sync toggles, ahead of
@@ -1614,14 +1583,14 @@ public:
     // the constructor, from getSequencerCellParameterGlobalValue() (sane
     // starting values, not zeros -- zero is a broken default for parameters
     // like Bit Depth); independent storage from that point on.
-    int getPerformanceWorkingStyle() const;
-    void setPerformanceWorkingStyle (int style);
-    float getPerformanceWorkingParameterValue (int index) const;
-    void setPerformanceWorkingParameterValue (int index, float value);
-    bool getPerformanceWorkingLoop() const;
-    void setPerformanceWorkingLoop (bool loop);
-    bool getPerformanceWorkingSync() const;
-    void setPerformanceWorkingSync (bool sync);
+    int getPerformanceWorkingStyle () const { return model.getPerformanceWorkingStyle (); }
+    void setPerformanceWorkingStyle (int style) { model.setPerformanceWorkingStyle (style); }
+    float getPerformanceWorkingParameterValue (int index) const { return model.getPerformanceWorkingParameterValue (index); }
+    void setPerformanceWorkingParameterValue (int index, float value) { model.setPerformanceWorkingParameterValue (index, value); }
+    bool getPerformanceWorkingLoop () const { return model.getPerformanceWorkingLoop (); }
+    void setPerformanceWorkingLoop (bool loop) { model.setPerformanceWorkingLoop (loop); }
+    bool getPerformanceWorkingSync () const { return model.getPerformanceWorkingSync (); }
+    void setPerformanceWorkingSync (bool sync) { model.setPerformanceWorkingSync (sync); }
 
 #if JUCE_DEBUG
     // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
@@ -1629,7 +1598,7 @@ public:
     // to drain and print whatever Tape Stop diagnostic events the audio
     // thread queued up since the last call. Does the actual DBG()/console
     // I/O itself -- entirely off the audio thread, never touches
-    // sampleLock -- see the mailbox members' own doc comment for why this
+    // model.sampleLock -- see the mailbox members' own doc comment for why this
     // exists instead of calling DBG() directly from processBlock().
     void drainDebugTapeStopEvents();
 
@@ -1671,9 +1640,9 @@ private:
         return (int) weights.size() - 1; // float rounding fallback
     }
 
-    int pickWeightedRandomSlice() { return pickWeightedIndex (sliceProbabilities); }
+    int pickWeightedRandomSlice() { return pickWeightedIndex (model.sliceProbabilities); }
 
-    // Maps a playbackStyleProbabilities index (as drawn by pickWeightedIndex)
+    // Maps a model.playbackStyleProbabilities index (as drawn by pickWeightedIndex)
     // to its enum value. A plain out-of-range/negative index (shouldn't
     // happen — the table always has numPlaybackStyleOptions entries) falls
     // back to Forward rather than asserting, matching pickWeightedIndex's
@@ -1739,93 +1708,22 @@ private:
     static double computeScratchCycleLengthHostSamples (int rateIndex, int sliceLength,
                                                           double hostBpm, double hostSampleRate, double playbackRate);
 
-    // Shared by redetectSlices() and every manual-point mutation: re-runs
-    // auto-detection at the given sensitivity, merges the result with the
-    // current manual points, sorts + dedupes into one boundary list, and
-    // rebuilds `slices` from it. Slice probabilities reset to 1.0 whenever
-    // this runs — same known simplification as before Step 10, since
-    // slice indices shift around whenever boundaries are added/removed
-    // and there's no stable identity to carry a probability value across.
-    void rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs);
-
-    // Pure merge logic (no side effects, no member writes) shared by the
-    // real rebuild above and previewSlicesAtSensitivity(). Takes a raw
-    // auto-detection result (already confined to [trimStart, trimEnd) by
-    // the caller) and folds in exclusions + manual points, filtering out
-    // any manual point that now falls outside the trim range rather than
-    // deleting it outright — same "soft exclude" treatment already used
-    // for auto-detected exclusions, so widening the trim again later can
-    // bring it back. Must be called with sampleLock already held. Also
-    // where Quantize Transients (Step 35) plugs in -- see
-    // quantizeOnsetToGrid() below, called on each surviving auto-detected
-    // onset before it's merged with manual points.
-    std::vector<Slice> mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const;
-
-    // Quantize detected transients to grid (Step 35) -- snaps a single
-    // auto-detected onset's sample position to the nearest Grid step.
-    // trimStart is passed in (rather than re-read from trimStartSample)
-    // since the caller (mergeOnsetsIntoSlices) already has it and both
-    // must agree on the same value within one merge pass. Returns
-    // onsetSample UNCHANGED if the source tempo is degenerate (<= 0 BPM)
-    // -- same defensive fallback style already used by
-    // computeBeatQuantizeTarget() for the analogous per-pick feature.
-    // Clamped into [trimStart, trimEnd) afterward so an onset near the
-    // very edge of the trim can never quantize to a position outside it.
-    int quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const;
-
-    // Trim Snap mode (Grid) -- true only while Performance mode is the
-    // active trigger mode AND performanceTrimSnapMode is Grid. Checked by
-    // setTrimStartSample()/setTrimEndSample() to pick findNearestGridSample()
-    // over the usual transient search; kept as its own tiny helper since
-    // both call sites need the exact same condition.
-    bool shouldGridSnapTrim() const
-    {
-        return triggerMode.load() == TriggerMode::performance
-            && performanceTrimSnapMode.load() == TrimSnapMode::grid;
-    }
-
-    // Trim Snap mode (Grid) -- finds the nearest FIXED musical grid position
-    // to rawSample, spaced by getNoteValueBeats(performanceTrimGridIndex) at
-    // the sample's established tempo (getCalculatedOriginalBpm()), anchored
-    // at tempoTrimStartSample -- the one stable "beat 0" reference that
-    // stays put regardless of which Performance state slot currently has
-    // focus (see tempoTrimStartSample's own comment). Same beats<->samples
-    // round-trip quantizeOnsetToGrid() above already uses for the analogous
-    // auto-detected-transient-quantize feature, just anchored differently:
-    // that one anchors to the trim it's searching WITHIN, which isn't
-    // available here since the trim handle itself is what's moving --
-    // tempoTrimStartSample is the nearest equivalent stable reference.
-    // Returns rawSample unchanged if the source tempo or grid resolution is
-    // degenerate (<= 0), same defensive fallback quantizeOnsetToGrid() uses.
-    // NOT clamped to any range itself -- both callers already clamp the
-    // result into the allowed handle range, same as they already do for the
-    // transient-snap search.
-    int findNearestGridSample (int rawSample) const;
-
     // Sequenced Trigger Mode (Step 37) -- clears the pattern to all-off,
     // sized to the CURRENT grid dimensions (getSequencerNumRows()/
     // getSequencerNumSteps()). Called whenever either dimension changes:
-    // slices rebuild (rows), or loop length/step resolution change
-    // (columns). Must be called with sampleLock already held.
-    void resetSequencerGrid();
+    // model.slices rebuild (rows), or loop length/step resolution change
+    // (columns). Must be called with model.sampleLock already held.
+    void resetSequencerGrid () { model.resetSequencerGrid (); }
 
     // One pattern bank slot's full contents (Step: MIDI pattern bank) --
-    // see captureCurrentSequencerPatternSnapshot()/patternBank below for how
+    // see captureCurrentSequencerPatternSnapshot()/model.patternBank below for how
     // it's populated and read.
-    struct SequencerPatternSnapshot
-    {
-        bool populated = false;
-        int rows = 0, columns = 0;
-        int stepResolutionIndex = 0, patternLengthBarsIndex = 0;
-        std::vector<int> grid;
-        std::map<int, std::map<juce::String, float>> parameterOverrides;
-        std::map<int, int> extendedLengthSteps;
-    };
+    using SequencerPatternSnapshot = SlicerModel::SequencerPatternSnapshot;
 
     // MIDI input dispatch layer -- see the public "MIDI input / Sequencer
     // pattern bank" section above for the overall design. All of these,
     // plus completeMidiLearn()/handleSequencerPatternRecallNoteOn() below,
-    // are only ever called from within processBlock() and assume sampleLock
+    // are only ever called from within processBlock() and assume model.sampleLock
     // is already held by the caller (same convention resetSequencerGrid()
     // itself follows) -- they must never take the lock themselves.
     // hostTransportPlaying is threaded through from processBlock() (computed
@@ -1836,9 +1734,9 @@ private:
     void dispatchNoteOn (int noteNumber, bool hostTransportPlaying);
 
     // Sequenced mode's recall entry point (Pass 2) -- routes by
-    // patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
+    // model.patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
     // below right away (unchanged Pass 1 behaviour); setInterval/endOfPattern
-    // instead arm pendingPatternSwitchNote and let the per-sample boundary
+    // instead arm model.pendingPatternSwitchNote and let the per-sample boundary
     // check in processBlock()'s sequencedMode branch apply the switch once
     // the chosen boundary is crossed. Empty slot -> no-op either way, same
     // as Pass 1.
@@ -1847,7 +1745,7 @@ private:
     // The actual grid swap, called either directly (Immediate) or from the
     // deferred per-sample boundary check (Set Interval/End of Pattern). A
     // populated slot overwrites the live grid AND its defining dimensions
-    // (stepResolutionIndex/patternLengthBarsIndex) wholesale, then forces
+    // (model.stepResolutionIndex/model.patternLengthBarsIndex) wholesale, then forces
     // sequencedModeInitialized false so the step-boundary tracker re-syncs
     // against the new grid on the very next check -- the same "just
     // switched, trigger immediately" mechanic setTriggerMode() already
@@ -1860,29 +1758,22 @@ private:
     // this call happens after that block's own check already ran).
     void handleSequencerPatternRecallNoteOn (int noteNumber);
 
-    // Writes pendingSaveSnapshot (captured back when armMidiLearnForPatternSave()
-    // was clicked) into patternBank[noteNumber] and clears midiLearnArmed.
-    void completeMidiLearn (int noteNumber);
-
-    // Captures rows/columns/stepResolutionIndex/patternLengthBarsIndex
-    // alongside the grid+override maps themselves -- those two indices
-    // define the grid's column stride, so a recall that restored the cell
-    // data without them would reinterpret it against the wrong stride and
-    // scramble every cell. Assumes sampleLock already held.
-    SequencerPatternSnapshot captureCurrentSequencerPatternSnapshot() const;
+    // Writes model.pendingSaveSnapshot (captured back when armMidiLearnForPatternSave()
+    // was clicked) into model.patternBank[noteNumber] and clears model.midiLearnArmed.
+    void completeMidiLearn (int noteNumber) { model.completeMidiLearn (noteNumber); }
 
     // Performance mode's own note-on entry point -- dispatched from
     // dispatchNoteOn()'s TriggerMode::performance case. An empty, unfocused
     // slot is a no-op regardless of Quantize Recall, same as Pass 1 (checked
     // up front here before either path below runs). Otherwise routes by
-    // performanceQuantizeRecallEnabled, exactly the same "immediate vs.
+    // model.performanceQuantizeRecallEnabled, exactly the same "immediate vs.
     // arm-and-defer" split handlePatternSwitchNoteOn() uses for
-    // patternSwitchTiming:
+    // model.patternSwitchTiming:
     //   off, OR on but the host transport isn't playing right now (no
     //     meaningful beat position to quantize against without it) --
     //     applies immediately via applyPerformanceStateRecall(), unchanged
     //     Pass 1 behaviour.
-    //   on AND transport playing -- arms pendingPerformanceRecallNote and
+    //   on AND transport playing -- arms model.pendingPerformanceRecallNote and
     //     lets the per-sample boundary check in processBlock()'s
     //     performanceMode branch apply it once the chosen grid point is
     //     reached. A newer note-on before that point just overwrites the
@@ -1902,9 +1793,9 @@ private:
 
     // Unifies the tempo math (Step 23) that both Trim markers and Manual
     // BPM override feed into:
-    //   sourceSpanSeconds = manualBpmOverrideEnabled
-    //       ? (loopLengthBars * 4 * 60) / manualBpmOverrideValue
-    //       : (tempoTrimEndSample - tempoTrimStartSample) / sampleSampleRate
+    //   sourceSpanSeconds = model.manualBpmOverrideEnabled
+    //       ? (model.loopLengthBars * 4 * 60) / model.manualBpmOverrideValue
+    //       : (model.tempoTrimEndSample - model.tempoTrimStartSample) / sampleSampleRate
     // Used by both getCalculatedOriginalBpm() (the UI's "~X BPM" label) and
     // processBlock()'s repitchRatio — replaces the old calculation, which
     // used the whole buffer's length regardless of trim (the bug this
@@ -1914,298 +1805,25 @@ private:
     // (repitchRatio, srConversionRatio) this feeds into, so it stays
     // consistent with the direct-read path "for free."
     //
-    // Deliberately reads tempoTrimStartSample/tempoTrimEndSample, NOT the
-    // plain trimStartSample/trimEndSample -- see tempoTrimStartSample's own
+    // Deliberately reads model.tempoTrimStartSample/model.tempoTrimEndSample, NOT the
+    // plain model.trimStartSample/model.trimEndSample -- see model.tempoTrimStartSample's own
     // comment (Performance mode's per-state trim fix). The two pairs are
     // identical outside Performance mode; they only diverge once Performance
     // mode starts repointing the shared trim atomics at whichever state slot
     // has editing focus, which must NOT feed back into "the sample's
     // original tempo."
-    double computeSourceSpanSeconds() const;
-
-    // Tempo-relative minimum holdoff between consecutive detected
-    // transients, replacing the old fixed defaultHoldoffMs floor everywhere
-    // detection actually runs (see the call sites below). At max
-    // sensitivity, a fixed ms floor lets detection density run away on fast
-    // material and stay needlessly sparse on slow material — neither
-    // bounded by anything musical. This instead never allows two onsets
-    // closer than roughly a 32nd note apart AT THE LOOP'S OWN CALCULATED
-    // TEMPO (getCalculatedOriginalBpm(), the same trim/bars/manual-override
-    // -aware derivation used everywhere else tempo matters in this class),
-    // so density scales with how fast the material actually is instead of
-    // an arbitrary constant. A 32nd note is 1/8 of a quarter-note beat
-    // (assumes 4/4, same assumption used throughout); 60000/bpm is one
-    // beat in ms.
-    //
-    // Falls back to the old fixed defaultHoldoffMs when there's no usable
-    // tempo yet (bpm <= 0 -- no sample loaded, or a degenerate span), so
-    // behaviour before a sample loads is unchanged. Also floors at 1ms as a
-    // numerical safety net (not a musical one) against an absurd manual BPM
-    // override collapsing the holdoff to ~0 and effectively disabling it.
-    float computeMinimumHoldoffMs() const
-    {
-        const double bpm = getCalculatedOriginalBpm();
-
-        if (bpm <= 0.0)
-            return defaultHoldoffMs;
-
-        constexpr double thirtySecondNoteFractionOfBeat = 1.0 / 8.0;
-        const double beatMs = 60000.0 / bpm;
-        return (float) juce::jmax (1.0, beatMs * thirtySecondNoteFractionOfBeat);
-    }
+    double computeSourceSpanSeconds () const { return model.computeSourceSpanSeconds (); }
 
     // Audition (Step 25) — the raw, generative-engine-bypassing loop
-    // render. Called from processBlock() (sampleLock already held) in
-    // place of everything below it whenever auditionActive is set. Reads/
-    // writes auditionPosition; safe from the UI thread too only because
+    // render. Called from processBlock() (model.sampleLock already held) in
+    // place of everything below it whenever model.auditionActive is set. Reads/
+    // writes model.auditionPosition; safe from the UI thread too only because
     // setAuditionActive() takes the same lock.
     void renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate);
 
-    struct ManualSlicePoint
-    {
-        int id = -1;
-        int samplePosition = 0;
-    };
-
-    std::vector<ManualSlicePoint> manualPoints;
-    int nextManualPointId = 1;
-
-    struct ExcludedPoint
-    {
-        int id = -1;
-        int samplePosition = 0;
-    };
-
-    std::vector<ExcludedPoint> excludedPoints;
-    int nextExcludedPointId = 1;
-
-    juce::UndoManager undoManager;
-
-    // Search window for snapping a manual point to the nearest real
-    // transient-like peak — generous enough to catch "the hit that's
-    // obviously there" without snapping across to an unrelated one.
-    static constexpr float manualSnapRadiusMs = 50.0f;
-
-    juce::AudioFormatManager formatManager;
-
-    juce::AudioBuffer<float> sampleBuffer;
-    double sampleSampleRate = 44100.0;
-    bool sampleLoaded = false;
-    juce::String loadedFileName;
-    juce::CriticalSection sampleLock; // guards sampleBuffer/slices during loadSample()
-
-    TransientDetector transientDetector;
-    std::vector<Slice> slices;
-    std::vector<float> sliceProbabilities; // parallel to slices; reset to 1.0 each on redetectSlices()
     juce::Random random;
 
-    std::atomic<int> loopLengthBars { 1 };
-
-    // Trim markers (Step 23) — source-sample-domain bounds confining
-    // detection/manual points/playback. Set to the full buffer on load in
-    // loadSample(). minTrimGapSamples keeps the two handles from ever
-    // crossing/colliding, so the range can never degenerate to zero width.
-    std::atomic<int> trimStartSample { 0 };
-    std::atomic<int> trimEndSample { 0 };
-    static constexpr int minTrimGapSamples = 64;
-
-    // Tempo trim (Performance mode Pass 1 fix) — a second copy of the trim
-    // markers, updated in lockstep with trimStartSample/trimEndSample by
-    // every REAL trim edit (setTrimStartSample()/setTrimEndSample() while
-    // outside Performance mode) and by loadSample()'s reset, but otherwise
-    // left alone. This is what computeSourceSpanSeconds() actually reads
-    // (see its own comment) — the sample's one true, already-established
-    // tempo basis, kept stable even while Performance mode repoints the
-    // shared trimStartSample/trimEndSample atomics at whichever state slot
-    // currently has editing focus (see setFocusedPerformanceStateSlot() and
-    // the "focused slot's segment IS the shared trim atomics" comment in
-    // processBlock()). Without this second copy, switching Performance
-    // focus to a state with a much shorter saved trim would make that short
-    // span itself look like the whole loop, independently re-deriving a
-    // bogus "original tempo" from it (combined with loopLengthBars) instead
-    // of measuring it as a segment of the sample's real tempo — corrupting
-    // getCalculatedOriginalBpm() and, since processBlock()'s repitchRatio is
-    // shared by every trigger mode, the actual playback rate of whatever is
-    // sounding at that moment too, Performance or not.
-    std::atomic<int> tempoTrimStartSample { 0 };
-    std::atomic<int> tempoTrimEndSample { 0 };
-
-    // Audition (Step 25) — auditionActive is checked/cleared from the
-    // audio thread (auto-stop) and set from the UI thread (button click);
-    // auditionPosition is plain (not atomic) since it's only ever touched
-    // under sampleLock — by processBlock()/renderAudition() on the audio
-    // thread, and by setAuditionActive() on the UI thread.
-    std::atomic<bool> auditionActive { false };
-    double auditionPosition = 0.0;
-
-    // Audition playhead (Step 28) — lock-free, written by renderAudition()
-    // every block (audio thread), read by WaveformDisplay's 30fps timer
-    // (UI thread), same pattern as currentlyPlayingSliceIndexForUI below.
-    std::atomic<int> auditionPlaybackPositionForUI { -1 };
-
-    // Manual BPM override (Step 23) — off by default, so behaviour is
-    // unchanged (bars-derived tempo, same as always) until the user
-    // explicitly enables it. 120 is just a sane inert starting value; it
-    // has zero effect while disabled.
-    std::atomic<bool> manualBpmOverrideEnabled { false };
-    std::atomic<double> manualBpmOverrideValue { 120.0 };
-
-    std::atomic<float> currentSensitivity { defaultSensitivity };
-    std::atomic<float> fadeInMs { 5.0f };
-    std::atomic<float> fadeOutMs { 15.0f };
-
-    // Quantize detected transients to grid (Step 35) -- off by default,
-    // same "preserve existing behaviour until explicitly opted into"
-    // convention as every other toggle in this class. quantizeGridIndex
-    // defaults to index 13 (4n / one quarter note), the same default
-    // clockReferenceIndex already uses, for a consistent "quarter note"
-    // starting point across every note-value-palette control.
-    std::atomic<bool> quantizeTransientsEnabled { false };
-    std::atomic<int> quantizeGridIndex { 13 };
-
-    // Trim Snap mode (Performance mode's per-state trims only) -- off
-    // (Transients) by default, same "preserve existing behaviour until
-    // explicitly opted into" convention as quantizeTransientsEnabled above.
-    // performanceTrimGridIndex defaults to index 13 (4n / one quarter
-    // note), the same default every other note-value-palette control here
-    // uses.
-    std::atomic<TrimSnapMode> performanceTrimSnapMode { TrimSnapMode::transients };
-    std::atomic<int> performanceTrimGridIndex { 13 };
-
-    std::atomic<TriggerMode> triggerMode { TriggerMode::sliceLength };
-    std::atomic<int> clockReferenceIndex { 13 }; // default: 4n / one quarter note (index in the expanded 20-value table)
-    std::vector<float> subdivisionProbabilities; // size numNoteValueOptions, init to 1.0 each
-    std::vector<float> playbackStyleProbabilities; // size numPlaybackStyleOptions, init to {1.0, 0.0, 0.0, 0.0, 0.0, 0.0} (Forward-only)
     std::vector<bool> randomizeParametersForStyle = std::vector<bool> ((size_t) numPlaybackStyleOptions, false); // see getRandomizeParametersForStyle()'s own doc comment
-    std::atomic<TapeStopScope> tapeStopScope { TapeStopScope::wholeWindow };
-    std::atomic<FilterSweepScope> filterSweepScope { FilterSweepScope::perTick };
-
-    // Slice Length periodic reset (Step 34) -- index into {1, 2, 4, 8}
-    // bars (see getResetBarsValue()). Defaults to index 2 (4 bars): a
-    // reasonable middle ground that still resyncs regularly without
-    // interrupting typical short phrases too aggressively. Unlike every
-    // other toggle in this class, this one is intentionally NOT "off by
-    // default to preserve existing behaviour" -- the whole feature is
-    // mandatory, so Slice Length mode's playback genuinely changes (for
-    // the better) the moment this exists, per the explicit decision that
-    // this isn't optional.
-    std::atomic<int> resetBarsIndex { 2 };
-
-    // Sequenced Trigger Mode (Step 37) -- stepResolutionIndex indexes the
-    // same note-value palette as clockReferenceIndex/quantizeGridIndex.
-    // sequencerGrid is the pattern itself: flat-indexed as
-    // row*getSequencerNumSteps()+column, resized (and reset to all-empty)
-    // by resetSequencerGrid() whenever either dimension changes. Guarded
-    // by sampleLock, same as slices/manualPoints -- read on the audio
-    // thread every sample Sequenced mode is active, written from the UI
-    // thread on every mouse-drawn cell. Each entry is -1 (empty) or a
-    // PlaybackStyle index (0 to numPlaybackStyleOptions-1, Step 41) -- an
-    // int, not a bool, since a cell now also remembers WHICH style it
-    // should play.
-    std::atomic<int> stepResolutionIndex { 7 }; // default: 16n (a sixteenth note)
-    std::atomic<int> patternLengthBarsIndex { 0 }; // default: 1 bar
-    std::vector<int> sequencerGrid;
-
-    // Sequencer step parameter overrides (Step 45) -- sparse, keyed by the
-    // same flat index (row*getSequencerNumSteps()+column) sequencerGrid
-    // itself uses. A cell only appears here at all once it has at least
-    // one override; absent means "use the global default" for every
-    // parameter. Guarded by sampleLock, same lifecycle as sequencerGrid.
-    std::map<int, std::map<juce::String, float>> sequencerCellParameterOverrides;
-
-    // Step-extension (Pass 1) -- sparse, same flat-index key
-    // (row*getSequencerNumSteps()+column) and lifecycle as the map above:
-    // absent means "unset" (natural slice length). See
-    // getSequencerCellExtendedLengthSteps()/setSequencerCellExtendedLengthSteps()
-    // above for how it's read/written.
-    std::map<int, int> sequencerCellExtendedLengthSteps;
-
-    // Sequencer pattern bank (MIDI input, Pass 1) -- 128 slots, indexed 1:1
-    // by MIDI note number, each either empty (default) or a full
-    // SequencerPatternSnapshot. Guarded by sampleLock, same lifecycle as
-    // sequencerGrid itself: read on the audio thread from
-    // handleSequencerPatternRecallNoteOn()/completeMidiLearn() (called from
-    // processBlock(), lock already held there), written from the UI thread
-    // via armMidiLearnForPatternSave(). pendingSaveSnapshot holds whatever
-    // was captured at the moment "Save to..." was clicked, until a note-on
-    // arrives to claim a slot for it (or cancelMidiLearn() discards it).
-    std::array<SequencerPatternSnapshot, 128> patternBank;
-    SequencerPatternSnapshot pendingSaveSnapshot;
-    std::atomic<bool> midiLearnArmed { false };
-    std::atomic<int> activePatternBankSlot { -1 }; // -1 = no recall yet this session
-
-    // Performance mode state bank -- same guard/lifecycle as patternBank
-    // just above, just holding PerformanceStateSnapshot instead of
-    // SequencerPatternSnapshot. performanceWorkingState is the one slot
-    // with no counterpart in the Sequencer bank: since Performance mode has
-    // no live grid of its own to capture wholesale (unlike sequencerGrid),
-    // its style/params/loop/sync need somewhere to live WHILE being edited,
-    // ahead of the next auto-save -- this is that somewhere. Whenever the
-    // FOCUSED slot's own key is what's sounding, it's ALSO what
-    // processBlock()'s performanceMode branch renders directly (deliberately
-    // the same object, not a frozen copy -- see performancePlaybackIsFocused/
-    // currentlyPlayingPerformanceSnapshot below for the OTHER-slot case), so
-    // a parameter tweak made while the focused slot is still sounding (e.g.
-    // Loop on) is heard on its very next pick with no explicit save required
-    // -- the same "hear it as you shape it" contract every other
-    // live-editable surface in this plugin already gives (waveform
-    // probability drag, etc.). focusedPerformanceStateSlot tracks WHICH slot
-    // currently has editing focus (set only by setFocusedPerformanceStateSlot(),
-    // called from the on-screen keyboard's click handler) -- for the
-    // keyboard's own focus highlight, and to decide, on each physical
-    // note-on, whether that note IS the focused slot (live-audition) or some
-    // OTHER slot (frozen snapshot playback) in handlePerformanceStateNoteOn().
-    std::array<PerformanceStateSnapshot, 128> performanceStateBank;
-    PerformanceStateSnapshot performanceWorkingState;
-    std::atomic<int> focusedPerformanceStateSlot { -1 }; // -1 = nothing focused yet
-
-    // Pattern Switch Timing (Pass 2) -- see the public enum's own doc
-    // comment above. patternSwitchIntervalIndex defaults to index 19 ("1n",
-    // one bar) -- a coarser default than clockReferenceIndex's one-beat
-    // default, since switching an entire pattern is a coarser action than
-    // Clock mode's own per-slice picks. pendingPatternSwitchNote is -1
-    // whenever no switch is pending; written from the audio thread only
-    // (dispatchNoteOn and the per-sample boundary check both run inside
-    // processBlock()), read from the UI thread for the "pending" indicator.
-    std::atomic<PatternSwitchTiming> patternSwitchTiming { PatternSwitchTiming::immediate };
-    std::atomic<int> patternSwitchIntervalIndex { 19 };
-    std::atomic<int> pendingPatternSwitchNote { -1 };
-
-    // Quantize Recall (Performance mode) -- see the public getters/setters'
-    // own doc comment above for the overall design; same shape as Pattern
-    // Switch Timing's Set Interval mode just above, just off by default
-    // (preserving Performance mode's original immediate-recall behaviour)
-    // rather than defaulting to a deferred mode the way Sequenced mode's
-    // Pattern Switch Timing does. performanceQuantizeRecallIntervalIndex
-    // defaults to index 13 (4n / one quarter note), the same default every
-    // other note-value-palette control in this class uses (unlike
-    // patternSwitchIntervalIndex's own coarser one-bar default -- recalling
-    // a single performance state is a finer-grained action than switching
-    // an entire pattern). pendingPerformanceRecallNote is -1 whenever no
-    // recall is pending; written from the audio thread only (dispatchNoteOn
-    // and the per-sample boundary check both run inside processBlock()),
-    // read from the UI thread for the "pending" getter.
-    std::atomic<bool> performanceQuantizeRecallEnabled { false };
-    std::atomic<int> performanceQuantizeRecallIntervalIndex { 13 };
-    std::atomic<int> pendingPerformanceRecallNote { -1 };
-
-    // Style Palette's persistent "currently selected drawing style" (Step
-    // 41) -- defaults to Forward (index 0).
-    std::atomic<int> selectedDrawingStyle { 0 };
-
-    // Stretch (Step 22) character parameters -- grain size/window shape
-    // stay separate from Pitch Mode's own user-facing grain size/window
-    // shape/pitch shift controls, none of which apply here. Grain size and
-    // "speed" (a fixed per-pass character constant, independent of how
-    // long the pick actually plays -- see its own doc comment above) were
-    // fixed constants until Step 46 -- see setStretchGrainSizeMs()/
-    // getStretchGrainSizeMs() and setStretchSpeedMultiplier()/
-    // getStretchSpeedMultiplier() above, plus the per-step overrides these
-    // feed via currentPickStretchGrainSizeMs/currentPickStretchSpeedMultiplier
-    // below. Small grains + a hard-edged window (still fixed, not exposed)
-    // make the seams audible.
-    std::atomic<float> stretchGrainSizeMsValue { defaultStretchGrainSizeMs };
-    std::atomic<float> stretchSpeedMultiplierValue { defaultStretchSpeedMultiplier };
 
     // Filter Down/Filter Up (Step 29/30) character parameters —
     // filterSweepStartHz/filterSweepEndHz remain deliberately fixed, no
@@ -2215,7 +1833,7 @@ private:
     // classic breakbeat/DnB "filter close"); Filter Up just swaps which
     // endpoint it starts/ends at (see processBlock()) -- no separate
     // constants needed. Resonance is no longer fixed -- see
-    // filterSweepResonanceValue below (Step 45). One shared filter
+    // model.filterSweepResonanceValue below (Step 45). One shared filter
     // instance is fine — Playback Style is a single mutually-exclusive
     // pick per pick, so it's never touched by more than one pick's
     // processing at a time.
@@ -2253,40 +1871,6 @@ private:
     // has.
     juce::AudioBuffer<float> flangerDelayBuffer;
     int flangerDelayWriteIndex = 0;
-
-    // Filter Sweep resonance (Step 45) -- see setFilterSweepResonance()/
-    // getFilterSweepResonance() above. ~2.0 approximates the requested
-    // Q~2-3 range in this filter class's own "resonance" parameter (per
-    // juce::dsp::StateVariableTPTFilter's docs, standard 12dB/octave --
-    // i.e. no added resonance -- is 1/sqrt(2); higher values add
-    // character without self-oscillating at this level).
-    std::atomic<float> filterSweepResonanceValue { defaultFilterSweepResonance };
-
-    // Filter Sweep filter type (Step 46) -- see setFilterSweepFilterType()/
-    // getFilterSweepFilterType() above. 0 = lowpass, matching the filter's
-    // original hardcoded setType() call.
-    std::atomic<int> filterSweepFilterTypeValue { 0 };
-
-    // Curve shape (Step 46) -- see setCurveShape()/getCurveShape() above.
-    // 0 = linear, matching Tape Stop/Ping-Pong's existing behaviour.
-    std::atomic<int> curveShapeValue { 0 };
-
-    // Bitcrush/Flanger/Scratch global defaults -- see set*Global()/
-    // get*Global() above. Defaults match the original fixed constants
-    // (bitcrushRateReductionDefault etc. in PluginProcessor.cpp) exactly.
-    std::atomic<float> bitcrushRateReductionGlobalValue { 12.0f };
-    std::atomic<int> bitcrushRateReductionModeGlobalValue { 0 };
-    std::atomic<float> bitcrushBitDepthGlobalValue { 5.0f };
-    std::atomic<int> bitcrushBitDepthModeGlobalValue { 0 };
-    std::atomic<int> scratchRateGlobalValue { 7 }; // 16n, matching scratchDefaultRateIndex
-    std::atomic<int> scratchForwardCurveGlobalValue { 0 }; // Linear
-    std::atomic<int> scratchBackwardCurveGlobalValue { 0 }; // Linear
-    std::atomic<float> flangerDelayTimeGlobalValue { 2.0f };
-    std::atomic<int> flangerDelayTimeModeGlobalValue { 0 };
-    std::atomic<float> flangerMixGlobalValue { 0.5f };
-    std::atomic<int> flangerMixModeGlobalValue { 0 };
-    std::atomic<float> flangerFeedbackGlobalValue { 0.3f };
-    std::atomic<int> flangerFeedbackModeGlobalValue { 0 };
 
     // This pick's own resonance/filter type/curve shape (Step 45/46),
     // captured once at pick-start by every trigger mode (Slice Length/
@@ -2401,13 +1985,13 @@ private:
     bool performanceRecallPending = false;
 
     // Which source governs the pick that performanceRecallPending is about
-    // to start (or that's already sounding) -- true: performanceWorkingState,
+    // to start (or that's already sounding) -- true: model.performanceWorkingState,
     // the focused slot's own live/in-progress edits (played via the shared
     // trim atomics every other mode also edits through); false:
     // currentlyPlayingPerformanceSnapshot, a frozen copy of some OTHER
     // slot's saved state (including its own saved trim), copied in at the
     // note-on that started this pick so auditioning it can never disturb
-    // performanceWorkingState/focus. Both set together, only from
+    // model.performanceWorkingState/focus. Both set together, only from
     // handlePerformanceStateNoteOn() -- audio-thread-only, same convention
     // as every other currentPick*/performance* field in this section.
     bool performancePlaybackIsFocused = false;
@@ -2421,7 +2005,7 @@ private:
     // same "arm now, resolve against the very next per-sample check" shape
     // clockModeInitialized/resetWindowInitialized use for their own first
     // boundary. Re-armed (set back to false) every time
-    // pendingPatternSwitchNote changes, including on replacement by a newer
+    // model.pendingPatternSwitchNote changes, including on replacement by a newer
     // note-on -- always tracks "next occurrence from NOW," not from
     // whenever the original note-on arrived.
     bool patternSwitchIntervalBoundaryArmed = false;
@@ -2430,9 +2014,9 @@ private:
     // Quantize Recall scheduling (Performance mode, audio thread only) --
     // exactly the same "arm now, resolve against the very next per-sample
     // check" shape as patternSwitchIntervalBoundaryArmed/Ppq just above,
-    // just for pendingPerformanceRecallNote instead of
-    // pendingPatternSwitchNote. Re-armed (set back to false) every time
-    // pendingPerformanceRecallNote changes, including on replacement by a
+    // just for model.pendingPerformanceRecallNote instead of
+    // model.pendingPatternSwitchNote. Re-armed (set back to false) every time
+    // model.pendingPerformanceRecallNote changes, including on replacement by a
     // newer note-on -- always tracks "next occurrence from NOW."
     bool performanceQuantizeRecallBoundaryArmed = false;
     double performanceQuantizeRecallBoundaryPpq = 0.0;
@@ -2461,12 +2045,6 @@ private:
     int sequencedSubdivisionRow = -1;
     double sequencedNextSubdivisionOffsetHostSamples = 0.0;
     double sequencedSubdivisionTickLengthHostSamples = 0.0;
-
-    // Lock-free copy of the currently active step column (Step 37),
-    // written by the audio thread every time a new step boundary is
-    // reached, read by the UI thread for the sequencer grid's playhead
-    // indicator -- same pattern as currentlyPlayingSliceIndexForUI below.
-    std::atomic<int> currentlyPlayingStepIndexForUI { -1 };
 
     // Filter Sweep's Whole Window scope (Step 30) — how far into the
     // CURRENT WINDOW we are, in host samples, as opposed to samplesSince-
@@ -2575,7 +2153,7 @@ private:
     // see SequencerGrid's) polls the *Pending flags and does the actual
     // printing off the audio thread entirely. Calling DBG() directly from
     // inside processBlock() -- which this replaces -- did string
-    // formatting and a blocking console-I/O syscall while sampleLock was
+    // formatting and a blocking console-I/O syscall while model.sampleLock was
     // held, which could stall the audio callback long enough that every
     // UI-thread call needing that same lock (SequencerGrid's own 30fps
     // poll among them) blocked too, freezing the whole app.
@@ -2669,11 +2247,8 @@ private:
     // suspicion of being the one that's stuck) polls these once a second
     // and prints directly, so the log keeps updating even if the message
     // thread is wedged inside setFocusedPerformanceStateSlot().
-    std::atomic<juce::int64> debugAudioProcessBlockEntries { 0 }; // incremented at the very top of processBlock(), before sampleLock is even attempted
-    std::atomic<juce::int64> debugAudioLockAcquiredCount { 0 };   // incremented immediately after processBlock() acquires sampleLock
-    std::atomic<bool> debugFocusChangeInProgress { false };       // true for the duration of setFocusedPerformanceStateSlot() -- set before attempting sampleLock, cleared at the very end
-    std::atomic<juce::int64> debugFocusChangeStartMs { 0 };
-    std::atomic<int> debugFocusChangeNoteNumber { -1 };
+    std::atomic<juce::int64> debugAudioProcessBlockEntries { 0 }; // incremented at the very top of processBlock(), before model.sampleLock is even attempted
+    std::atomic<juce::int64> debugAudioLockAcquiredCount { 0 };   // incremented immediately after processBlock() acquires model.sampleLock
 
     struct FreezeWatchdog : public juce::HighResolutionTimer
     {
@@ -2684,12 +2259,6 @@ private:
 
     FreezeWatchdog freezeWatchdog { *this };
 #endif
-
-    // Lock-free copy of currentSliceIndex, written by the audio thread
-    // whenever a new pick begins, read by the UI thread for the playhead
-    // highlight. Separate from currentSliceIndex itself so the UI never
-    // needs to touch sampleLock just to poll this at 30fps.
-    std::atomic<int> currentlyPlayingSliceIndexForUI { -1 };
 
     // Fade tracking, in host-output-sample units (not source-sample units,
     // so fade length in ms stays constant regardless of repitching).
@@ -2702,22 +2271,8 @@ private:
     // (regardless of which mode is active, so switching mid-pick always
     // finds it already in sync) and again, mid-pick, whenever the mode
     // itself changes (granularNeedsReseed).
-    std::atomic<PitchMode> pitchMode { PitchMode::repitch };
-    std::atomic<float> grainSizeMs { 60.0f };
-    std::atomic<GrainWindowShape> grainWindowShape { GrainWindowShape::hann };
-    std::atomic<float> pitchShiftSemitones { 0.0f };
     std::atomic<bool> granularNeedsReseed { false };
     GranularStretcher granularStretcher;
-
-    // Beat-quantized slice length (Step 24) — default ON, see the public
-    // setter/getter's doc comment above for why that's correct here
-    // (unlike every other toggle in this class).
-    std::atomic<bool> beatQuantizeSliceLengthEnabled { true };
-
-    // Beat-quantized slice length — Repitch mode (Step 26). Default OFF,
-    // unlike the Time-Stretch toggle above: this one has a real pitch
-    // trade-off, so it's opt-in rather than a new standard behaviour.
-    std::atomic<bool> beatQuantizeSliceLengthEnabledRepitch { false };
 
     // Per-pick beat-quantization state (Step 24, audio thread only) —
     // computed once at pick-start in Slice Length mode (never in Clock
@@ -2732,7 +2287,7 @@ private:
     // Performance mode's Sync toggle (Pass 1, audio thread only) -- captured
     // once at pick-start, same shape as currentPickBeatQuantized just above:
     // explicitly false for every OTHER mode's picks (Clock/Sequenced/Slice
-    // Length), and set to `! performanceWorkingState.sync` for a Performance
+    // Length), and set to `! model.performanceWorkingState.sync` for a Performance
     // pick. When true, processBlock() substitutes a native (sampleSampleRate/
     // hostSampleRate) rate for playbackRate at every downstream use, instead
     // of whichever global Pitch Mode (Repitch/Time-Stretch) is currently
@@ -2740,15 +2295,6 @@ private:
     // those several downstream sites, so a pick's rate can never read as one
     // thing at pick-start and another mid-render.
     bool currentPickNativeRateActive = false;
-
-    static constexpr float defaultSensitivity = 0.5f; // sensible starting sensitivity
-
-    // Fixed-ms holdoff floor — ONLY used as computeMinimumHoldoffMs()'s
-    // fallback when there's no usable tempo yet (no sample loaded). Every
-    // actual detection call site uses computeMinimumHoldoffMs() instead of
-    // this directly; see that method's doc comment for why (tempo-relative
-    // holdoff replaced this as the real minimum-gap floor).
-    static constexpr float defaultHoldoffMs = 30.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SlicerAudioProcessor)
 };

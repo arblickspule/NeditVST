@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "SlicerModel.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -9,163 +10,6 @@
 
 namespace
 {
-    // Snapshot-based undo action (Step 12): every slice-editing operation
-    // (add/move/remove/exclude/reset) is captured as "manual+excluded
-    // point state before" vs "...after", and undo/redo just re-applies
-    // whichever snapshot is needed. One class covers all of them rather
-    // than a bespoke action type per operation — coarse-grained on
-    // purpose, keeps the system simple and uniform.
-    class SliceEditUndoableAction : public juce::UndoableAction
-    {
-    public:
-        SliceEditUndoableAction (SlicerAudioProcessor& processorToUse,
-                                  std::vector<SlicerAudioProcessor::ManualPointInfo> beforeManual,
-                                  std::vector<SlicerAudioProcessor::ManualPointInfo> beforeExcluded,
-                                  std::vector<SlicerAudioProcessor::ManualPointInfo> afterManual,
-                                  std::vector<SlicerAudioProcessor::ManualPointInfo> afterExcluded)
-            : processor (processorToUse),
-              before { std::move (beforeManual), std::move (beforeExcluded) },
-              after { std::move (afterManual), std::move (afterExcluded) }
-        {
-        }
-
-        bool perform() override
-        {
-            processor.applyManualState (after.first, after.second);
-            return true;
-        }
-
-        bool undo() override
-        {
-            processor.applyManualState (before.first, before.second);
-            return true;
-        }
-
-    private:
-        SlicerAudioProcessor& processor;
-        std::pair<std::vector<SlicerAudioProcessor::ManualPointInfo>,
-                  std::vector<SlicerAudioProcessor::ManualPointInfo>> before, after;
-    };
-
-    // Note-value palette shared by the clock-reference menu and the
-    // subdivision probability table (Step 14/15). Matches the standard
-    // Max/M4L tempo-relative rate set, sorted shortest to longest, capped
-    // at 1n (1nd — 1.5 bars — deliberately excluded per the "no longer
-    // than 1 bar" decision). Beats are quarter-note units.
-    struct NoteValueOption { const char* name; double beats; };
-
-    const std::array<NoteValueOption, SlicerAudioProcessor::numNoteValueOptions> noteValueOptions { {
-        { "128n", 1.0 / 32.0 },
-        { "64n",  1.0 / 16.0 },
-        { "32nt", 1.0 / 12.0 },
-        { "64nd", 3.0 / 32.0 },
-        { "32n",  1.0 / 8.0 },
-        { "16nt", 1.0 / 6.0 },
-        { "32nd", 3.0 / 16.0 },
-        { "16n",  1.0 / 4.0 },
-        { "8nt",  1.0 / 3.0 },
-        { "16nd", 3.0 / 8.0 },
-        { "8n",   1.0 / 2.0 },
-        { "4nt",  2.0 / 3.0 },
-        { "8nd",  3.0 / 4.0 },
-        { "4n",   1.0 },
-        { "2nt",  4.0 / 3.0 },
-        { "4nd",  3.0 / 2.0 },
-        { "2n",   2.0 },
-        { "1nt",  8.0 / 3.0 },
-        { "2nd",  3.0 },
-        { "1n",   4.0 }
-    } };
-
-    // Playback style names (Step 19/21/22/29/30), indexed the same way the
-    // weighted table stores them.
-    const std::array<const char*, SlicerAudioProcessor::numPlaybackStyleOptions> playbackStyleNames { {
-        "Forward", "Ping-Pong", "Tape Stop", "Stretch", "Filter Down", "Filter Up", "Bitcrush", "Scratch", "Flanger"
-    } };
-
-    // Bitcrush character constants (Step 48/49) -- Sweep In/Out's fixed
-    // far end. 48 samples is roughly 1/48th of the original rate (well
-    // past the original spec's 1/8-1/16 default range, deliberately more
-    // extreme since a SWEEP TARGET is meant to read as "maximally
-    // crushed," not "typical"); 1 bit is the most crushed a bit-depth
-    // quantizer can go. The Static-mode DEFAULTS these used to hold are no
-    // longer fixed constants -- see bitcrushRateReductionGlobalValue/
-    // bitcrushBitDepthGlobalValue in PluginProcessor.h (Slice Length/Clock
-    // mode parameter panel).
-    constexpr float bitcrushRateReductionExtreme = 48.0f;
-    constexpr float bitcrushBitDepthExtreme = 1.0f;
-
-    // Flanger character constants -- same "fixed Sweep In/Out extreme, no
-    // longer a fixed Static default" shape as Bitcrush's own constants
-    // just above (see flangerDelayTimeGlobalValue/flangerMixGlobalValue/
-    // flangerFeedbackGlobalValue in PluginProcessor.h). Delay Time's
-    // extreme sits at the TOP of its range (10ms, the deepest/most
-    // pronounced comb notch) exactly like Sample Rate Reduction's extreme
-    // does -- "Static, maxed out" and "fully swept" read as the same
-    // amount of character. Mix's extreme is fully wet (1.0) for the same
-    // reason -- it's the far end of the 0-100% range the parameter is
-    // already documented against. Feedback's extreme (0.88) is
-    // deliberately short of the mathematically-stable 1.0 ceiling --
-    // comfortably clear of self-oscillation/runaway buildup while still
-    // landing on a genuinely resonant, pronounced comb character at
-    // "Static, maxed out"/Sweep's far end, same convention as the other
-    // two.
-    constexpr float flangerDelayTimeMinMs = 0.5f;
-    constexpr float flangerDelayTimeExtremeMs = 10.0f;
-    constexpr float flangerMixExtreme = 1.0f;
-    constexpr float flangerFeedbackExtreme = 0.88f;
-
-    // Sweep mode names (Step 49), shared by every swept parameter's own
-    // Mode index -- Bitcrush's Sample Rate Reduction Mode/Bit Depth Mode,
-    // and Flanger's Delay Time Mode/Mix Mode -- see SlicerAudioProcessor::
-    // isSequencerCellParameterSwept().
-    const std::array<const char*, 3> sweepModeNames { {
-        "Static", "Sweep In", "Sweep Out"
-    } };
-
-    // Volume ramp mode names -- Volume's own Mode option list, parallel to
-    // sweepModeNames above but with directional language ("Ramp Up"/"Ramp
-    // Down") rather than "Sweep In"/"Sweep Out", since volume has an
-    // intuitive up/down sense the other swept parameters' effects don't.
-    // Both ramp toward/away from silence (0.0), a fixed extreme like every
-    // other swept parameter's Sweep In/Out -- see processBlock()'s
-    // sweptVolumeValue.
-    const std::array<const char*, 3> volumeRampModeNames { {
-        "Static", "Ramp Up", "Ramp Down"
-    } };
-
-    // Tape Stop scope names (Step 21).
-    const std::array<const char*, SlicerAudioProcessor::numTapeStopScopeOptions> tapeStopScopeNames { {
-        "Whole window", "Per tick"
-    } };
-
-    // Filter Sweep scope names (Step 30).
-    const std::array<const char*, SlicerAudioProcessor::numFilterSweepScopeOptions> filterSweepScopeNames { {
-        "Whole window", "Per tick"
-    } };
-
-    // Filter Sweep filter type names (Step 46).
-    const std::array<const char*, SlicerAudioProcessor::numFilterSweepFilterTypeOptions> filterSweepFilterTypeNames { {
-        "Low-pass", "High-pass", "Band-pass"
-    } };
-
-    // Curve shape names (Step 46) -- shared by Tape Stop decel and
-    // Ping-Pong turnaround fade.
-    const std::array<const char*, SlicerAudioProcessor::numCurveShapeOptions> curveShapeNames { {
-        "Linear", "Exponential"
-    } };
-
-    // Sequencer step parameter names (Step 45/46/47), indexed the same
-    // way the per-cell override map's lookups (and the right-click menu)
-    // use. Subdivide (index 5, Step 47) is general -- see
-    // SlicerAudioProcessor::getApplicableSequencerCellParameters(), which
-    // appends it unconditionally rather than listing it per-style here.
-    const std::array<const char*, SlicerAudioProcessor::numSequencerCellParameters> sequencerCellParameterNames { {
-        "Resonance", "Filter Type", "Curve Shape", "Grain Size", "Grain Speed", "Subdivide",
-        "Sample Rate Reduction", "Sample Rate Reduction Mode", "Bit Depth", "Bit Depth Mode", "Rate",
-        "Forward Curve", "Backward Curve", "Delay Time", "Delay Time Mode", "Mix", "Mix Mode",
-        "Feedback", "Feedback Mode", "Volume", "Volume Mode"
-    } };
 
     // Step 46: shared 0..1 progress-curve remap for Curve Shape -- Linear
     // is the identity (today's behaviour, unchanged); Exponential eases
@@ -182,111 +26,6 @@ namespace
         return t;
     }
 
-    // Slice Length periodic reset (Step 34) -- names and their underlying
-    // bar counts, held as a parallel pair rather than a NoteValueOption-
-    // style struct since bar counts (not beats) are the natural unit
-    // here, and every other place in this codebase already converts bars
-    // to beats via "* 4" (4/4) rather than storing beats directly.
-    const std::array<const char*, SlicerAudioProcessor::numResetBarsOptions> resetBarsNames { {
-        "1 bar", "2 bars", "4 bars", "8 bars"
-    } };
-    const std::array<int, SlicerAudioProcessor::numResetBarsOptions> resetBarsValues { { 1, 2, 4, 8 } };
-
-    // Sequenced mode's Pattern length (Step 38) -- same parallel-array
-    // pattern as the reset-bars pair above, deliberately capped at 4 bars
-    // (not 8) per spec.
-    const std::array<const char*, SlicerAudioProcessor::numPatternLengthBarsOptions> patternLengthBarsNames { {
-        "1 bar", "2 bars", "4 bars"
-    } };
-    const std::array<int, SlicerAudioProcessor::numPatternLengthBarsOptions> patternLengthBarsValues { { 1, 2, 4 } };
-}
-
-juce::String SlicerAudioProcessor::getPlaybackStyleName (int index)
-{
-    if (index < 0 || index >= numPlaybackStyleOptions)
-        return {};
-
-    return playbackStyleNames[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getTapeStopScopeName (int index)
-{
-    if (index < 0 || index >= numTapeStopScopeOptions)
-        return {};
-
-    return tapeStopScopeNames[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getFilterSweepScopeName (int index)
-{
-    if (index < 0 || index >= numFilterSweepScopeOptions)
-        return {};
-
-    return filterSweepScopeNames[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getFilterSweepFilterTypeName (int index)
-{
-    if (index < 0 || index >= numFilterSweepFilterTypeOptions)
-        return {};
-
-    return filterSweepFilterTypeNames[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getCurveShapeName (int index)
-{
-    if (index < 0 || index >= numCurveShapeOptions)
-        return {};
-
-    return curveShapeNames[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getResetBarsName (int index)
-{
-    if (index < 0 || index >= numResetBarsOptions)
-        return {};
-
-    return resetBarsNames[(size_t) index];
-}
-
-int SlicerAudioProcessor::getResetBarsValue (int index)
-{
-    if (index < 0 || index >= numResetBarsOptions)
-        return 4; // matches the default index (2 -> 4 bars)
-
-    return resetBarsValues[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getPatternLengthBarsName (int index)
-{
-    if (index < 0 || index >= numPatternLengthBarsOptions)
-        return {};
-
-    return patternLengthBarsNames[(size_t) index];
-}
-
-int SlicerAudioProcessor::getPatternLengthBarsValue (int index)
-{
-    if (index < 0 || index >= numPatternLengthBarsOptions)
-        return 1; // matches the default index (0 -> 1 bar)
-
-    return patternLengthBarsValues[(size_t) index];
-}
-
-juce::String SlicerAudioProcessor::getNoteValueName (int index)
-{
-    if (index < 0 || index >= numNoteValueOptions)
-        return {};
-
-    return noteValueOptions[(size_t) index].name;
-}
-
-double SlicerAudioProcessor::getNoteValueBeats (int index)
-{
-    if (index < 0 || index >= numNoteValueOptions)
-        return 1.0;
-
-    return noteValueOptions[(size_t) index].beats;
 }
 
 int SlicerAudioProcessor::nearestNoteValueIndex (double targetBeats)
@@ -391,20 +130,6 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    formatManager.registerBasicFormats();
-    subdivisionProbabilities.assign (numNoteValueOptions, 1.0f);
-
-    // Forward-only by default (NOT even odds like the other tables) --
-    // guarantees byte-identical default playback, since none of Ping-Pong/
-    // Tape Stop/Stretch/Filter Down/Filter Up/Bitcrush/Scratch is ever
-    // drawn unless the user explicitly turns its weight up. (Step 22's
-    // spec described this as "all other styles at weight 1, Stretch at
-    // weight 0," which would actually break that guarantee for existing
-    // users -- kept Forward-only here instead, since "must sound identical
-    // to current behavior" is the longstanding hard requirement across
-    // every style added so far.)
-    playbackStyleProbabilities = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
-
     // Filter Down/Filter Up (Step 29/30): fixed type, set once here rather
     // than per-sample -- only the cutoff frequency needs to change during
     // playback (see processBlock()). Resonance is no longer fixed (Step
@@ -415,13 +140,18 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     filterSweepFilter.setType (juce::dsp::StateVariableTPTFilterType::lowpass);
     filterSweepFilter.setResonance (defaultFilterSweepResonance);
 
-    // Performance mode's working state (Pass 1) -- seed its parameter
-    // values from the same global defaults Slice Length/Clock start with,
-    // rather than zeros (a broken default for parameters like Bit Depth).
-    // From here on it's independent storage -- editing it never touches,
-    // and is never touched by, the global values this seeded from.
-    for (int i = 0; i < numSequencerCellParameters; ++i)
-        performanceWorkingState.parameterValues[(size_t) i] = getSequencerCellParameterGlobalValue (i);
+    // Engine per-pick state must not read past a replaced buffer / stale
+    // boundaries -- SlicerModel calls this under model.sampleLock whenever it
+    // invalidates pick state (loadSample, slice rebuilds).
+    model.onPickStateInvalidated = [this]
+    {
+        hasCurrentPick = false;
+        clockModeInitialized = false;
+        clockCurrentPickValid = false;
+    };
+
+    // Ensure no stale MIDI-learn arm survives construction.
+    model.cancelMidiLearn();
 
 #if JUCE_DEBUG
     // TEMPORARY DEBUG (Performance mode click-to-focus freeze investigation)
@@ -479,7 +209,7 @@ void SlicerAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     // longest delay this style can ever request always fits without
     // wrapping into not-yet-written buffer content. 2 channels matches
     // filterSweepFilter's own stereo-only assumption above.
-    const int flangerDelayBufferLength = juce::jmax (4, juce::roundToInt ((flangerDelayTimeExtremeMs / 1000.0) * sampleRate) + 4);
+    const int flangerDelayBufferLength = juce::jmax (4, juce::roundToInt ((SlicerModel::flangerDelayTimeExtremeMs / 1000.0) * sampleRate) + 4);
     flangerDelayBuffer.setSize (GranularStretcher::maxChannels, flangerDelayBufferLength);
     flangerDelayBuffer.clear();
     flangerDelayWriteIndex = 0;
@@ -503,7 +233,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     debugAudioProcessBlockEntries.fetch_add (1, std::memory_order_relaxed);
 #endif
 
-    const juce::ScopedLock sl (sampleLock);
+    const juce::ScopedLock sl (model.sampleLock);
 
 #if JUCE_DEBUG
     debugAudioLockAcquiredCount.fetch_add (1, std::memory_order_relaxed);
@@ -529,7 +259,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     handleIncomingMidi (midiMessages, hostTransportPlaying);
     midiMessages.clear(); // not a MIDI effect -- never produce MIDI out
 
-    if (! sampleLoaded)
+    if (! model.sampleLoaded)
         return;
 
     const double hostSampleRate = getSampleRate();
@@ -541,7 +271,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // this function's per-sample render loop with every other mode
     // (Audition doesn't -- it renders through its own separate function and
     // returns immediately, so it never needs to reach the gates at all).
-    const bool performanceMode = (triggerMode.load() == TriggerMode::performance);
+    const bool performanceMode = (model.triggerMode.load() == TriggerMode::performance);
 
     // Audition (Step 25): takes priority over everything below — a raw,
     // generative-engine-bypassing loop of [trimStart, trimEnd), independent
@@ -549,12 +279,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // stopped, since setting up a trim happens before worrying about
     // sync). Auto-stops the instant the host transport starts playing, so
     // it and the real engine below never talk over each other.
-    if (auditionActive.load())
+    if (model.auditionActive.load())
     {
         if (hostTransportPlaying)
         {
-            auditionActive.store (false);
-            auditionPlaybackPositionForUI.store (-1); // Step 28 -- the playhead indicator must vanish the instant this auto-stop fires, same as the audio itself
+            model.auditionActive.store (false);
+            model.auditionPlaybackPositionForUI.store (-1); // Step 28 -- the playhead indicator must vanish the instant this auto-stop fires, same as the audio itself
         }
         else
         {
@@ -565,7 +295,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
     }
 
-    if (slices.empty())
+    if (model.slices.empty())
         return;
 
     // Performance mode (Pass 1) is exempt from both gates below, same
@@ -583,7 +313,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         clockModeInitialized = false;
         clockCurrentPickValid = false;
         resetWindowInitialized = false; // Step 34 -- re-snap to the current reset window next time transport starts
-        currentlyPlayingSliceIndexForUI.store (-1);
+        model.currentlyPlayingSliceIndexForUI.store (-1);
         return;
     }
 
@@ -598,33 +328,33 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         return;
 
     // Repitch factor: how much faster/slower to play the source sample so
-    // its `loopLengthBars` bars match the host's tempo. >1 = source is
+    // its `model.loopLengthBars` bars match the host's tempo. >1 = source is
     // slower than host (speed up to fit, pitch rises); <1 = source is
     // faster than host (slow down, pitch drops). Applies in both trigger
     // modes — it's purely a playback-speed/pitch thing, independent of
     // when triggers happen.
-    const double loopLengthQuarterNotes = (double) loopLengthBars.load() * 4.0; // assumes 4/4
+    const double loopLengthQuarterNotes = (double) model.loopLengthBars.load() * 4.0; // assumes 4/4
     const double sourceSpanSeconds = computeSourceSpanSeconds();
     const double hostLoopLengthSeconds = loopLengthQuarterNotes * (60.0 / hostBpm);
     const double repitchRatio = (hostLoopLengthSeconds > 0.0)
                                      ? (sourceSpanSeconds / hostLoopLengthSeconds)
                                      : 1.0;
 
-    const double playbackRate = (sampleSampleRate / hostSampleRate) * repitchRatio;
+    const double playbackRate = (model.sampleSampleRate / hostSampleRate) * repitchRatio;
 
-    const int sourceLength = sampleBuffer.getNumSamples();
-    const int sourceChannels = sampleBuffer.getNumChannels();
+    const int sourceLength = model.sampleBuffer.getNumSamples();
+    const int sourceChannels = model.sampleBuffer.getNumChannels();
     const int outChannels = buffer.getNumChannels();
     const int numSamples = buffer.getNumSamples();
 
     if (sourceLength == 0 || sourceChannels == 0)
         return;
 
-    const double fadeInSamplesRequested = (double) fadeInMs.load() / 1000.0 * hostSampleRate;
-    const double fadeOutSamplesRequested = (double) fadeOutMs.load() / 1000.0 * hostSampleRate;
+    const double fadeInSamplesRequested = (double) model.fadeInMs.load() / 1000.0 * hostSampleRate;
+    const double fadeOutSamplesRequested = (double) model.fadeOutMs.load() / 1000.0 * hostSampleRate;
 
-    const bool clockMode = (triggerMode.load() == TriggerMode::clock);
-    const bool sequencedMode = (triggerMode.load() == TriggerMode::sequenced);
+    const bool clockMode = (model.triggerMode.load() == TriggerMode::clock);
+    const bool sequencedMode = (model.triggerMode.load() == TriggerMode::sequenced);
     // performanceMode was already determined above, ahead of the transport gates it needs to bypass
 
     // Time-Stretch (Step 17): grain scheduling derived from the same
@@ -635,13 +365,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // playbackRate. Each grain itself only gets srConversionRatio applied
     // (sample-rate matching, not a pitch effect) — never repitchRatio —
     // which is what keeps pitch fixed regardless of tempo.
-    const bool timeStretchMode = (pitchMode.load() == PitchMode::timeStretch);
-    const double srConversionRatio = sampleSampleRate / hostSampleRate;
-    const double grainSizeHostSamples = (double) grainSizeMs.load() / 1000.0 * hostSampleRate;
+    const bool timeStretchMode = (model.pitchMode.load() == PitchMode::timeStretch);
+    const double srConversionRatio = model.sampleSampleRate / hostSampleRate;
+    const double grainSizeHostSamples = (double) model.grainSizeMs.load() / 1000.0 * hostSampleRate;
     const double outputHopSamples = grainSizeHostSamples * 0.5; // fixed 50% overlap, not exposed
     const double sourceHopSamples = outputHopSamples * srConversionRatio * repitchRatio;
     const GranularStretcher::WindowShape grainWindowShapeForBlock =
-        (grainWindowShape.load() == GrainWindowShape::hann) ? GranularStretcher::WindowShape::hann
+        (model.grainWindowShape.load() == GrainWindowShape::hann) ? GranularStretcher::WindowShape::hann
                                                               : GranularStretcher::WindowShape::triangular;
 
     // Pitch control (Step 18): scales only each grain's own internal
@@ -649,7 +379,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // sourceHopSamples above, which is what keeps stretch amount and
     // pitch independently controllable. 0 semitones -> pitchRatio == 1.0,
     // a complete no-op, same as before this existed.
-    const double pitchRatio = std::pow (2.0, (double) pitchShiftSemitones.load() / 12.0);
+    const double pitchRatio = std::pow (2.0, (double) model.pitchShiftSemitones.load() / 12.0);
 
     if (granularNeedsReseed.exchange (false))
         granularStretcher.reset (currentPosition); // pitch mode changed mid-pick — reseed from wherever we are now
@@ -669,7 +399,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // Just entered Clock mode, or transport just started — snap to
             // the window we're currently inside and force an immediate
             // pick on the very first sample below.
-            const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
+            const double windowBeats = getNoteValueBeats (model.clockReferenceIndex.load());
             const juce::int64 windowIndex = (juce::int64) std::floor (ppqStart / windowBeats);
             windowEndPpq = (double) (windowIndex + 1) * windowBeats;
             nextTickPpq = ppqStart;
@@ -702,7 +432,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // resetSequencerGrid() under this same lock, so this should never
         // actually be needed, but self-heal rather than risk an
         // out-of-bounds read below if that invariant is ever violated.
-        if ((int) sequencerGrid.size() != getSequencerNumRows() * getSequencerNumSteps())
+        if ((int) model.sequencerGrid.size() != getSequencerNumRows() * getSequencerNumSteps())
             resetSequencerGrid();
     }
     else if (performanceMode)
@@ -733,7 +463,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // immediate pick" treatment Clock mode gives itself just above.
         if (! resetWindowInitialized)
         {
-            const double resetWindowBeats = (double) getResetBarsValue (resetBarsIndex.load()) * 4.0; // 4/4
+            const double resetWindowBeats = (double) getResetBarsValue (model.resetBarsIndex.load()) * 4.0; // 4/4
             const juce::int64 windowIndex = (juce::int64) std::floor (ppqStart / resetWindowBeats);
             resetWindowEndPpq = (double) (windowIndex + 1) * resetWindowBeats;
             resetWindowInitialized = true;
@@ -766,11 +496,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 if (newWindow)
                 {
                     clockCurrentSliceIndex = pickWeightedRandomSlice();
-                    clockCurrentSubdivisionIndex = pickWeightedIndex (subdivisionProbabilities);
-                    clockCurrentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (playbackStyleProbabilities));
+                    clockCurrentSubdivisionIndex = pickWeightedIndex (model.subdivisionProbabilities);
+                    clockCurrentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (model.playbackStyleProbabilities));
                     clockCurrentPickValid = true;
 
-                    const double windowBeats = getNoteValueBeats (clockReferenceIndex.load());
+                    const double windowBeats = getNoteValueBeats (model.clockReferenceIndex.load());
                     const juce::int64 windowIndex = (juce::int64) std::floor (samplePpq / windowBeats);
                     windowEndPpq = (double) (windowIndex + 1) * windowBeats;
 
@@ -788,9 +518,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // tick restarts the round trip from the beginning (forward
                 // leg) even within the same window, same as Forward always
                 // restarted from the slice's start on every tick.
-                if (clockCurrentSliceIndex >= 0 && clockCurrentSliceIndex < (int) slices.size())
+                if (clockCurrentSliceIndex >= 0 && clockCurrentSliceIndex < (int) model.slices.size())
                 {
-                    const auto& slice = slices[(size_t) clockCurrentSliceIndex];
+                    const auto& slice = model.slices[(size_t) clockCurrentSliceIndex];
                     const bool pingPong = (clockCurrentPlaybackStyle == PlaybackStyle::pingPong);
                     const bool tapeStop = (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop);
                     const bool stretch = (clockCurrentPlaybackStyle == PlaybackStyle::stretch);
@@ -801,8 +531,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // Sequenced-mode-only. Captured here, before
                     // currentEndSample below, since Grain Speed feeds
                     // directly into that calculation.
-                    currentPickStretchGrainSizeMs = stretchGrainSizeMsValue.load();
-                    currentPickStretchSpeedMultiplier = stretchSpeedMultiplierValue.load();
+                    currentPickStretchGrainSizeMs = model.stretchGrainSizeMsValue.load();
+                    currentPickStretchSpeedMultiplier = model.stretchSpeedMultiplierValue.load();
 
                     currentPlaybackStyle = clockCurrentPlaybackStyle;
                     currentSliceStartSample = slice.startSample;
@@ -833,7 +563,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                                : slice.endSample;
                     hasCurrentPick = true;
                     pickJustStarted = true;
-                    currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
+                    model.currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
 
                     // Beat-quantized slice length (either pitch mode's
                     // toggle, Step 24/26) never applies in Clock mode -- its
@@ -844,9 +574,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // Filter Sweep resonance/filter type + Curve Shape
                     // (Step 45/46) -- Clock mode always uses the global
                     // values; per-step overrides are Sequenced-mode-only.
-                    currentPickFilterSweepResonance = filterSweepResonanceValue.load();
-                    currentPickFilterSweepType = filterSweepFilterTypeValue.load();
-                    currentPickCurveShape = curveShapeValue.load();
+                    currentPickFilterSweepResonance = model.filterSweepResonanceValue.load();
+                    currentPickFilterSweepType = model.filterSweepFilterTypeValue.load();
+                    currentPickCurveShape = model.curveShapeValue.load();
 
                     // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
                     // Clock mode always uses the global values; per-step
@@ -893,7 +623,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                     // Shared by Tape Stop's whole-window scope and Stretch
                     // (which always behaves like whole-window) below.
-                    const double windowBeatsForDuration = getNoteValueBeats (clockReferenceIndex.load());
+                    const double windowBeatsForDuration = getNoteValueBeats (model.clockReferenceIndex.load());
                     const double windowLengthHostSamples = windowBeatsForDuration * (60.0 / hostBpm) * hostSampleRate;
 
                     if (tapeStop)
@@ -904,7 +634,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // since the whole point is that read position may
                         // never reach the slice's actual end before the
                         // rate hits zero.
-                        const bool wholeWindow = (tapeStopScope.load() == TapeStopScope::wholeWindow);
+                        const bool wholeWindow = (model.tapeStopScope.load() == TapeStopScope::wholeWindow);
                         currentPickTapeStopDurationHostSamples = wholeWindow ? windowLengthHostSamples : tickLengthHostSamples;
                         currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping below
                     }
@@ -938,7 +668,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 }
 
                 if ((clockCurrentPlaybackStyle == PlaybackStyle::tapeStop
-                     && tapeStopScope.load() == TapeStopScope::wholeWindow)
+                     && model.tapeStopScope.load() == TapeStopScope::wholeWindow)
                     || clockCurrentPlaybackStyle == PlaybackStyle::stretch)
                 {
                     // Whole-window Tape Stop, and Stretch (which always
@@ -969,7 +699,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // bug Step 6 introduced and fixed (a boundary computed once per
             // block from the block's start position silently misses
             // boundaries landing mid-block).
-            double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+            double stepBeats = getNoteValueBeats (model.stepResolutionIndex.load());
             int totalSteps = getSequencerNumSteps();
 
             if (stepBeats > 0.0 && totalSteps > 0)
@@ -979,7 +709,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 // Pattern Switch Timing (Pass 2): Set Interval/End of
                 // Pattern both defer an already-armed recall
-                // (pendingPatternSwitchNote) to a boundary, checked every
+                // (model.pendingPatternSwitchNote) to a boundary, checked every
                 // SAMPLE right here alongside the step-boundary check just
                 // below it -- same per-sample discipline as everything else
                 // in this function, avoiding the Step 6 bug (a boundary
@@ -989,13 +719,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // below) -- "reaches the end of its OWN Pattern Length"
                 // means the currently playing pattern's own length, not the
                 // incoming one's.
-                const int pendingSwitchNote = pendingPatternSwitchNote.load();
+                const int pendingSwitchNote = model.pendingPatternSwitchNote.load();
 
                 if (pendingSwitchNote >= 0)
                 {
                     bool boundaryCrossed = false;
 
-                    if (patternSwitchTiming.load() == PatternSwitchTiming::setInterval)
+                    if (model.patternSwitchTiming.load() == PatternSwitchTiming::setInterval)
                     {
                         if (! patternSwitchIntervalBoundaryArmed)
                         {
@@ -1004,7 +734,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             // "windowIndex + 1" shape Clock mode/Reset use
                             // to find their own next boundary.
                             const double intervalBeats = juce::jmax (
-                                getNoteValueBeats (patternSwitchIntervalIndex.load()), 1.0e-6);
+                                getNoteValueBeats (model.patternSwitchIntervalIndex.load()), 1.0e-6);
                             const juce::int64 intervalIndex = (juce::int64) std::floor (samplePpq / intervalBeats);
                             patternSwitchIntervalBoundaryPpq = (double) (intervalIndex + 1) * intervalBeats;
                             patternSwitchIntervalBoundaryArmed = true;
@@ -1012,7 +742,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                         boundaryCrossed = (samplePpq >= patternSwitchIntervalBoundaryPpq);
                     }
-                    else if (patternSwitchTiming.load() == PatternSwitchTiming::endOfPattern)
+                    else if (model.patternSwitchTiming.load() == PatternSwitchTiming::endOfPattern)
                     {
                         // The pattern's own existing loop-boundary logic --
                         // the same absoluteStepIndex/totalSteps wrap the
@@ -1028,7 +758,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     if (boundaryCrossed)
                     {
                         handleSequencerPatternRecallNoteOn (pendingSwitchNote);
-                        pendingPatternSwitchNote.store (-1);
+                        model.pendingPatternSwitchNote.store (-1);
                         patternSwitchIntervalBoundaryArmed = false;
 
                         // handleSequencerPatternRecallNoteOn() just forced
@@ -1048,7 +778,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // resolution/length so the step lookup below reads
                         // the NEW grid at the correct width, not the old
                         // pattern's.
-                        stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+                        stepBeats = getNoteValueBeats (model.stepResolutionIndex.load());
                         totalSteps = getSequencerNumSteps();
 
                         if (stepBeats > 0.0 && totalSteps > 0)
@@ -1062,7 +792,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 if (stepBeats > 0.0 && totalSteps > 0 && currentStepIndex != sequencedLastStepIndex)
                 {
                     sequencedLastStepIndex = currentStepIndex;
-                    currentlyPlayingStepIndexForUI.store (currentStepIndex);
+                    model.currentlyPlayingStepIndexForUI.store (currentStepIndex);
 
                     const int numRows = getSequencerNumRows();
                     int activeRow = -1;
@@ -1070,7 +800,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                     for (int row = 0; row < numRows; ++row)
                     {
-                        const int style = sequencerGrid[(size_t) (row * totalSteps + currentStepIndex)];
+                        const int style = model.sequencerGrid[(size_t) (row * totalSteps + currentStepIndex)];
 
                         if (style >= 0)
                         {
@@ -1086,7 +816,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                     // playing (or silence) just continues per its own
                     // existing completion logic below, same as Clock mode
                     // already does between ticks.
-                    if (activeRow >= 0 && activeRow < (int) slices.size())
+                    if (activeRow >= 0 && activeRow < (int) model.slices.size())
                     {
                         // Reuse the exact same single-voice render path
                         // every other mode already uses -- force a fresh
@@ -1098,7 +828,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // selected directly, not via a weighted draw, since
                         // the whole point of this mode is that everything
                         // is explicitly placed by the user.
-                        const auto& slice = slices[(size_t) activeRow];
+                        const auto& slice = model.slices[(size_t) activeRow];
                         currentPlaybackStyle = indexToPlaybackStyle (activeStyle);
                         const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
                         const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
@@ -1113,9 +843,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // Filter Type/Curve Shape which are render-only and
                         // can be captured later.
                         currentPickStretchGrainSizeMs = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Grain Size", stretchGrainSizeMsValue.load());
+                            activeRow, currentStepIndex, "Grain Size", model.stretchGrainSizeMsValue.load());
                         currentPickStretchSpeedMultiplier = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Grain Speed", stretchSpeedMultiplierValue.load());
+                            activeRow, currentStepIndex, "Grain Speed", model.stretchSpeedMultiplierValue.load());
 
                         currentSliceStartSample = slice.startSample;
                         currentSliceLength = slice.endSample - slice.startSample;
@@ -1141,7 +871,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         currentEndSample = slice.endSample;
                         hasCurrentPick = true;
                         pickJustStarted = true;
-                        currentlyPlayingSliceIndexForUI.store (activeRow);
+                        model.currentlyPlayingSliceIndexForUI.store (activeRow);
 
                         // Filter Sweep resonance/filter type + Curve Shape
                         // (Step 45/46) -- this step's own override if it
@@ -1152,11 +882,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // it, so the lookup naturally falls through to the
                         // global default there anyway).
                         currentPickFilterSweepResonance = getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Resonance", filterSweepResonanceValue.load());
+                            activeRow, currentStepIndex, "Resonance", model.filterSweepResonanceValue.load());
                         currentPickFilterSweepType = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Filter Type", (float) filterSweepFilterTypeValue.load()));
+                            activeRow, currentStepIndex, "Filter Type", (float) model.filterSweepFilterTypeValue.load()));
                         currentPickCurveShape = juce::roundToInt (getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Curve Shape", (float) curveShapeValue.load()));
+                            activeRow, currentStepIndex, "Curve Shape", (float) model.curveShapeValue.load()));
 
                         // Bitcrush Sample Rate Reduction/Bit Depth VALUE +
                         // MODE (Step 49) -- same per-step-override-else-
@@ -1258,7 +988,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                             for (int row2 = 0; row2 < numRows; ++row2)
                             {
-                                if (sequencerGrid[(size_t) (row2 * totalSteps + checkColumn)] >= 0)
+                                if (model.sequencerGrid[(size_t) (row2 * totalSteps + checkColumn)] >= 0)
                                 {
                                     columnHasActive = true;
                                     break;
@@ -1419,7 +1149,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                             // unit in the first place. Filter Down/Up's
                             // sweep timeline (currentWindowLengthHostSamples,
                             // set below from this same value, BEFORE
-                            // Subdivide slices currentPickLengthInHostSamples
+                            // Subdivide model.slices currentPickLengthInHostSamples
                             // into individual ticks) rides along for free
                             // too -- one continuous glide across the whole
                             // declared length regardless of how many times
@@ -1461,7 +1191,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // "Whole Window" reuse for Filter Down/Up (Step 30's
                         // Filter Sweep scope, generalized here): this step's
                         // OWN total duration -- exactly what was just
-                        // computed above, BEFORE Subdivide slices it into
+                        // computed above, BEFORE Subdivide model.slices it into
                         // individual retrigger ticks below -- becomes the
                         // window samplesSinceWindowStart/currentWindowLength-
                         // HostSamples track, the same pair Clock mode's own
@@ -1517,11 +1247,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // Down/Up sweep locked to the same clock, and needs no
                 // separate ppq-based scheduler.
                 if (sequencedSubdivisionActive
-                    && sequencedSubdivisionRow >= 0 && sequencedSubdivisionRow < (int) slices.size()
+                    && sequencedSubdivisionRow >= 0 && sequencedSubdivisionRow < (int) model.slices.size()
                     && samplesSinceWindowStart < currentWindowLengthHostSamples
                     && samplesSinceWindowStart >= sequencedNextSubdivisionOffsetHostSamples)
                 {
-                    const auto& subdivisionSlice = slices[(size_t) sequencedSubdivisionRow];
+                    const auto& subdivisionSlice = model.slices[(size_t) sequencedSubdivisionRow];
                     currentPosition = (double) subdivisionSlice.startSample;
                     samplesSincePickStart = 0.0;
                     hasCurrentPick = true;
@@ -1547,7 +1277,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // boundary-crossing detection -- checked every SAMPLE, not once
             // per block, the same discipline that avoids the Step 6 bug (a
             // boundary computed once per block silently missing one that
-            // lands mid-block). A pending recall (pendingPerformanceRecallNote,
+            // lands mid-block). A pending recall (model.pendingPerformanceRecallNote,
             // armed by handlePerformanceStateNoteOn() while Quantize Recall
             // is on and the transport was playing at note-on time) is
             // applied the instant its chosen grid point is reached; a newer
@@ -1562,7 +1292,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // still while stopped, so an unplayed boundary would otherwise
             // never arrive) -- both preserve the "auditionable without
             // pressing play" behaviour Performance mode already has.
-            const int pendingRecallNote = pendingPerformanceRecallNote.load();
+            const int pendingRecallNote = model.pendingPerformanceRecallNote.load();
 
             if (pendingRecallNote >= 0)
             {
@@ -1577,7 +1307,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                         // "windowIndex + 1" shape Clock mode/Reset/Set
                         // Interval all use to find their own next boundary.
                         const double intervalBeats = juce::jmax (
-                            getNoteValueBeats (performanceQuantizeRecallIntervalIndex.load()), 1.0e-6);
+                            getNoteValueBeats (model.performanceQuantizeRecallIntervalIndex.load()), 1.0e-6);
                         const juce::int64 intervalIndex = (juce::int64) std::floor (samplePpq / intervalBeats);
                         performanceQuantizeRecallBoundaryPpq = (double) (intervalIndex + 1) * intervalBeats;
                         performanceQuantizeRecallBoundaryArmed = true;
@@ -1589,12 +1319,12 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 if (boundaryCrossed)
                 {
                     applyPerformanceStateRecall (pendingRecallNote);
-                    pendingPerformanceRecallNote.store (-1);
+                    model.pendingPerformanceRecallNote.store (-1);
                     performanceQuantizeRecallBoundaryArmed = false;
                 }
             }
 
-            // Performance mode: no probability engine, no slices -- one
+            // Performance mode: no probability engine, no model.slices -- one
             // hand-trimmed segment, one style, that style's own independent
             // parameter values, driven purely by MIDI note-on
             // (performanceRecallPending, set by handlePerformanceStateNoteOn()/
@@ -1603,13 +1333,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // by anything time/position-based. Physical MIDI is playback-only
             // (the on-screen keyboard is the only thing that ever changes
             // focus -- see setFocusedPerformanceStateSlot()): pressing the
-            // FOCUSED slot's key plays performanceWorkingState itself (live
+            // FOCUSED slot's key plays model.performanceWorkingState itself (live
             // in-progress edits, via the shared trim atomics every other
             // mode also edits through); pressing any OTHER slot's key plays
             // a frozen copy of ITS saved snapshot
             // (currentlyPlayingPerformanceSnapshot, including its own saved
             // trim), captured at note-on time so auditioning it never
-            // disturbs performanceWorkingState or focus. Starts and stays
+            // disturbs model.performanceWorkingState or focus. Starts and stays
             // silent (hasCurrentPick == false) until the first note-on this
             // session -- see the performanceMode block-level init above,
             // which is the one place that sets it false; nothing here does.
@@ -1627,7 +1357,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // never retroactively swap what that pick is playing out from
             // under it.
             const PerformanceStateSnapshot& performanceActiveState = performancePlaybackIsFocused
-                ? performanceWorkingState : currentlyPlayingPerformanceSnapshot;
+                ? model.performanceWorkingState : currentlyPlayingPerformanceSnapshot;
 
             if (! needsFreshPick && hasCurrentPick)
             {
@@ -1670,7 +1400,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // rather than re-checked inline at each one.
                 currentPickNativeRateActive = ! performanceActiveState.sync;
                 const double perfPlaybackRate = currentPickNativeRateActive
-                    ? (sampleSampleRate / hostSampleRate) : playbackRate;
+                    ? (model.sampleSampleRate / hostSampleRate) : playbackRate;
 
                 // Own independent parameter storage -- indexed exactly as
                 // getSequencerCellParameterName() documents, NEVER the
@@ -1686,9 +1416,9 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // never the shared atomics, which stay owned by whichever
                 // slot actually has focus.
                 const int performanceSegmentStart = performancePlaybackIsFocused
-                    ? trimStartSample.load() : performanceActiveState.trimStartSample;
+                    ? model.trimStartSample.load() : performanceActiveState.trimStartSample;
                 const int performanceSegmentEnd = performancePlaybackIsFocused
-                    ? trimEndSample.load() : performanceActiveState.trimEndSample;
+                    ? model.trimEndSample.load() : performanceActiveState.trimEndSample;
 
                 currentSliceStartSample = performanceSegmentStart;
                 currentSliceLength = performanceSegmentEnd - performanceSegmentStart;
@@ -1709,7 +1439,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
                 hasCurrentPick = true;
                 pickJustStarted = true;
-                currentlyPlayingSliceIndexForUI.store (-1); // this pick isn't drawn from `slices` -- no index to report
+                model.currentlyPlayingSliceIndexForUI.store (-1); // this pick isn't drawn from `model.slices` -- no index to report
 
                 currentPickBeatQuantized = false; // Performance mode's own Sync toggle governs rate instead (currentPickNativeRateActive above)
 
@@ -1762,7 +1492,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // exactly on this sample -- and advances to the NEXT boundary.
             if (samplePpq >= resetWindowEndPpq)
             {
-                const double resetWindowBeatsNow = (double) getResetBarsValue (resetBarsIndex.load()) * 4.0; // 4/4, live-read so a mid-stream dropdown change takes effect at the next boundary, same as Clock reference already does
+                const double resetWindowBeatsNow = (double) getResetBarsValue (model.resetBarsIndex.load()) * 4.0; // 4/4, live-read so a mid-stream dropdown change takes effect at the next boundary, same as Clock reference already does
                 const juce::int64 windowIndex = (juce::int64) std::floor (samplePpq / resetWindowBeatsNow);
                 resetWindowEndPpq = (double) (windowIndex + 1) * resetWindowBeatsNow;
 
@@ -1792,13 +1522,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             {
                 currentSliceIndex = pickWeightedRandomSlice();
 
-                if (currentSliceIndex < 0 || currentSliceIndex >= (int) slices.size())
+                if (currentSliceIndex < 0 || currentSliceIndex >= (int) model.slices.size())
                 {
                     hasCurrentPick = false;
                     break;
                 }
 
-                currentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (playbackStyleProbabilities));
+                currentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (model.playbackStyleProbabilities));
                 const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
                 const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
                 const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
@@ -1808,10 +1538,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // Sequenced-mode-only. Captured here, before currentEndSample
                 // below, since Grain Speed feeds directly into that
                 // calculation.
-                currentPickStretchGrainSizeMs = stretchGrainSizeMsValue.load();
-                currentPickStretchSpeedMultiplier = stretchSpeedMultiplierValue.load();
+                currentPickStretchGrainSizeMs = model.stretchGrainSizeMsValue.load();
+                currentPickStretchSpeedMultiplier = model.stretchSpeedMultiplierValue.load();
 
-                const auto& slice = slices[(size_t) currentSliceIndex];
+                const auto& slice = model.slices[(size_t) currentSliceIndex];
                 currentSliceStartSample = slice.startSample;
                 currentSliceLength = slice.endSample - slice.startSample;
                 currentPosition = (double) slice.startSample;
@@ -1838,14 +1568,14 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                            : slice.endSample;
                 hasCurrentPick = true;
                 pickJustStarted = true;
-                currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
+                model.currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
 
                 // Filter Sweep resonance/filter type + Curve Shape (Step
                 // 45/46) -- Slice Length mode always uses the global
                 // values; per-step overrides are Sequenced-mode-only.
-                currentPickFilterSweepResonance = filterSweepResonanceValue.load();
-                currentPickFilterSweepType = filterSweepFilterTypeValue.load();
-                currentPickCurveShape = curveShapeValue.load();
+                currentPickFilterSweepResonance = model.filterSweepResonanceValue.load();
+                currentPickFilterSweepType = model.filterSweepFilterTypeValue.load();
+                currentPickCurveShape = model.curveShapeValue.load();
 
                 // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
                 // Slice Length mode always uses the global values;
@@ -1895,8 +1625,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 currentPickBeatQuantized = false;
                 currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
 
-                const bool beatQuantizeWanted = timeStretchMode ? beatQuantizeSliceLengthEnabled.load()
-                                                                 : beatQuantizeSliceLengthEnabledRepitch.load();
+                const bool beatQuantizeWanted = timeStretchMode ? model.beatQuantizeSliceLengthEnabled.load()
+                                                                 : model.beatQuantizeSliceLengthEnabledRepitch.load();
 
                 if (beatQuantizeWanted
                     && (currentPlaybackStyle == PlaybackStyle::forward || pingPong)
@@ -1904,7 +1634,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 {
                     const double originalBpm = getCalculatedOriginalBpm();
                     const auto quantizeResult = computeBeatQuantizeTarget (currentSliceLength, pingPong,
-                                                                            sampleSampleRate, originalBpm, hostBpm);
+                                                                            model.sampleSampleRate, originalBpm, hostBpm);
 
                     if (quantizeResult.quantized)
                     {
@@ -1993,7 +1723,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         // read it directly, so a Sync-off Performance pick can never read as
         // synced at one site and unsynced at another.
         const double effectivePickPlaybackRate = currentPickNativeRateActive
-            ? (sampleSampleRate / hostSampleRate) : playbackRate;
+            ? (model.sampleSampleRate / hostSampleRate) : playbackRate;
 
         // Scratch (v1) reuses Ping-Pong's exact bounce mechanism -- same
         // foldPosition() fold, same turnaround click-avoidance fade, same
@@ -2042,10 +1772,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         };
 
         const int effectiveBitcrushHoldSamples = bitcrushActive
-            ? juce::jmax (1, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushRateValue, currentPickBitcrushRateMode, bitcrushRateReductionExtreme)))
+            ? juce::jmax (1, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushRateValue, currentPickBitcrushRateMode, SlicerModel::bitcrushRateReductionExtreme)))
             : 1;
         const int effectiveBitcrushBitDepth = bitcrushActive
-            ? juce::jlimit (1, 24, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushBitDepthValue, currentPickBitcrushBitDepthMode, bitcrushBitDepthExtreme)))
+            ? juce::jlimit (1, 24, juce::roundToInt (sweptBitcrushValue (currentPickBitcrushBitDepthValue, currentPickBitcrushBitDepthMode, SlicerModel::bitcrushBitDepthExtreme)))
             : 1;
 
         // Bitcrush sample-and-hold timing (Step 48/49): decided once per
@@ -2148,13 +1878,13 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const int flangerDelayBufferLength = flangerDelayBuffer.getNumSamples();
         const int effectiveFlangerDelaySamples = (flangerActive && flangerDelayBufferLength > 2)
             ? juce::jlimit (1, flangerDelayBufferLength - 2, juce::roundToInt (
-                  (sweptFlangerValue (currentPickFlangerDelayValue, currentPickFlangerDelayMode, flangerDelayTimeExtremeMs) / 1000.0) * hostSampleRate))
+                  (sweptFlangerValue (currentPickFlangerDelayValue, currentPickFlangerDelayMode, SlicerModel::flangerDelayTimeExtremeMs) / 1000.0) * hostSampleRate))
             : 1;
         const float effectiveFlangerMix = flangerActive
-            ? juce::jlimit (0.0f, 1.0f, sweptFlangerValue (currentPickFlangerMixValue, currentPickFlangerMixMode, flangerMixExtreme))
+            ? juce::jlimit (0.0f, 1.0f, sweptFlangerValue (currentPickFlangerMixValue, currentPickFlangerMixMode, SlicerModel::flangerMixExtreme))
             : 0.0f;
         const float effectiveFlangerFeedback = flangerActive
-            ? juce::jlimit (0.0f, flangerFeedbackExtreme, sweptFlangerValue (currentPickFlangerFeedbackValue, currentPickFlangerFeedbackMode, flangerFeedbackExtreme))
+            ? juce::jlimit (0.0f, SlicerModel::flangerFeedbackExtreme, sweptFlangerValue (currentPickFlangerFeedbackValue, currentPickFlangerFeedbackMode, SlicerModel::flangerFeedbackExtreme))
             : 0.0f;
 
         // Volume ramp: a style-independent gain multiplier, unlike
@@ -2374,10 +2104,10 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // -- Linear (default) or Exponential per Curve Shape (Step 46,
             // see applyCurveShape() above), layered on top of whatever
             // Pitch Mode already produces below. Gain rides the SAME curve,
-            // REPLACING (not stacking with) the normal fadeOutMs for this
+            // REPLACING (not stacking with) the normal model.fadeOutMs for this
             // style — if rate hit exactly 0 while gain stayed at full, the
             // engine would get stuck holding/repeating a single sample (a
-            // buzz) instead of fading to silence. fadeInMs above is
+            // buzz) instead of fading to silence. model.fadeInMs above is
             // unaffected.
             double tapeStopRateMultiplier = 1.0;
 
@@ -2430,7 +2160,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 // audio isn't symmetric around any given sample, so
                 // reversing direction there clicks just like the pick's own
                 // start/end would without a fade. Treat the midpoint as an
-                // internal boundary and apply the SAME fadeInMs/fadeOutMs
+                // internal boundary and apply the SAME model.fadeInMs/model.fadeOutMs
                 // envelope around it: fading out approaching it (mirrors
                 // the pick's own end-fade) and back in leaving it (mirrors
                 // the start-fade). Layered into the same overall `gain`, so
@@ -2509,7 +2239,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
             if (filterSweepActive)
             {
-                const bool useWholeWindow = (clockMode && (filterSweepScope.load() == FilterSweepScope::wholeWindow))
+                const bool useWholeWindow = (clockMode && (model.filterSweepScope.load() == FilterSweepScope::wholeWindow))
                                              || (sequencedMode && sequencedSubdivisionActive);
 
                 const double progress = useWholeWindow
@@ -2706,7 +2436,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 }
 
                 float channelSums[GranularStretcher::maxChannels] = {};
-                granularStretcher.renderAndAdvance (sampleBuffer, sourceChannels,
+                granularStretcher.renderAndAdvance (model.sampleBuffer, sourceChannels,
                                                      grainOutputHopSamples, grainSourceHopSamples,
                                                      (double) currentSliceStartSample, bounceFoldLengthSamples, grainPlaybackStyle,
                                                      grainGrainSizeHostSamples, srConversionRatio, grainPitchRatio,
@@ -2763,7 +2493,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 {
                     constexpr double freezeLoopLengthMs = 25.0;
                     const double freezeLoopLengthSourceSamples =
-                        juce::jmax (1.0, (freezeLoopLengthMs / 1000.0) * sampleSampleRate);
+                        juce::jmax (1.0, (freezeLoopLengthMs / 1000.0) * model.sampleSampleRate);
 
                     const double freezeWindowEnd = (double) (schedulingEndSample - 1);
                     const double freezeWindowStart = juce::jmax ((double) currentSliceStartSample,
@@ -2792,8 +2522,8 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 for (int outCh = 0; outCh < outChannels; ++outCh)
                 {
                     const int srcCh = juce::jmin (outCh, sourceChannels - 1);
-                    const float s0 = sampleBuffer.getSample (srcCh, idx0);
-                    const float s1 = sampleBuffer.getSample (srcCh, idx1);
+                    const float s0 = model.sampleBuffer.getSample (srcCh, idx0);
+                    const float s1 = model.sampleBuffer.getSample (srcCh, idx1);
                     float sample = (s0 + frac * (s1 - s0)) * (float) gain;
 
                     if (filterSweepActive)
@@ -2841,7 +2571,7 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
             // instead, which is what actually compresses the round trip
             // into a normal pick's timeframe.
             const double effectivePlaybackRate = tapeStopActive ? (effectivePickPlaybackRate * tapeStopRateMultiplier)
-                                                : currentPickBeatQuantized ? ((sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
+                                                : currentPickBeatQuantized ? ((model.sampleSampleRate / hostSampleRate) * currentPickQuantizedStretchRatio)
                                                                            : effectivePickPlaybackRate;
             currentPosition += effectivePlaybackRate;
             samplesSincePickStart += 1.0;
@@ -2881,76 +2611,12 @@ void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*size
 {
 }
 
-void SlicerAudioProcessor::loadSample (const juce::File& file)
-{
-    std::unique_ptr<juce::AudioFormatReader> reader (formatManager.createReaderFor (file));
-
-    if (reader == nullptr)
-        return;
-
-    juce::AudioBuffer<float> newBuffer ((int) reader->numChannels, (int) reader->lengthInSamples);
-    reader->read (&newBuffer, 0, (int) reader->lengthInSamples, 0, true, true);
-
-    {
-        const juce::ScopedLock sl (sampleLock);
-        sampleBuffer = std::move (newBuffer);
-        sampleSampleRate = reader->sampleRate;
-        sampleLoaded = true;
-        loadedFileName = file.getFileName();
-
-        transientDetector.analyze (sampleBuffer, sampleSampleRate);
-
-        // Trim markers (Step 23): default to the full sample length, so
-        // behaviour is unchanged until the user actually drags a handle.
-        trimStartSample.store (0);
-        trimEndSample.store (sampleBuffer.getNumSamples());
-        tempoTrimStartSample.store (0);
-        tempoTrimEndSample.store (sampleBuffer.getNumSamples());
-
-        manualPoints.clear(); // positions from the old sample don't mean anything here
-        excludedPoints.clear();
-        hasCurrentPick = false; // don't let a stale pick read past the new buffer's end
-        clockModeInitialized = false;
-        clockCurrentPickValid = false;
-        auditionActive.store (false); // Step 25 -- a stale audition loop from the old buffer/trim makes no sense against the new one
-        auditionPlaybackPositionForUI.store (-1); // Step 28 -- and neither does its stale playhead indicator
-    }
-
-    undoManager.clearUndoHistory(); // old undo steps reference positions in a different file now
-
-    redetectSlices (defaultSensitivity, computeMinimumHoldoffMs());
-}
-
-void SlicerAudioProcessor::redetectSlices (float sensitivity, float holdoffMs)
-{
-    rebuildSlicesFromDetectionAndManualPoints (sensitivity, holdoffMs);
-}
-
-double SlicerAudioProcessor::computeSourceSpanSeconds() const
-{
-    if (manualBpmOverrideEnabled.load())
-    {
-        const double bpm = manualBpmOverrideValue.load();
-
-        if (bpm <= 0.0)
-            return 0.0;
-
-        const double beats = (double) loopLengthBars.load() * 4.0; // assumes 4/4, same as elsewhere
-        return (beats * 60.0) / bpm;
-    }
-
-    const int trimStart = tempoTrimStartSample.load();
-    const int trimEnd = tempoTrimEndSample.load();
-    const int spanSamples = juce::jmax (0, trimEnd - trimStart);
-    return (double) spanSamples / sampleSampleRate;
-}
-
 void SlicerAudioProcessor::renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate)
 {
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    const int sourceLength = sampleBuffer.getNumSamples();
-    const int sourceChannels = sampleBuffer.getNumChannels();
+    const int trimStart = model.trimStartSample.load();
+    const int trimEnd = model.trimEndSample.load();
+    const int sourceLength = model.sampleBuffer.getNumSamples();
+    const int sourceChannels = model.sampleBuffer.getNumChannels();
     const int outChannels = buffer.getNumChannels();
     const int numSamples = buffer.getNumSamples();
 
@@ -2960,197 +2626,34 @@ void SlicerAudioProcessor::renderAudition (juce::AudioBuffer<float>& buffer, dou
     // Native pitch/speed: sample-rate matching only (correcting for the
     // loaded file's own sample rate vs. the host's) — never repitchRatio,
     // which is what keeps this "exactly the source content" regardless of
-    // loopLengthBars/tempo. No fades either — the loop seam is meant to be
+    // model.loopLengthBars/tempo. No fades either — the loop seam is meant to be
     // audibly exposed, not hidden.
-    const double auditionRate = sampleSampleRate / hostSampleRate;
+    const double auditionRate = model.sampleSampleRate / hostSampleRate;
 
     for (int i = 0; i < numSamples; ++i)
     {
-        if (auditionPosition < (double) trimStart || auditionPosition >= (double) (trimEnd - 1))
-            auditionPosition = (double) trimStart;
+        if (model.auditionPosition < (double) trimStart || model.auditionPosition >= (double) (trimEnd - 1))
+            model.auditionPosition = (double) trimStart;
 
-        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) auditionPosition);
+        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) model.auditionPosition);
         const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
-        const float frac = (float) (auditionPosition - (double) idx0);
+        const float frac = (float) (model.auditionPosition - (double) idx0);
 
         for (int outCh = 0; outCh < outChannels; ++outCh)
         {
             const int srcCh = juce::jmin (outCh, sourceChannels - 1);
-            const float s0 = sampleBuffer.getSample (srcCh, idx0);
-            const float s1 = sampleBuffer.getSample (srcCh, idx1);
+            const float s0 = model.sampleBuffer.getSample (srcCh, idx0);
+            const float s1 = model.sampleBuffer.getSample (srcCh, idx1);
             buffer.addSample (outCh, i, s0 + frac * (s1 - s0));
         }
 
-        auditionPosition += auditionRate;
+        model.auditionPosition += auditionRate;
     }
 
     // Audition playhead (Step 28) — once per block is plenty for a 30fps
     // UI poll (WaveformDisplay's timer), so this doesn't need to be a
     // per-sample store inside the loop above.
-    auditionPlaybackPositionForUI.store ((int) auditionPosition);
-}
-
-void SlicerAudioProcessor::rebuildSlicesFromDetectionAndManualPoints (float sensitivity, float holdoffMs)
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    auto autoSlices = transientDetector.detectSlices (sensitivity, holdoffMs, trimStart, trimEnd);
-
-    const juce::ScopedLock sl (sampleLock);
-
-    slices = mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
-    sliceProbabilities.assign (slices.size(), 1.0f); // default: even odds across all slices
-    resetSequencerGrid(); // Step 37 -- row count just changed
-    hasCurrentPick = false; // boundaries changed — force a fresh pick
-    clockModeInitialized = false;
-    clockCurrentPickValid = false;
-}
-
-std::vector<Slice> SlicerAudioProcessor::previewSlicesAtSensitivity (float sensitivity) const
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    auto autoSlices = transientDetector.detectSlices (sensitivity, computeMinimumHoldoffMs(), trimStart, trimEnd);
-
-    const juce::ScopedLock sl (sampleLock);
-    return mergeOnsetsIntoSlices (autoSlices, trimStart, trimEnd);
-}
-
-std::vector<Slice> SlicerAudioProcessor::mergeOnsetsIntoSlices (const std::vector<Slice>& autoSlices, int trimStart, int trimEnd) const
-{
-    const int matchToleranceSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-
-    std::vector<int> onsets;
-    onsets.reserve (autoSlices.size() + manualPoints.size());
-
-    for (const auto& s : autoSlices)
-    {
-        if (s.startSample == trimStart)
-        {
-            onsets.push_back (trimStart); // the trim start is never excludable
-            continue;
-        }
-
-        bool excluded = false;
-
-        for (const auto& ep : excludedPoints)
-        {
-            if (std::abs (s.startSample - ep.samplePosition) <= matchToleranceSamples)
-            {
-                excluded = true;
-                break;
-            }
-        }
-
-        if (! excluded)
-        {
-            // Quantize detected transients to grid (Step 35) -- applied
-            // AFTER exclusion matching, against the ORIGINAL (unquantized)
-            // position: an exclusion click targets the raw detected peak
-            // the user actually saw on the waveform, and matching against
-            // that first is what keeps an exclusion correct regardless of
-            // whether quantization is on. Manual points below are never
-            // touched by this -- they're pushed as-is, further down.
-            const int onsetSample = quantizeTransientsEnabled.load()
-                ? quantizeOnsetToGrid (s.startSample, trimStart, trimEnd)
-                : s.startSample;
-            onsets.push_back (onsetSample);
-        }
-    }
-
-    // Manual points outside the current trim range are filtered out here
-    // (not deleted from manualPoints itself) — the same "soft exclude"
-    // widening the trim back out later can undo, matching excludedPoints'
-    // own semantics just above.
-    for (const auto& mp : manualPoints)
-        if (mp.samplePosition > trimStart && mp.samplePosition < trimEnd)
-            onsets.push_back (mp.samplePosition);
-
-    if (onsets.empty() || onsets.front() != trimStart)
-        onsets.insert (onsets.begin(), trimStart);
-
-    std::sort (onsets.begin(), onsets.end());
-    onsets.erase (std::unique (onsets.begin(), onsets.end()), onsets.end());
-
-    std::vector<Slice> result;
-
-    for (size_t i = 0; i < onsets.size(); ++i)
-    {
-        Slice slice;
-        slice.startSample = onsets[i];
-        slice.endSample = (i + 1 < onsets.size()) ? onsets[i + 1] : trimEnd;
-
-        if (slice.lengthInSamples() > 0)
-            result.push_back (slice);
-    }
-
-    return result;
-}
-
-int SlicerAudioProcessor::quantizeOnsetToGrid (int onsetSample, int trimStart, int trimEnd) const
-{
-    const double gridBeats = getNoteValueBeats (quantizeGridIndex.load());
-
-    if (gridBeats <= 0.0)
-        return onsetSample;
-
-    // Same source-tempo derivation used everywhere else in this class
-    // (computeBeatQuantizeTarget's naturalBeats calculation for the
-    // analogous per-pick feature works the same way): originalBpm/60
-    // converts a duration in seconds directly to beats, so there's no
-    // need to separately compute a "seconds per beat" intermediate.
-    const double originalBpm = getCalculatedOriginalBpm();
-
-    if (originalBpm <= 0.0 || sampleSampleRate <= 0.0)
-        return onsetSample;
-
-    const double onsetSeconds = (double) (onsetSample - trimStart) / sampleSampleRate;
-    const double onsetBeats = onsetSeconds * (originalBpm / 60.0);
-    const double nearestGridStep = std::round (onsetBeats / gridBeats);
-    const double quantizedBeats = nearestGridStep * gridBeats;
-    const double quantizedSeconds = quantizedBeats * (60.0 / originalBpm);
-    const double quantizedSampleDouble = (double) trimStart + quantizedSeconds * sampleSampleRate;
-
-    // Clamped so an onset near either edge of the trim can never quantize
-    // to a position outside it -- trimEnd - 1 mirrors the same upper bound
-    // addManualSlicePoint()/setTrimStartSample() etc. already use for
-    // exactly this reason.
-    return juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), (int) std::llround (quantizedSampleDouble));
-}
-
-int SlicerAudioProcessor::findNearestGridSample (int rawSample) const
-{
-    const double gridBeats = getNoteValueBeats (performanceTrimGridIndex.load());
-
-    if (gridBeats <= 0.0)
-        return rawSample;
-
-    const double originalBpm = getCalculatedOriginalBpm();
-
-    if (originalBpm <= 0.0 || sampleSampleRate <= 0.0)
-        return rawSample;
-
-    // Same beats<->samples round-trip quantizeOnsetToGrid() above uses,
-    // anchored at tempoTrimStartSample instead of a passed-in trim start --
-    // see this function's own comment for why.
-    const int anchor = tempoTrimStartSample.load();
-    const double offsetSeconds = (double) (rawSample - anchor) / sampleSampleRate;
-    const double offsetBeats = offsetSeconds * (originalBpm / 60.0);
-    const double nearestGridStep = std::round (offsetBeats / gridBeats);
-    const double quantizedBeats = nearestGridStep * gridBeats;
-    const double quantizedSeconds = quantizedBeats * (60.0 / originalBpm);
-    const double quantizedSampleDouble = (double) anchor + quantizedSeconds * sampleSampleRate;
-
-    return (int) std::llround (quantizedSampleDouble);
-}
-
-void SlicerAudioProcessor::resetSequencerGrid()
-{
-    const int rows = getSequencerNumRows();
-    const int columns = getSequencerNumSteps();
-    sequencerGrid.assign ((size_t) juce::jmax (0, rows * columns), -1);
-    sequencerCellParameterOverrides.clear(); // Step 45 -- dimensions just changed, old flat indices are meaningless now
-    sequencerCellExtendedLengthSteps.clear(); // Step-extension (Pass 1) -- same reasoning
+    model.auditionPlaybackPositionForUI.store ((int) model.auditionPosition);
 }
 
 //==============================================================================
@@ -3174,10 +2677,10 @@ void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, bool hostTransportPla
     // The routing point: checks current context (TriggerMode) and calls
     // whichever handler applies. Sequenced mode's pattern bank and
     // Performance mode's state bank (Pass 1) are the two handlers today.
-    switch (triggerMode.load())
+    switch (model.triggerMode.load())
     {
         case TriggerMode::sequenced:
-            if (midiLearnArmed.load())
+            if (model.midiLearnArmed.load())
                 completeMidiLearn (noteNumber);
             else
                 handlePatternSwitchNoteOn (noteNumber);
@@ -3194,26 +2697,12 @@ void SlicerAudioProcessor::dispatchNoteOn (int noteNumber, bool hostTransportPla
     }
 }
 
-SlicerAudioProcessor::SequencerPatternSnapshot SlicerAudioProcessor::captureCurrentSequencerPatternSnapshot() const
-{
-    SequencerPatternSnapshot snapshot;
-    snapshot.populated = true;
-    snapshot.rows = getSequencerNumRows();
-    snapshot.columns = getSequencerNumSteps();
-    snapshot.stepResolutionIndex = stepResolutionIndex.load();
-    snapshot.patternLengthBarsIndex = patternLengthBarsIndex.load();
-    snapshot.grid = sequencerGrid;
-    snapshot.parameterOverrides = sequencerCellParameterOverrides;
-    snapshot.extendedLengthSteps = sequencerCellExtendedLengthSteps;
-    return snapshot;
-}
-
 void SlicerAudioProcessor::handlePatternSwitchNoteOn (int noteNumber)
 {
-    if (! patternBank[(size_t) noteNumber].populated)
+    if (! model.patternBank[(size_t) noteNumber].populated)
         return; // empty slot -- no-op regardless of timing mode, same as Pass 1
 
-    if (patternSwitchTiming.load() == PatternSwitchTiming::immediate)
+    if (model.patternSwitchTiming.load() == PatternSwitchTiming::immediate)
     {
         handleSequencerPatternRecallNoteOn (noteNumber);
         return;
@@ -3225,57 +2714,28 @@ void SlicerAudioProcessor::handlePatternSwitchNoteOn (int noteNumber)
     // newer note-on arriving before that boundary just overwrites this same
     // atomic, so the newest one always wins -- there's never more than one
     // pending switch to track.
-    pendingPatternSwitchNote.store (noteNumber);
+    model.pendingPatternSwitchNote.store (noteNumber);
     patternSwitchIntervalBoundaryArmed = false; // force Set Interval's "next occurrence" to be recomputed fresh from wherever ppq is on the very next per-sample check
 }
 
 void SlicerAudioProcessor::handleSequencerPatternRecallNoteOn (int noteNumber)
 {
-    const auto& snapshot = patternBank[(size_t) noteNumber];
+    const auto& snapshot = model.patternBank[(size_t) noteNumber];
 
     if (! snapshot.populated)
         return; // empty slot -- no-op, current pattern keeps playing undisturbed
 
-    sequencerGrid = snapshot.grid;
-    sequencerCellParameterOverrides = snapshot.parameterOverrides;
-    sequencerCellExtendedLengthSteps = snapshot.extendedLengthSteps;
-    stepResolutionIndex.store (snapshot.stepResolutionIndex);
-    patternLengthBarsIndex.store (snapshot.patternLengthBarsIndex);
-    activePatternBankSlot.store (noteNumber);
+    model.sequencerGrid = snapshot.grid;
+    model.sequencerCellParameterOverrides = snapshot.parameterOverrides;
+    model.sequencerCellExtendedLengthSteps = snapshot.extendedLengthSteps;
+    model.stepResolutionIndex.store (snapshot.stepResolutionIndex);
+    model.patternLengthBarsIndex.store (snapshot.patternLengthBarsIndex);
+    model.activePatternBankSlot.store (noteNumber);
 
     // Force the step-boundary tracker to re-sync against the newly recalled
     // grid on the very next check, below in processBlock() -- same re-init
     // setTriggerMode() already relies on when switching INTO Sequenced mode.
     sequencedModeInitialized = false;
-}
-
-void SlicerAudioProcessor::completeMidiLearn (int noteNumber)
-{
-    patternBank[(size_t) noteNumber] = pendingSaveSnapshot;
-    midiLearnArmed.store (false);
-}
-
-void SlicerAudioProcessor::armMidiLearnForPatternSave()
-{
-    const juce::ScopedLock sl (sampleLock);
-    pendingSaveSnapshot = captureCurrentSequencerPatternSnapshot();
-    midiLearnArmed.store (true);
-}
-
-void SlicerAudioProcessor::cancelMidiLearn()
-{
-    midiLearnArmed.store (false);
-}
-
-std::array<bool, 128> SlicerAudioProcessor::getPopulatedPatternBankSlots() const
-{
-    const juce::ScopedLock sl (sampleLock);
-    std::array<bool, 128> populated {};
-
-    for (size_t i = 0; i < patternBank.size(); ++i)
-        populated[i] = patternBank[i].populated;
-
-    return populated;
 }
 
 //==============================================================================
@@ -3288,16 +2748,16 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber, bool ho
     // keyboard's click handler (setFocusedPerformanceStateSlot(), below) is
     // the only thing that ever changes focus. Pressing the FOCUSED slot's
     // own key live-auditions whatever's currently being edited
-    // (performanceWorkingState, played via the shared trim atomics --
+    // (model.performanceWorkingState, played via the shared trim atomics --
     // exactly the same live objects the parameter panel/waveform trim
     // handles write into); pressing any OTHER slot's key plays back
     // whatever's already saved there, via a frozen copy of its own
     // independent snapshot (including its own saved trim), so auditioning
-    // it can never disturb performanceWorkingState or the focused slot's
+    // it can never disturb model.performanceWorkingState or the focused slot's
     // in-progress edits. An empty, unfocused slot is a no-op regardless of
     // Quantize Recall -- checked up front, before either the immediate or
     // deferred path below runs, same as Pass 1.
-    if (noteNumber != focusedPerformanceStateSlot.load() && ! performanceStateBank[(size_t) noteNumber].populated)
+    if (noteNumber != model.focusedPerformanceStateSlot.load() && ! model.performanceStateBank[(size_t) noteNumber].populated)
         return; // empty, unfocused slot -- no-op, whatever's already playing keeps playing undisturbed
 
     // Quantize Recall (see its own doc comment above): defer to the next
@@ -3305,7 +2765,7 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber, bool ho
     // isn't playing -- there's no meaningful beat position to quantize
     // against without it, so this falls back to the immediate path below,
     // same as Quantize Recall being off entirely.
-    if (performanceQuantizeRecallEnabled.load() && hostTransportPlaying)
+    if (model.performanceQuantizeRecallEnabled.load() && hostTransportPlaying)
     {
         // A newer note-on before the boundary just overwrites this same
         // atomic, so the newest one always wins -- there's never more than
@@ -3313,7 +2773,7 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber, bool ho
         // boundary check in processBlock() recomputes "next occurrence"
         // fresh from wherever ppq is right now, not from whenever an
         // earlier pending note-on arrived.
-        pendingPerformanceRecallNote.store (noteNumber);
+        model.pendingPerformanceRecallNote.store (noteNumber);
         performanceQuantizeRecallBoundaryArmed = false;
         return;
     }
@@ -3323,13 +2783,13 @@ void SlicerAudioProcessor::handlePerformanceStateNoteOn (int noteNumber, bool ho
 
 void SlicerAudioProcessor::applyPerformanceStateRecall (int noteNumber)
 {
-    if (noteNumber == focusedPerformanceStateSlot.load())
+    if (noteNumber == model.focusedPerformanceStateSlot.load())
     {
         performancePlaybackIsFocused = true;
     }
     else
     {
-        const auto& snapshot = performanceStateBank[(size_t) noteNumber];
+        const auto& snapshot = model.performanceStateBank[(size_t) noteNumber];
 
         if (! snapshot.populated)
             return; // slot emptied (or lost focus) between the note-on that armed a deferred recall and this boundary -- no-op, same as the immediate path's own check
@@ -3346,309 +2806,6 @@ void SlicerAudioProcessor::applyPerformanceStateRecall (int noteNumber)
     performanceRecallPending = true;
 }
 
-void SlicerAudioProcessor::setFocusedPerformanceStateSlot (int noteNumber)
-{
-    if (noteNumber < 0 || noteNumber >= 128)
-        return;
-
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Performance mode freeze investigation) -- this
-    // function runs on the message thread, so I/O here is safe (unlike
-    // inside processBlock()); marks the window during which this thread
-    // might be blocked waiting for sampleLock, for freezeWatchdog to report.
-    debugFocusChangeNoteNumber.store (noteNumber, std::memory_order_relaxed);
-    debugFocusChangeStartMs.store ((juce::int64) juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
-    debugFocusChangeInProgress.store (true, std::memory_order_relaxed);
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- about to acquire sampleLock" << std::endl;
-#endif
-
-    const juce::ScopedLock sl (sampleLock);
-
-#if JUCE_DEBUG
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- sampleLock acquired" << std::endl;
-#endif
-
-    const int previous = focusedPerformanceStateSlot.load();
-
-    if (noteNumber == previous)
-    {
-#if JUCE_DEBUG
-        std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- already focused, no-op" << std::endl;
-        debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
-#endif
-        return; // already focused -- nothing to save away from or load
-    }
-
-    // Auto-save (replaces the old MIDI-Learn "Save to..." button entirely):
-    // whatever was being edited in the previously-focused slot is captured
-    // now, the instant focus moves away from it.
-    if (previous >= 0)
-    {
-        PerformanceStateSnapshot saved = performanceWorkingState;
-        saved.populated = true;
-        saved.trimStartSample = trimStartSample.load();
-        saved.trimEndSample = trimEndSample.load();
-        performanceStateBank[(size_t) previous] = saved;
-    }
-
-    // Load the new slot: its existing saved state, or a fresh default to
-    // start editing from if it has none yet (matching the Artillery 2
-    // reference) -- the same seed values the constructor gives
-    // performanceWorkingState initially. Deliberately does NOT write this
-    // default into performanceStateBank[noteNumber] -- it only becomes a
-    // real saved slot (and lights up the keyboard's populated highlight)
-    // once focus actually moves away from it, same as every other slot.
-    const auto& existing = performanceStateBank[(size_t) noteNumber];
-
-    if (existing.populated)
-    {
-        performanceWorkingState = existing;
-        trimStartSample.store (existing.trimStartSample);
-        trimEndSample.store (existing.trimEndSample);
-    }
-    else
-    {
-        performanceWorkingState = PerformanceStateSnapshot {};
-        performanceWorkingState.populated = true; // lets this slot's own key live-audition immediately, even before its first auto-save
-
-        for (int i = 0; i < numSequencerCellParameters; ++i)
-            performanceWorkingState.parameterValues[(size_t) i] = getSequencerCellParameterGlobalValue (i);
-
-        trimStartSample.store (0);
-        trimEndSample.store (sampleBuffer.getNumSamples());
-    }
-
-    focusedPerformanceStateSlot.store (noteNumber);
-
-#if JUCE_DEBUG
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- done" << std::endl;
-    debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
-#endif
-}
-
-std::array<bool, 128> SlicerAudioProcessor::getPopulatedPerformanceStateBankSlots() const
-{
-    const juce::ScopedLock sl (sampleLock);
-    std::array<bool, 128> populated {};
-
-    for (size_t i = 0; i < performanceStateBank.size(); ++i)
-        populated[i] = performanceStateBank[i].populated;
-
-    return populated;
-}
-
-int SlicerAudioProcessor::getPerformanceWorkingStyle() const
-{
-    const juce::ScopedLock sl (sampleLock);
-    return performanceWorkingState.style;
-}
-
-void SlicerAudioProcessor::setPerformanceWorkingStyle (int style)
-{
-    const juce::ScopedLock sl (sampleLock);
-    performanceWorkingState.style = style;
-}
-
-float SlicerAudioProcessor::getPerformanceWorkingParameterValue (int index) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    if (index < 0 || index >= numSequencerCellParameters)
-        return 0.0f;
-
-    return performanceWorkingState.parameterValues[(size_t) index];
-}
-
-void SlicerAudioProcessor::setPerformanceWorkingParameterValue (int index, float value)
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    if (index < 0 || index >= numSequencerCellParameters)
-        return;
-
-    performanceWorkingState.parameterValues[(size_t) index] = value;
-}
-
-bool SlicerAudioProcessor::getPerformanceWorkingLoop() const
-{
-    const juce::ScopedLock sl (sampleLock);
-    return performanceWorkingState.loop;
-}
-
-void SlicerAudioProcessor::setPerformanceWorkingLoop (bool loop)
-{
-    const juce::ScopedLock sl (sampleLock);
-    performanceWorkingState.loop = loop;
-}
-
-bool SlicerAudioProcessor::getPerformanceWorkingSync() const
-{
-    const juce::ScopedLock sl (sampleLock);
-    return performanceWorkingState.sync;
-}
-
-void SlicerAudioProcessor::setPerformanceWorkingSync (bool sync)
-{
-    const juce::ScopedLock sl (sampleLock);
-    performanceWorkingState.sync = sync;
-}
-
-int SlicerAudioProcessor::getSequencerCellStyle (int row, int column) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return -1;
-
-    const size_t idx = (size_t) (row * columns + column);
-    return idx < sequencerGrid.size() ? sequencerGrid[idx] : -1;
-}
-
-void SlicerAudioProcessor::setSequencerCell (int row, int column, int style)
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int rows = getSequencerNumRows();
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= rows || column < 0 || column >= columns)
-        return;
-
-    if ((int) sequencerGrid.size() != rows * columns)
-        resetSequencerGrid(); // defensive -- dimensions drifted out from under us somehow
-
-    if (style >= 0)
-    {
-        // Structural monophony (Step 37, v1): clear any other active cell
-        // in this SAME COLUMN across every row first, so "only one voice"
-        // is true at the INPUT level the instant a pattern is drawn, not
-        // just something the playback engine happens to enforce
-        // afterward -- and it's what avoids needing a tie-break rule
-        // entirely at playback time. Their parameter overrides go with
-        // them (Step 45) -- a cell that's no longer active has no
-        // meaningful style-specific parameters left to override.
-        for (int r = 0; r < rows; ++r)
-        {
-            sequencerGrid[(size_t) (r * columns + column)] = -1;
-            sequencerCellParameterOverrides.erase (r * columns + column);
-            sequencerCellExtendedLengthSteps.erase (r * columns + column); // Step-extension (Pass 1) -- a cleared cell's own extension goes with it too
-        }
-    }
-
-    // This cell's own style is changing (or clearing) too (Step 45) --
-    // always drop its overrides first, so re-painting the same physical
-    // cell later never resurrects a stale override left over from a
-    // completely different style.
-    sequencerCellParameterOverrides.erase (row * columns + column);
-    sequencerCellExtendedLengthSteps.erase (row * columns + column); // Step-extension (Pass 1) -- same reasoning
-    sequencerGrid[(size_t) (row * columns + column)] = style;
-}
-
-int SlicerAudioProcessor::getSequencerCellExtendedLengthSteps (int row, int column) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return 0;
-
-    const auto it = sequencerCellExtendedLengthSteps.find (row * columns + column);
-    return it != sequencerCellExtendedLengthSteps.end() ? it->second : 0;
-}
-
-void SlicerAudioProcessor::setSequencerCellExtendedLengthSteps (int row, int column, int lengthSteps)
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int rows = getSequencerNumRows();
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= rows || column < 0 || column >= columns)
-        return;
-
-    if ((int) sequencerGrid.size() != rows * columns)
-        resetSequencerGrid(); // defensive -- dimensions drifted out from under us somehow, mirrors setSequencerCell()
-
-    const int idx = row * columns + column;
-
-    if (sequencerGrid[(size_t) idx] < 0)
-        return; // only an already-active cell can be extended
-
-    const int clampedLength = juce::jlimit (1, columns - column, lengthSteps);
-
-    // Growing into columns another row already occupies clears those
-    // conflicting cells -- the exact same per-column monophony rule
-    // setSequencerCell() enforces above for a plain single-cell draw, just
-    // applied across the whole newly-claimed span instead of one column.
-    // This row's OWN later cells (if any) are deliberately left alone --
-    // only ANOTHER row's occupancy counts as a conflict here.
-    for (int offset = 1; offset < clampedLength; ++offset)
-    {
-        const int col = column + offset;
-
-        for (int r = 0; r < rows; ++r)
-        {
-            if (r == row)
-                continue;
-
-            const int otherIdx = r * columns + col;
-
-            if (sequencerGrid[(size_t) otherIdx] >= 0)
-            {
-                sequencerGrid[(size_t) otherIdx] = -1;
-                sequencerCellParameterOverrides.erase (otherIdx);
-                sequencerCellExtendedLengthSteps.erase (otherIdx);
-            }
-        }
-    }
-
-    sequencerCellExtendedLengthSteps[idx] = clampedLength;
-}
-
-int SlicerAudioProcessor::getSequencerNaturalLengthSteps (int row) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    if (row < 0 || row >= (int) slices.size())
-        return 1;
-
-    const auto& slice = slices[(size_t) row];
-    const int sliceLength = slice.endSample - slice.startSample;
-    const double originalBpm = getCalculatedOriginalBpm();
-
-    int naturalSteps = 1;
-
-    if (sliceLength > 0 && sampleSampleRate > 0.0 && originalBpm > 0.0)
-    {
-        const double sliceSeconds = (double) sliceLength / sampleSampleRate;
-        const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
-        const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
-
-        if (stepBeats > 0.0)
-            naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
-    }
-
-    return naturalSteps;
-}
-
-int SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps (int row, int column) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return 1;
-
-    const int naturalSteps = getSequencerNaturalLengthSteps (row);
-    const int extendedOverride = getSequencerCellExtendedLengthSteps (row, column);
-
-    return juce::jmax (naturalSteps, extendedOverride);
-}
-
 #if JUCE_DEBUG
 void SlicerAudioProcessor::drainDebugTapeStopEvents()
 {
@@ -3656,7 +2813,7 @@ void SlicerAudioProcessor::drainDebugTapeStopEvents()
     // done. UI-thread only: does the actual DBG()/console I/O the audio
     // thread itself never does (see the mailbox members' own doc comment
     // in PluginProcessor.h). No lock taken here at all -- every field
-    // below is its own atomic, and nothing here touches sampleLock or any
+    // below is its own atomic, and nothing here touches model.sampleLock or any
     // audio-thread-only state.
     if (debugTapeStopPickStartEventPending.exchange (false))
     {
@@ -3725,271 +2882,11 @@ void SlicerAudioProcessor::drainDebugStretchEvents()
 }
 #endif
 
-void SlicerAudioProcessor::clearSequence()
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int rows = getSequencerNumRows();
-    const int columns = getSequencerNumSteps();
-
-    if ((int) sequencerGrid.size() != rows * columns)
-        resetSequencerGrid();
-
-    std::fill (sequencerGrid.begin(), sequencerGrid.end(), -1);
-    sequencerCellParameterOverrides.clear(); // Step 45
-    sequencerCellExtendedLengthSteps.clear(); // Step-extension (Pass 1)
-}
-
-juce::String SlicerAudioProcessor::getSequencerCellParameterName (int index)
-{
-    if (index < 0 || index >= numSequencerCellParameters)
-        return {};
-
-    return sequencerCellParameterNames[(size_t) index];
-}
-
-bool SlicerAudioProcessor::isSequencerCellParameterDiscrete (int index)
-{
-    return index == 1 || index == 2 || index == 5 || index == 7 || index == 9 || index == 10 || index == 11 || index == 12 || index == 14 || index == 16 || index == 18 || index == 20; // Filter Type, Curve Shape (Step 46); Subdivide (Step 47); Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Rate, Forward Curve, Backward Curve (Scratch v1/v2); Delay Time Mode, Mix Mode, Feedback Mode (Flanger); Volume Mode
-}
-
-bool SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (int index)
-{
-    return index == 5; // Subdivide (Step 47) -- see its declaration in PluginProcessor.h for why
-}
-
-bool SlicerAudioProcessor::isSequencerCellParameterSwept (int index)
-{
-    return index == 6 || index == 8 || index == 13 || index == 15 || index == 17 || index == 19; // Sample Rate Reduction, Bit Depth (Step 49); Delay Time, Mix, Feedback (Flanger); Volume -- see declaration in PluginProcessor.h
-}
-
-int SlicerAudioProcessor::getSequencerCellParameterNumOptions (int index)
-{
-    if (index == 1) return numFilterSweepFilterTypeOptions;
-    if (index == 2) return numCurveShapeOptions;
-    if (index == 5) return numNoteValueOptions + 1; // Subdivide (Step 47): "Off" (option 0) + the shared note-value palette
-    if (index == 7 || index == 9 || index == 14 || index == 16 || index == 18) return (int) sweepModeNames.size(); // Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Delay Time Mode, Mix Mode, Feedback Mode (Flanger)
-    if (index == 10) return numNoteValueOptions; // Rate (Scratch v1) -- the shared note-value palette, no "Off" (Scratch always has a rate)
-    if (index == 11 || index == 12) return numEasingCurveOptions; // Forward Curve, Backward Curve (Scratch v2)
-    if (index == 20) return (int) volumeRampModeNames.size(); // Volume Mode
-
-    return 0;
-}
-
-juce::String SlicerAudioProcessor::getSequencerCellParameterOptionName (int index, int optionIndex)
-{
-    if (index == 1) return getFilterSweepFilterTypeName (optionIndex);
-    if (index == 2) return getCurveShapeName (optionIndex);
-    if (index == 5) return optionIndex <= 0 ? "Off" : getNoteValueName (optionIndex - 1); // Subdivide (Step 47)
-    if (index == 10) return getNoteValueName (optionIndex); // Rate (Scratch v1)
-    if (index == 11 || index == 12) return getEasingCurveName (easingCurveFromIndex (optionIndex)); // Forward Curve, Backward Curve (Scratch v2)
-
-    if (index == 7 || index == 9 || index == 14 || index == 16 || index == 18) // Sample Rate Reduction Mode, Bit Depth Mode (Step 49); Delay Time Mode, Mix Mode, Feedback Mode (Flanger)
-    {
-        if (optionIndex < 0 || optionIndex >= (int) sweepModeNames.size())
-            return {};
-
-        return sweepModeNames[(size_t) optionIndex];
-    }
-
-    if (index == 20) // Volume Mode
-    {
-        if (optionIndex < 0 || optionIndex >= (int) volumeRampModeNames.size())
-            return {};
-
-        return volumeRampModeNames[(size_t) optionIndex];
-    }
-
-    return {};
-}
-
-float SlicerAudioProcessor::getSequencerCellParameterMin (int index)
-{
-    if (index == 0) return minFilterSweepResonance;
-    if (index == 3) return minStretchGrainSizeMs;
-    if (index == 4) return minStretchSpeedMultiplier;
-    if (index == 6) return 1.0f;  // Sample Rate Reduction (Step 49) -- 1 sample hold = no reduction at all
-    if (index == 8) return 1.0f;  // Bit Depth (Step 49) -- 1 bit is the quantizer's own hard floor
-    if (index == 13) return flangerDelayTimeMinMs; // Delay Time (Flanger) -- least pronounced comb character
-    if (index == 15) return 0.0f; // Mix (Flanger) -- fully dry
-    if (index == 17) return 0.0f; // Feedback (Flanger) -- no feedback at all
-    if (index == 19) return 0.0f; // Volume -- silence
-
-    return 0.0f;
-}
-
-float SlicerAudioProcessor::getSequencerCellParameterMax (int index)
-{
-    if (index == 0) return maxFilterSweepResonance;
-    if (index == 3) return maxStretchGrainSizeMs;
-    if (index == 4) return maxStretchSpeedMultiplier;
-    if (index == 5) return (float) (numNoteValueOptions + 1 - 1); // Subdivide (Step 47) -- unused by the stepped slider itself (see isSequencerCellParameterSteppedSlider), kept for API symmetry
-    if (index == 6) return bitcrushRateReductionExtreme; // Sample Rate Reduction (Step 49) -- slider tops out exactly at the Sweep In/Out target, so "Static, maxed out" and "fully swept" read as the same crush amount
-    if (index == 8) return 16.0f; // Bit Depth (Step 49) -- a generous ceiling; the sweep's own extreme (1 bit) sits at the MIN end instead, see getSequencerCellParameterMin()
-    if (index == 13) return flangerDelayTimeExtremeMs; // Delay Time (Flanger) -- slider tops out exactly at the Sweep In/Out target, same "Static maxed out == fully swept" convention as Sample Rate Reduction
-    if (index == 15) return flangerMixExtreme; // Mix (Flanger) -- fully wet, same convention
-    if (index == 17) return flangerFeedbackExtreme; // Feedback (Flanger) -- 88%, short of self-oscillation, same convention
-    if (index == 19) return 1.0f; // Volume -- full volume/unity gain
-
-    return 1.0f;
-}
-
-std::vector<int> SlicerAudioProcessor::getApplicableSequencerCellParameters (int style)
-{
-    // Parameter indices below match getSequencerCellParameterName()'s own
-    // ordering: 0 Resonance, 1 Filter Type, 2 Curve Shape, 3 Grain Size,
-    // 4 Grain Speed (Step 45/46), 6 Sample Rate Reduction, 8 Bit Depth
-    // (Step 49), 13 Delay Time, 15 Mix, 17 Feedback (Flanger -- their
-    // paired Mode indices 7/9/14/16/18 are deliberately never listed
-    // here, see isSequencerCellParameterSwept()). Table form rather
-    // than a single flat list filtered by style -- keeps "which style
-    // offers what" readable at a glance and trivially extensible (a
-    // future parameter just adds itself to whichever case(s) it applies
-    // to). Style indices match indexToPlaybackStyle()'s ordinals, the
-    // same ones sequencerGrid itself stores.
-    std::vector<int> params;
-
-    switch (style)
-    {
-        case 0: break;             // Forward -- no style-specific params, but Subdivide (below) still applies
-        case 1: params = { 2 }; break;    // Ping-Pong -- Curve Shape (turnaround fade)
-        case 2: params = { 2 }; break;    // Tape Stop -- Curve Shape (decel)
-        case 3: params = { 3, 4 }; break; // Stretch -- Grain Size, Grain Speed
-        case 4:                           // Filter Down
-        case 5: params = { 0, 1 }; break; // Filter Up -- Resonance, Filter Type
-        case 6: params = { 6, 8 }; break;      // Bitcrush (Step 49) -- Sample Rate Reduction, Bit Depth
-        case 7: params = { 10, 11, 12 }; break; // Scratch (v1/v2) -- Rate, Forward Curve, Backward Curve
-        case 8: params = { 13, 15, 17 }; break; // Flanger -- Delay Time, Mix, Feedback
-        default: return {};        // empty/invalid cell (-1) -- no menu at all
-    }
-
-    // Subdivide (Step 47) and Volume (index 19): both general, not
-    // style-specific -- appended for every valid style above (including
-    // Forward), unlike everything else in this function. Volume is a
-    // pure gain stage layered after whatever the style's own DSP already
-    // produces, so it applies identically regardless of which style (if
-    // any -- Forward included) is active.
-    params.push_back (5);
-    params.push_back (19);
-    return params;
-}
-
-float SlicerAudioProcessor::getSequencerCellParameterGlobalValue (int index) const
-{
-    switch (index)
-    {
-        case 0: return getFilterSweepResonance();
-        case 1: return (float) getFilterSweepFilterType();
-        case 2: return (float) getCurveShape();
-        case 3: return getStretchGrainSizeMs();
-        case 4: return getStretchSpeedMultiplier();
-        case 5: return 0.0f; // Subdivide (Step 47) -- no global dial; Off is always the fallback/default
-        case 6: return getBitcrushRateReductionGlobal(); // Sample Rate Reduction
-        case 7: return (float) getBitcrushRateReductionModeGlobal();
-        case 8: return getBitcrushBitDepthGlobal(); // Bit Depth
-        case 9: return (float) getBitcrushBitDepthModeGlobal();
-        case 10: return (float) getScratchRateGlobal(); // Rate (Scratch v1)
-        case 11: return (float) getScratchForwardCurveGlobal(); // Forward Curve (Scratch v2)
-        case 12: return (float) getScratchBackwardCurveGlobal(); // Backward Curve (Scratch v2)
-        case 13: return getFlangerDelayTimeGlobal(); // Delay Time (Flanger)
-        case 14: return (float) getFlangerDelayTimeModeGlobal();
-        case 15: return getFlangerMixGlobal(); // Mix (Flanger)
-        case 16: return (float) getFlangerMixModeGlobal();
-        case 17: return getFlangerFeedbackGlobal(); // Feedback (Flanger)
-        case 18: return (float) getFlangerFeedbackModeGlobal();
-        case 19: return 1.0f; // Volume -- no global dial; full volume (no change) is always the fallback/default
-        case 20: return 0.0f; // Volume Mode -- Static is always the fallback/default
-        default: return 0.0f;
-    }
-}
-
-void SlicerAudioProcessor::setSequencerCellParameterGlobalValue (int index, float value)
-{
-    switch (index)
-    {
-        case 0: setFilterSweepResonance (value); break;
-        case 1: setFilterSweepFilterType (juce::roundToInt (value)); break;
-        case 2: setCurveShape (juce::roundToInt (value)); break;
-        case 3: setStretchGrainSizeMs (value); break;
-        case 4: setStretchSpeedMultiplier (value); break;
-        case 6: setBitcrushRateReductionGlobal (value); break;
-        case 7: setBitcrushRateReductionModeGlobal (juce::roundToInt (value)); break;
-        case 8: setBitcrushBitDepthGlobal (value); break;
-        case 9: setBitcrushBitDepthModeGlobal (juce::roundToInt (value)); break;
-        case 10: setScratchRateGlobal (juce::roundToInt (value)); break;
-        case 11: setScratchForwardCurveGlobal (juce::roundToInt (value)); break;
-        case 12: setScratchBackwardCurveGlobal (juce::roundToInt (value)); break;
-        case 13: setFlangerDelayTimeGlobal (value); break;
-        case 14: setFlangerDelayTimeModeGlobal (juce::roundToInt (value)); break;
-        case 15: setFlangerMixGlobal (value); break;
-        case 16: setFlangerMixModeGlobal (juce::roundToInt (value)); break;
-        case 17: setFlangerFeedbackGlobal (value); break;
-        case 18: setFlangerFeedbackModeGlobal (juce::roundToInt (value)); break;
-        default: break; // indices 5 (Subdivide) and 19/20 (Volume/Volume Mode) have no global dial; out-of-range is a no-op
-    }
-}
-
-bool SlicerAudioProcessor::getSequencerCellHasParameterOverride (int row, int column, const juce::String& parameterName) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return false;
-
-    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
-    return it != sequencerCellParameterOverrides.end() && it->second.count (parameterName) > 0;
-}
-
-float SlicerAudioProcessor::getSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float fallbackValue) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return fallbackValue;
-
-    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
-
-    if (it == sequencerCellParameterOverrides.end())
-        return fallbackValue;
-
-    const auto valueIt = it->second.find (parameterName);
-    return valueIt != it->second.end() ? valueIt->second : fallbackValue;
-}
-
-void SlicerAudioProcessor::setSequencerCellParameterOverride (int row, int column, const juce::String& parameterName, float value)
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return;
-
-    sequencerCellParameterOverrides[row * columns + column][parameterName] = value;
-}
-
-bool SlicerAudioProcessor::getSequencerCellHasAnyParameterOverride (int row, int column) const
-{
-    const juce::ScopedLock sl (sampleLock);
-
-    const int columns = getSequencerNumSteps();
-
-    if (row < 0 || row >= getSequencerNumRows() || column < 0 || column >= columns)
-        return false;
-
-    const auto it = sequencerCellParameterOverrides.find (row * columns + column);
-    return it != sequencerCellParameterOverrides.end() && ! it->second.empty();
-}
-
 void SlicerAudioProcessor::randomizeSequence()
 {
     clearSequence(); // same wipe Clear Sequence itself uses (Step 41) -- juce::CriticalSection is re-entrant, so re-locking below is safe
 
-    const juce::ScopedLock sl (sampleLock);
+    const juce::ScopedLock sl (model.sampleLock);
 
     const int rows = getSequencerNumRows();
     const int columns = getSequencerNumSteps();
@@ -3997,7 +2894,7 @@ void SlicerAudioProcessor::randomizeSequence()
     if (rows <= 0 || columns <= 0)
         return;
 
-    const double stepBeats = getNoteValueBeats (stepResolutionIndex.load());
+    const double stepBeats = getNoteValueBeats (model.stepResolutionIndex.load());
     const double originalBpm = getCalculatedOriginalBpm();
 
     // Each row's natural length in steps, computed once up front (Step 40)
@@ -4007,13 +2904,13 @@ void SlicerAudioProcessor::randomizeSequence()
 
     for (int row = 0; row < rows; ++row)
     {
-        const auto& slice = slices[(size_t) row];
+        const auto& slice = model.slices[(size_t) row];
         const int sliceLength = slice.endSample - slice.startSample;
         int naturalSteps = 1;
 
-        if (sliceLength > 0 && sampleSampleRate > 0.0 && stepBeats > 0.0 && originalBpm > 0.0)
+        if (sliceLength > 0 && model.sampleSampleRate > 0.0 && stepBeats > 0.0 && originalBpm > 0.0)
         {
-            const double sliceSeconds = (double) sliceLength / sampleSampleRate;
+            const double sliceSeconds = (double) sliceLength / model.sampleSampleRate;
             const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
             naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
         }
@@ -4094,14 +2991,14 @@ void SlicerAudioProcessor::randomizeSequence()
             if (random.nextFloat() < 0.35f)
             {
                 // Style (Step 41) is drawn from the same weighted
-                // playbackStyleProbabilities table Slice Length/Clock
+                // model.playbackStyleProbabilities table Slice Length/Clock
                 // modes already use -- NOT flat/uniform chance -- so
                 // turning a style's weight down elsewhere also makes
                 // Randomize reach for it less often here. Default weights
                 // are Forward-only, so this reproduces exactly the old
                 // all-Forward behaviour until those weights are touched.
-                const int placedStyle = pickWeightedIndex (playbackStyleProbabilities);
-                sequencerGrid[(size_t) (row * columns + foundColumn)] = placedStyle;
+                const int placedStyle = pickWeightedIndex (model.playbackStyleProbabilities);
+                model.sequencerGrid[(size_t) (row * columns + foundColumn)] = placedStyle;
 
                 // Per-style "randomize parameters" opt-in (see
                 // getRandomizeParametersForStyle()'s own doc comment) --
@@ -4166,177 +3063,6 @@ void SlicerAudioProcessor::randomizeSequence()
         if (! placedAnythingThisPass)
             break;
     }
-}
-
-int SlicerAudioProcessor::addManualSlicePoint (int targetSample, bool snapToTransient)
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    int snapped = juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), targetSample);
-
-    if (snapToTransient)
-    {
-        const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-        snapped = transientDetector.findNearestPeak (snapped, radiusSamples, trimStart, trimEnd);
-    }
-
-    const int id = nextManualPointId++;
-
-    auto beforeManual = getManualSlicePoints();
-    auto beforeExcluded = getExcludedPoints();
-
-    auto afterManual = beforeManual;
-    afterManual.push_back ({ id, snapped });
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, beforeExcluded,
-                                                        afterManual, beforeExcluded));
-    return id;
-}
-
-void SlicerAudioProcessor::moveManualSlicePoint (int id, int targetSample, bool snapToTransient)
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-    int snapped = juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), targetSample);
-
-    if (snapToTransient)
-    {
-        const int radiusSamples = (int) (manualSnapRadiusMs / 1000.0f * (float) sampleSampleRate);
-        snapped = transientDetector.findNearestPeak (snapped, radiusSamples, trimStart, trimEnd);
-    }
-
-    {
-        const juce::ScopedLock sl (sampleLock);
-
-        for (auto& mp : manualPoints)
-        {
-            if (mp.id == id)
-            {
-                mp.samplePosition = snapped;
-                break;
-            }
-        }
-    }
-
-    rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
-}
-
-void SlicerAudioProcessor::commitManualPointMove (int id, int originalSamplePosition)
-{
-    // The live position is already applied (moveManualSlicePoint was
-    // called throughout the drag) — "after" is just the current state.
-    // "before" is that same state with only this one point's position
-    // put back to where the drag started.
-    auto afterManual = getManualSlicePoints();
-    auto beforeManual = afterManual;
-
-    for (auto& mp : beforeManual)
-        if (mp.id == id)
-            mp.samplePosition = originalSamplePosition;
-
-    auto excluded = getExcludedPoints(); // unaffected by a move
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, excluded, afterManual, excluded));
-}
-
-void SlicerAudioProcessor::removeManualSlicePoint (int id)
-{
-    auto beforeManual = getManualSlicePoints();
-    auto beforeExcluded = getExcludedPoints();
-
-    auto afterManual = beforeManual;
-    afterManual.erase (std::remove_if (afterManual.begin(), afterManual.end(),
-                                        [id] (const ManualPointInfo& mp) { return mp.id == id; }),
-                        afterManual.end());
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, beforeExcluded,
-                                                        afterManual, beforeExcluded));
-}
-
-int SlicerAudioProcessor::excludeNearestAutoPoint (int targetSample)
-{
-    const int trimStart = trimStartSample.load();
-    const int trimEnd = trimEndSample.load();
-
-    // Search the raw current auto-detection result (not the merged
-    // `slices`) for the nearest boundary to targetSample — the trim start
-    // is never a candidate, it can't be excluded.
-    auto autoSlices = transientDetector.detectSlices (currentSensitivity.load(), computeMinimumHoldoffMs(), trimStart, trimEnd);
-
-    int nearest = -1;
-    int bestDistance = std::numeric_limits<int>::max();
-
-    for (const auto& s : autoSlices)
-    {
-        if (s.startSample == trimStart)
-            continue;
-
-        const int distance = std::abs (s.startSample - targetSample);
-
-        if (distance < bestDistance)
-        {
-            bestDistance = distance;
-            nearest = s.startSample;
-        }
-    }
-
-    if (nearest < 0)
-        return -1;
-
-    const int id = nextExcludedPointId++;
-
-    auto beforeManual = getManualSlicePoints();
-    auto beforeExcluded = getExcludedPoints();
-
-    auto afterExcluded = beforeExcluded;
-    afterExcluded.push_back ({ id, nearest });
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, beforeExcluded,
-                                                        beforeManual, afterExcluded));
-    return id;
-}
-
-void SlicerAudioProcessor::restoreExcludedPoint (int id)
-{
-    auto beforeManual = getManualSlicePoints();
-    auto beforeExcluded = getExcludedPoints();
-
-    auto afterExcluded = beforeExcluded;
-    afterExcluded.erase (std::remove_if (afterExcluded.begin(), afterExcluded.end(),
-                                          [id] (const ManualPointInfo& ep) { return ep.id == id; }),
-                          afterExcluded.end());
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, beforeExcluded,
-                                                        beforeManual, afterExcluded));
-}
-
-void SlicerAudioProcessor::resetAllManualEdits()
-{
-    auto beforeManual = getManualSlicePoints();
-    auto beforeExcluded = getExcludedPoints();
-
-    if (beforeManual.empty() && beforeExcluded.empty())
-        return; // nothing to reset — don't pollute undo history with a no-op
-
-    undoManager.perform (new SliceEditUndoableAction (*this, beforeManual, beforeExcluded, {}, {}));
-}
-
-void SlicerAudioProcessor::applyManualState (const std::vector<ManualPointInfo>& manual,
-                                              const std::vector<ManualPointInfo>& excluded)
-{
-    {
-        const juce::ScopedLock sl (sampleLock);
-
-        manualPoints.clear();
-        for (const auto& m : manual)
-            manualPoints.push_back ({ m.id, m.samplePosition });
-
-        excludedPoints.clear();
-        for (const auto& e : excluded)
-            excludedPoints.push_back ({ e.id, e.samplePosition });
-    }
-
-    rebuildSlicesFromDetectionAndManualPoints (currentSensitivity.load(), computeMinimumHoldoffMs());
 }
 
 //==============================================================================

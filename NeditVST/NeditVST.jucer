@@ -11,6 +11,10 @@
             file="../Source/PluginProcessor.cpp"/>
       <FILE id="XWFLTk" name="PluginProcessor.h" compile="0" resource="0"
             file="../Source/PluginProcessor.h"/>
+      <FILE id="hNv5Zx" name="SlicerModel.cpp" compile="1" resource="0"
+            file="../Source/SlicerModel.cpp"/>
+      <FILE id="jQr6Wm" name="SlicerModel.h" compile="0" resource="0"
+            file="../Source/SlicerModel.h"/>
       <FILE id="CeHUNY" name="TransientDetector.cpp" compile="1" resource="0"
             file="../Source/TransientDetector.cpp"/>
       <FILE id="DCkotD" name="TransientDetector.h" compile="0" resource="0"
