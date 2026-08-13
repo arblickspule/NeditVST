@@ -1117,6 +1117,12 @@ void SlicerModel::setPerformanceWorkingSync (bool sync)
 
 int SlicerModel::addManualSlicePoint (int targetSample, bool snapToTransient)
 {
+    // JUCE 8's UndoManager groups every perform() without an intervening
+    // beginNewTransaction() into a single undo step -- one transaction per
+    // edit action is what the class docs promise, so each public edit method
+    // opens its own transaction before performing.
+    undoManager.beginNewTransaction();
+
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
     int snapped = juce::jlimit (trimStart, juce::jmax (trimStart, trimEnd - 1), targetSample);
@@ -1174,6 +1180,8 @@ void SlicerModel::commitManualPointMove (int id, int originalSamplePosition)
     // called throughout the drag) -- "after" is just the current state.
     // "before" is that same state with only this one point's position
     // put back to where the drag started.
+    undoManager.beginNewTransaction(); // the whole drag is one undo step
+
     auto afterManual = getManualSlicePoints();
     auto beforeManual = afterManual;
 
@@ -1188,6 +1196,8 @@ void SlicerModel::commitManualPointMove (int id, int originalSamplePosition)
 
 void SlicerModel::removeManualSlicePoint (int id)
 {
+    undoManager.beginNewTransaction(); // one undo step per removal (see addManualSlicePoint)
+
     auto beforeManual = getManualSlicePoints();
     auto beforeExcluded = getExcludedPoints();
 
@@ -1202,6 +1212,8 @@ void SlicerModel::removeManualSlicePoint (int id)
 
 int SlicerModel::excludeNearestAutoPoint (int targetSample)
 {
+    undoManager.beginNewTransaction(); // one undo step per exclusion (see addManualSlicePoint)
+
     const int trimStart = trimStartSample.load();
     const int trimEnd = trimEndSample.load();
 
@@ -1245,6 +1257,8 @@ int SlicerModel::excludeNearestAutoPoint (int targetSample)
 
 void SlicerModel::restoreExcludedPoint (int id)
 {
+    undoManager.beginNewTransaction(); // one undo step per restore (see addManualSlicePoint)
+
     auto beforeManual = getManualSlicePoints();
     auto beforeExcluded = getExcludedPoints();
 
@@ -1259,6 +1273,8 @@ void SlicerModel::restoreExcludedPoint (int id)
 
 void SlicerModel::resetAllManualEdits()
 {
+    undoManager.beginNewTransaction(); // one undo step for the whole reset (see addManualSlicePoint)
+
     auto beforeManual = getManualSlicePoints();
     auto beforeExcluded = getExcludedPoints();
 
