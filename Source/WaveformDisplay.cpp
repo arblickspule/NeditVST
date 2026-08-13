@@ -1,15 +1,15 @@
 #include "WaveformDisplay.h"
 #include <cmath>
 
-WaveformDisplay::WaveformDisplay (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+WaveformDisplay::WaveformDisplay (SlicerModel& modelToUse)
+    : model (modelToUse)
 {
     startTimerHz (30); // polls the currently-playing slice for the highlight
 }
 
 void WaveformDisplay::timerCallback()
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
     const auto mousePos = getMouseXYRelative();
@@ -27,7 +27,7 @@ void WaveformDisplay::timerCallback()
 
             if (manualId >= 0)
             {
-                for (const auto& mp : processor.getManualSlicePoints())
+                for (const auto& mp : model.getManualSlicePoints())
                     if (mp.id == manualId)
                         hoveredDeletableSamplePosition = mp.samplePosition;
             }
@@ -41,7 +41,7 @@ void WaveformDisplay::timerCallback()
             const int manualId = findManualPointNear (mousePos.x);
 
             if (manualId >= 0)
-                for (const auto& mp : processor.getManualSlicePoints())
+                for (const auto& mp : model.getManualSlicePoints())
                     if (mp.id == manualId)
                         hoveredFreePlaceSamplePosition = mp.samplePosition;
         }
@@ -76,7 +76,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
         g.fillRect (bounds);
     }
 
-    if (! processor.hasSample())
+    if (! model.hasSample())
     {
         g.setColour (juce::Colours::white.withAlpha (0.4f));
         g.setFont (14.0f);
@@ -103,12 +103,12 @@ void WaveformDisplay::paint (juce::Graphics& g)
     // and draw two draggable flagged handles, distinct in colour/shape
     // from slice/manual/auto boundary lines so they're never confused. ---
     {
-        const int totalSamplesForTrim = processor.getSampleBuffer().getNumSamples();
+        const int totalSamplesForTrim = model.getSampleBuffer().getNumSamples();
 
         if (totalSamplesForTrim > 0)
         {
-            const float trimStartX = sampleToX (processor.getTrimStartSample());
-            const float trimEndX = sampleToX (processor.getTrimEndSample());
+            const float trimStartX = sampleToX (model.getTrimStartSample());
+            const float trimEndX = sampleToX (model.getTrimEndSample());
 
             g.setColour (juce::Colours::black.withAlpha (0.6f));
 
@@ -143,8 +143,8 @@ void WaveformDisplay::paint (juce::Graphics& g)
     // is needed here — this is simply never true at the same moment
     // getCurrentlyPlayingSliceIndex() would be. ---
     {
-        const int auditionPosition = processor.getAuditionPlaybackPosition();
-        const int totalSamplesForAudition = processor.getSampleBuffer().getNumSamples();
+        const int auditionPosition = model.getAuditionPlaybackPosition();
+        const int totalSamplesForAudition = model.getSampleBuffer().getNumSamples();
 
         if (auditionPosition >= 0 && totalSamplesForAudition > 0
             && auditionPosition >= visibleStartSample && auditionPosition < visibleEndSample)
@@ -168,9 +168,9 @@ void WaveformDisplay::paint (juce::Graphics& g)
     // loopLengthBars*4) and most would be outside the view at any
     // reasonable zoom level. ---
     {
-        const int totalBeats = processor.getLoopLengthBars() * 4;
-        const int trimStartForGrid = processor.getTrimStartSample();
-        const int trimEndForGrid = processor.getTrimEndSample();
+        const int totalBeats = model.getLoopLengthBars() * 4;
+        const int trimStartForGrid = model.getTrimStartSample();
+        const int trimEndForGrid = model.getTrimEndSample();
         const int trimSpanForGrid = trimEndForGrid - trimStartForGrid;
 
         if (totalBeats > 0 && trimSpanForGrid > 0)
@@ -201,7 +201,7 @@ void WaveformDisplay::paint (juce::Graphics& g)
     // without touching the shared detection pipeline every other mode still
     // relies on (transient detection keeps running normally underneath --
     // this mode just never draws or reads its output).
-    if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance)
+    if (model.getTriggerMode() == SlicerModel::TriggerMode::performance)
         return;
 
     // --- Slice boundaries + probability faders ---
@@ -210,14 +210,14 @@ void WaveformDisplay::paint (juce::Graphics& g)
     // Indices in a preview don't necessarily match committed slice
     // indices, so the probability fader and playhead highlight — both of
     // which are keyed by index — are suppressed during a preview.
-    const auto slices = hasPreview ? previewSlices : processor.getSlices();
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const auto slices = hasPreview ? previewSlices : model.getSlices();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0 || slices.empty())
         return;
 
-    const auto manualPoints = processor.getManualSlicePoints();
-    const int playingIndex = hasPreview ? -1 : processor.getCurrentlyPlayingSliceIndex();
+    const auto manualPoints = model.getManualSlicePoints();
+    const int playingIndex = hasPreview ? -1 : model.getCurrentlyPlayingSliceIndex();
 
     auto isManualBoundary = [&manualPoints] (int samplePos)
     {
@@ -284,14 +284,14 @@ void WaveformDisplay::paint (juce::Graphics& g)
         // mode. Same visibility-gating pattern as hiding Clock-only
         // controls in Slice Length mode, just applied to painting here
         // instead of a juce::Component's setVisible().
-        if (processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::sequenced)
+        if (model.getTriggerMode() == SlicerModel::TriggerMode::sequenced)
             continue;
 
         // Probability fader: a translucent bar spanning this slice's full
         // width. Height is proportional to weight — empty at the bottom
         // (never picked), full height at the top (always picked, relative
         // to the other slices' weights).
-        const float probability = processor.getSliceProbability ((int) i);
+        const float probability = model.getSliceProbability ((int) i);
         const float faderWidth = juce::jmax (1.0f, endX - startX);
         const float faderX = startX;
         const float faderHeight = bounds.getHeight() * probability;
@@ -314,10 +314,10 @@ void WaveformDisplay::rebuildWaveformPeaks()
 {
     waveformPeaks.clear();
 
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
-    const auto& buffer = processor.getSampleBuffer();
+    const auto& buffer = model.getSampleBuffer();
     const int numSamples = buffer.getNumSamples();
     const int numChannels = buffer.getNumChannels();
     const int width = juce::jmax (1, getWidth());
@@ -365,11 +365,11 @@ void WaveformDisplay::rebuildWaveformPeaks()
 
 int WaveformDisplay::getSliceIndexAtX (int x) const
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return -1;
 
-    const auto& slices = processor.getSlices();
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const auto& slices = model.getSlices();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0 || slices.empty())
         return -1;
@@ -410,17 +410,17 @@ float WaveformDisplay::sampleToX (int sample) const
 
 int WaveformDisplay::findManualPointNear (int x) const
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return -1;
 
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0)
         return -1;
 
     constexpr float hitRadiusPixels = 6.0f;
 
-    for (const auto& mp : processor.getManualSlicePoints())
+    for (const auto& mp : model.getManualSlicePoints())
     {
         const float px = sampleToX (mp.samplePosition);
 
@@ -433,11 +433,11 @@ int WaveformDisplay::findManualPointNear (int x) const
 
 int WaveformDisplay::findAutoPointNear (int x) const
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return -1;
 
-    const auto& slices = processor.getSlices();
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const auto& slices = model.getSlices();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0 || slices.empty())
         return -1;
@@ -460,18 +460,18 @@ int WaveformDisplay::findAutoPointNear (int x) const
 
 WaveformDisplay::TrimHandle WaveformDisplay::findTrimHandleNear (int x) const
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return TrimHandle::none;
 
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0)
         return TrimHandle::none;
 
     constexpr float hitRadiusPixels = 8.0f;
 
-    const float startX = sampleToX (processor.getTrimStartSample());
-    const float endX = sampleToX (processor.getTrimEndSample());
+    const float startX = sampleToX (model.getTrimStartSample());
+    const float endX = sampleToX (model.getTrimEndSample());
 
     if (std::abs (startX - (float) x) <= hitRadiusPixels)
         return TrimHandle::start;
@@ -490,7 +490,7 @@ void WaveformDisplay::setProbabilityFromMouse (const juce::MouseEvent& event)
         return;
 
     const float probability = 1.0f - juce::jlimit (0.0f, 1.0f, (float) event.y / (float) juce::jmax (1, getHeight()));
-    processor.setSliceProbability (sliceIndex, probability);
+    model.setSliceProbability (sliceIndex, probability);
     repaint();
 }
 
@@ -500,7 +500,7 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
     dragStartSamplePosition = -1;
     draggingTrimHandle = TrimHandle::none;
 
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
     const auto trimHandle = findTrimHandleNear (event.x);
@@ -517,14 +517,14 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
     {
         if (event.mods.isCommandDown() || event.getNumberOfClicks() >= 2)
         {
-            processor.removeManualSlicePoint (nearManualId);
+            model.removeManualSlicePoint (nearManualId);
             refresh();
             return;
         }
 
         draggingManualPointId = nearManualId; // subsequent drag moves this point, not a fader
 
-        for (const auto& mp : processor.getManualSlicePoints())
+        for (const auto& mp : model.getManualSlicePoints())
             if (mp.id == nearManualId)
                 dragStartSamplePosition = mp.samplePosition;
 
@@ -535,7 +535,7 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
 
     if (nearAutoSample >= 0 && (event.mods.isCommandDown() || event.getNumberOfClicks() >= 2))
     {
-        processor.excludeNearestAutoPoint (nearAutoSample);
+        model.excludeNearestAutoPoint (nearAutoSample);
         refresh();
         return;
     }
@@ -543,7 +543,7 @@ void WaveformDisplay::mouseDown (const juce::MouseEvent& event)
     if (event.getNumberOfClicks() >= 2)
     {
         const bool snap = ! event.mods.isShiftDown();
-        processor.addManualSlicePoint (xToSample (event.x), snap);
+        model.addManualSlicePoint (xToSample (event.x), snap);
         refresh();
         return;
     }
@@ -556,9 +556,9 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
     if (draggingTrimHandle == TrimHandle::start)
     {
         autoPanIfNearEdge (event.x);
-        const int beforeTrimStart = processor.getTrimStartSample();
+        const int beforeTrimStart = model.getTrimStartSample();
         const bool snap = ! event.mods.isShiftDown();
-        processor.setTrimStartSample (xToSample (event.x), snap);
+        model.setTrimStartSample (xToSample (event.x), snap);
         refresh();
 
         // Only fire on an ACTUAL change (Step 33) -- a drag that's
@@ -566,7 +566,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
         // the other handle, or against the buffer's own edge) shouldn't
         // keep re-flagging Loop Length as stale for a value that never
         // moved.
-        if (onTrimChanged && processor.getTrimStartSample() != beforeTrimStart)
+        if (onTrimChanged && model.getTrimStartSample() != beforeTrimStart)
             onTrimChanged();
 
         return;
@@ -575,12 +575,12 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
     if (draggingTrimHandle == TrimHandle::end)
     {
         autoPanIfNearEdge (event.x);
-        const int beforeTrimEnd = processor.getTrimEndSample();
+        const int beforeTrimEnd = model.getTrimEndSample();
         const bool snap = ! event.mods.isShiftDown();
-        processor.setTrimEndSample (xToSample (event.x), snap);
+        model.setTrimEndSample (xToSample (event.x), snap);
         refresh();
 
-        if (onTrimChanged && processor.getTrimEndSample() != beforeTrimEnd)
+        if (onTrimChanged && model.getTrimEndSample() != beforeTrimEnd)
             onTrimChanged();
 
         return;
@@ -590,7 +590,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
     {
         autoPanIfNearEdge (event.x);
         const bool snap = ! event.mods.isShiftDown();
-        processor.moveManualSlicePoint (draggingManualPointId, xToSample (event.x), snap);
+        model.moveManualSlicePoint (draggingManualPointId, xToSample (event.x), snap);
         refresh();
         return;
     }
@@ -601,7 +601,7 @@ void WaveformDisplay::mouseDrag (const juce::MouseEvent& event)
 void WaveformDisplay::mouseUp (const juce::MouseEvent&)
 {
     if (draggingManualPointId >= 0 && dragStartSamplePosition >= 0)
-        processor.commitManualPointMove (draggingManualPointId, dragStartSamplePosition);
+        model.commitManualPointMove (draggingManualPointId, dragStartSamplePosition);
 
     draggingManualPointId = -1;
     dragStartSamplePosition = -1;
@@ -610,10 +610,10 @@ void WaveformDisplay::mouseUp (const juce::MouseEvent&)
 
 void WaveformDisplay::mouseWheelMove (const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0)
         return;
@@ -695,12 +695,12 @@ void WaveformDisplay::mouseWheelMove (const juce::MouseEvent& event, const juce:
 
 void WaveformDisplay::zoomToTrims()
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
-    const int trimStart = processor.getTrimStartSample();
-    const int trimEnd = processor.getTrimEndSample();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
+    const int trimStart = model.getTrimStartSample();
+    const int trimEnd = model.getTrimEndSample();
     const int trimSpan = trimEnd - trimStart;
 
     if (trimSpan <= 0)
@@ -721,11 +721,11 @@ void WaveformDisplay::zoomToTrims()
 
 void WaveformDisplay::resetZoom()
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
     visibleStartSample = 0;
-    visibleEndSample = processor.getSampleBuffer().getNumSamples();
+    visibleEndSample = model.getSampleBuffer().getNumSamples();
 
     rebuildWaveformPeaks();
     repaint();
@@ -733,13 +733,13 @@ void WaveformDisplay::resetZoom()
 
 int WaveformDisplay::minVisibleRangeSamples() const
 {
-    const double sr = processor.hasSample() ? processor.getSampleSampleRate() : 44100.0;
+    const double sr = model.hasSample() ? model.getSampleSampleRate() : 44100.0;
     return juce::jmax (32, (int) (minVisibleRangeMs / 1000.0 * sr));
 }
 
 void WaveformDisplay::clampVisibleRange()
 {
-    const int totalSamples = processor.hasSample() ? processor.getSampleBuffer().getNumSamples() : 0;
+    const int totalSamples = model.hasSample() ? model.getSampleBuffer().getNumSamples() : 0;
 
     visibleStartSample = juce::jlimit (0, totalSamples, visibleStartSample);
     visibleEndSample = juce::jlimit (visibleStartSample, totalSamples, visibleEndSample);
@@ -755,10 +755,10 @@ void WaveformDisplay::clampVisibleRange()
 
 void WaveformDisplay::autoPanIfNearEdge (int x)
 {
-    if (! processor.hasSample())
+    if (! model.hasSample())
         return;
 
-    const int totalSamples = processor.getSampleBuffer().getNumSamples();
+    const int totalSamples = model.getSampleBuffer().getNumSamples();
 
     if (totalSamples <= 0)
         return;
@@ -839,7 +839,7 @@ void WaveformDisplay::filesDropped (const juce::StringArray& files, int /*x*/, i
 
         if (isSupportedAudioFile (file))
         {
-            processor.loadSample (file);
+            model.loadSample (file);
             refresh();
 
             if (onSampleChanged)
@@ -856,7 +856,7 @@ void WaveformDisplay::refresh()
 {
     hasPreview = false; // a real refresh means there's now committed data to show
 
-    const int totalSamples = processor.hasSample() ? processor.getSampleBuffer().getNumSamples() : 0;
+    const int totalSamples = model.hasSample() ? model.getSampleBuffer().getNumSamples() : 0;
 
     if (totalSamples != lastKnownTotalSamples)
     {

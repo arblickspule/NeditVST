@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
 
 //==============================================================================
 /** Step-19: playback style probability (Forward / Ping-Pong), drawn as a
@@ -19,7 +19,7 @@
 class PlaybackStyleGrid : public juce::Component
 {
 public:
-    explicit PlaybackStyleGrid (SlicerAudioProcessor& processorToUse);
+    explicit PlaybackStyleGrid (SlicerModel& modelToUse);
 
     void paint (juce::Graphics&) override;
 
@@ -33,7 +33,7 @@ private:
     void setProbabilityFromMouse (const juce::MouseEvent& event);
     int getRowIndexAtY (int y) const;
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
 
     static constexpr int rowHeight = 18;
     static constexpr int labelWidth = 70;

@@ -1,14 +1,15 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
+#include "SlicerEngine.h"
 #include "PlaybackStylePalette.h"
 
 //==============================================================================
 /** Step-37: mouse-drawable step-sequencer grid for Sequenced Trigger Mode
     (v1, monophonic). One row per available slice
-    (SlicerAudioProcessor::getSequencerNumRows(), capped at 32), one
-    column per step (SlicerAudioProcessor::getSequencerNumSteps()).
+    (SlicerModel::getSequencerNumRows(), capped at 32), one
+    column per step (SlicerModel::getSequencerNumSteps()).
 
     Click-drag across cells in a row toggles them on/off, standard
     step-sequencer UX -- the row is locked for the whole drag gesture (set
@@ -67,7 +68,7 @@
     Step parameter editing (Step 45/46, Flow A): right-click (or
     Cmd/Ctrl-click) an active step to pop up a menu of whichever
     parameters that step's own PlaybackStyle actually uses (see
-    SlicerAudioProcessor::getApplicableSequencerCellParameters()) -- e.g.
+    SlicerModel::getApplicableSequencerCellParameters()) -- e.g.
     Filter Down/Up offers Resonance + Filter Type, Ping-Pong/Tape Stop
     offers Curve Shape, Stretch offers Grain Size + Grain Speed, Forward
     offers nothing (no menu at all). Continuous parameters (Resonance,
@@ -77,7 +78,7 @@
     into that cell's parameter-override map, and releasing the mouse
     closes the slider automatically. Discrete parameters (Filter Type,
     Curve Shape -- a small named list rather than a range, see
-    SlicerAudioProcessor::isSequencerCellParameterDiscrete()) instead
+    SlicerModel::isSequencerCellParameterDiscrete()) instead
     present as a submenu of their own option names; selecting one writes
     straight into the override map with no slider overlay at all, since a
     handful of named choices doesn't need one. Subdivide (Step 47) is the
@@ -87,7 +88,7 @@
     -- and, unlike every other entry here, it's offered on EVERY active
     step regardless of style (a general per-step retrigger rate, not tied
     to one PlaybackStyle) -- see
-    SlicerAudioProcessor::isSequencerCellParameterSteppedSlider() and the
+    SlicerModel::isSequencerCellParameterSteppedSlider() and the
     unconditional push_back in getApplicableSequencerCellParameters(). A
     small triangle marker in the corner of any cell with at least one
     override (of any parameter) stays visible afterward. While the slider
@@ -104,28 +105,28 @@
     centred on the exact edge pixel) grows it live, purely as a local
     preview (extendRow/extendStartColumn/
     extendLiveLengthSteps) until mouseUp commits it via
-    SlicerAudioProcessor::setSequencerCellExtendedLengthSteps(), the same
+    SlicerModel::setSequencerCellExtendedLengthSteps(), the same
     "grab, drag, release commits" shape the parameter slider overlay above
     already uses. Dragging can't shrink below the step's own natural length
-    (SlicerAudioProcessor::getSequencerNaturalLengthSteps()) -- this pass is
+    (SlicerModel::getSequencerNaturalLengthSteps()) -- this pass is
     growth-only, per its own spec. Committing clears any OTHER row's cells
     the newly-claimed span now covers, same per-column monophony rule
     ordinary click-drawing already enforces (see
-    SlicerAudioProcessor::setSequencerCell()). The bar itself just renders
+    SlicerModel::setSequencerCell()). The bar itself just renders
     across the full extended span in the cell's existing style colour -- no
     separate visual treatment for the natural-vs-extended portion in this
     pass. Shift-clicking anywhere that ISN'T near an active step's right
     edge is a no-op, rather than falling through to the ordinary
     toggle-draw gesture below. Tape Stop's decel duration in Sequenced mode
     (PluginProcessor::processBlock()) is driven by this exact same declared
-    length (SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps()),
+    length (SlicerModel::getSequencerCellDeclaredLengthSteps()),
     so the bar this class renders and the decel time actually heard can
     never disagree. */
 class SequencerGrid : public juce::Component,
                        private juce::Timer
 {
 public:
-    explicit SequencerGrid (SlicerAudioProcessor& processorToUse);
+    explicit SequencerGrid (SlicerModel& modelToUse, SlicerEngine& engineToUse);
 
     void paint (juce::Graphics&) override;
 
@@ -163,7 +164,7 @@ private:
     // How many subsequent columns (from startColumn, inclusive) a note in
     // `row` should visually span -- see the class doc comment above. Reads
     // its desired (pre-conflict-clamp) length via
-    // SlicerAudioProcessor::getSequencerCellDeclaredLengthSteps(), shared
+    // SlicerModel::getSequencerCellDeclaredLengthSteps(), shared
     // with the audio thread's Tape Stop duration calculation so the two
     // can never disagree.
     int computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const;
@@ -180,14 +181,15 @@ private:
     juce::Rectangle<int> getParameterSliderBounds (int row, int column, int numRows, int numColumns) const;
     void updateEditingValueFromMouseX (int mouseX, const juce::Rectangle<int>& sliderBounds);
 
-    // Index (into SlicerAudioProcessor::getSequencerCellParameterName())
+    // Index (into SlicerModel::getSequencerCellParameterName())
     // of whichever parameter editingParameterName currently names, or -1
     // if it doesn't match any (shouldn't happen in practice) -- looked up
     // by name rather than storing the index directly since the override
     // map itself is keyed by name (Step 46).
     int findEditingParameterIndex() const;
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
+    SlicerEngine& engine;
 
     // Row height floor -- whatever used to be the fixed row height before
     // dynamic scaling. Busy samples (many detected slices) still land

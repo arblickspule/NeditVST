@@ -25,7 +25,7 @@
     future context) lives entirely on the BankSource side; this class only
     ever asks BankSource for slot occupancy/active/pending state and to
     arm/cancel Learn. Two contexts share this today: the Sequencer pattern
-    bank (whose BankSource wraps SlicerAudioProcessor's own pattern-bank
+    bank (whose BankSource wraps SlicerModel's own pattern-bank
     methods, including its real Pattern Switch Timing pending slot) and
     Performance mode's state bank (Pass 1 -- Immediate switching only, so its
     BankSource::getPendingSlot() always returns -1).

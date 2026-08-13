@@ -1,20 +1,21 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
+#include "SlicerEngine.h"
 
 //==============================================================================
 /** Step-41: the Sequencer's Style Palette -- one colour swatch per
     PlaybackStyle, stacked vertically next to the sequencer grid. Clicking
-    a swatch sets it as the processor's currently selected drawing style
-    (persistent until changed again -- see SlicerAudioProcessor::
+    a swatch sets it as the model's currently selected drawing style
+    (persistent until changed again -- see SlicerModel::
     getSelectedDrawingStyle()/setSelectedDrawingStyle()), which is what
     SequencerGrid's mouse handling paints new cells with. The currently
     selected swatch is drawn with a highlighted border so it's always
     clear which style the next click/drag on the grid will use.
 
     Each row also carries a small checkbox in its top-right corner --
-    SlicerAudioProcessor::getRandomizeParametersForStyle()/
+    SlicerEngine::getRandomizeParametersForStyle()/
     setRandomizeParametersForStyle(), one per style same as the swatches
     themselves. When checked, Randomize Sequence also rolls random
     parameter values (and Static/Sweep In/Sweep Out modes) for that
@@ -30,7 +31,7 @@
 class PlaybackStylePalette : public juce::Component
 {
 public:
-    explicit PlaybackStylePalette (SlicerAudioProcessor& processorToUse);
+    explicit PlaybackStylePalette (SlicerModel& modelToUse, SlicerEngine& engineToUse);
 
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent& event) override;
@@ -45,7 +46,7 @@ public:
     static constexpr int preferredWidth = 130;
 
     // Total height needed to show every style swatch at once -- driven by
-    // SlicerAudioProcessor::numPlaybackStyleOptions (same generic count
+    // SlicerModel::numPlaybackStyleOptions (same generic count
     // getApplicableSequencerCellParameters()'s right-click menu and
     // SequencerGrid's own row logic already key off), not a number fixed
     // at whatever the style count happened to be when this was last
@@ -64,7 +65,8 @@ private:
     // the hit-test in mouseDown() and the paint in paint().
     juce::Rectangle<int> getCheckboxBounds (int row) const;
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
+    SlicerEngine& engine;
 
     static constexpr int rowHeight = 28;
     static constexpr int checkboxSize = 14;

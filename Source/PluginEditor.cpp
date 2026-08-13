@@ -27,16 +27,16 @@ void SlicerAudioProcessorEditor::ComingSoonPanel::paint (juce::Graphics& g)
 }
 
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
-    : AudioProcessorEditor (&p), processor (p),
-      playbackStyleGrid (p), playbackStyleParameterPanel (p), subdivisionGrid (p), playbackStylePalette (p),
-      sequencerBankSource (p), patternBankPanel (sequencerBankSource),
-      performanceStyleParameterPanel (p,
-          [&p] (int i) { return p.getPerformanceWorkingParameterValue (i); },
-          [&p] (int i, float v) { p.setPerformanceWorkingParameterValue (i, v); },
-          p.getPerformanceWorkingStyle() + 1,
-          [&p] (int style) { p.setPerformanceWorkingStyle (style); }),
-      performanceKeyboardSource (p), performanceKeyboardPanel (performanceKeyboardSource),
-      sequencerGrid (p), waveformDisplay (p)
+    : AudioProcessorEditor (&p), model (p.model), engine (p.engine),
+      playbackStyleGrid (model), playbackStyleParameterPanel (model), subdivisionGrid (model), playbackStylePalette (model, engine),
+      sequencerBankSource (model), patternBankPanel (sequencerBankSource),
+      performanceStyleParameterPanel (model,
+          [this] (int i) { return model.getPerformanceWorkingParameterValue (i); },
+          [this] (int i, float v) { model.setPerformanceWorkingParameterValue (i, v); },
+          model.getPerformanceWorkingStyle() + 1,
+          [this] (int style) { model.setPerformanceWorkingStyle (style); }),
+      performanceKeyboardSource (model), performanceKeyboardPanel (performanceKeyboardSource),
+      sequencerGrid (model, engine), waveformDisplay (model)
 {
     addAndMakeVisible (controlsContent); // Pass 3: Layers 1-4, plain non-scrolling child
     controlsContent.setLookAndFeel (&neditLookAndFeel); // Tungsten/Salmon palette for every native-widget control below (Pass 1)
@@ -66,14 +66,14 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // state), land on Beats>Perform at startup rather than silently
     // resetting it back to Slice Length.
     {
-        const auto mode = processor.getTriggerMode();
-        const int subModeIndex = mode == SlicerAudioProcessor::TriggerMode::sequenced ? 1
-                                : mode == SlicerAudioProcessor::TriggerMode::performance ? 3
+        const auto mode = model.getTriggerMode();
+        const int subModeIndex = mode == SlicerModel::TriggerMode::sequenced ? 1
+                                : mode == SlicerModel::TriggerMode::performance ? 3
                                                                                           : 0; // Generate
         subModeTabs.setSelectedIndex (subModeIndex, juce::dontSendNotification);
 
-        if (mode == SlicerAudioProcessor::TriggerMode::clock)
-            lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::clock;
+        if (mode == SlicerModel::TriggerMode::clock)
+            lastGenerateTriggerMode = SlicerModel::TriggerMode::clock;
     }
 
     topLevelModeTabs.onSelectionChanged = [this] (int) { updateActiveTabVisibility(); syncTriggerModeToActiveTab(); resized(); };
@@ -110,7 +110,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
 
     controlsContent.addAndMakeVisible (statusLabel);
     statusLabel.setJustificationType (juce::Justification::centred);
-    statusLabel.setText (processor.hasSample() ? processor.getLoadedFileName()
+    statusLabel.setText (model.hasSample() ? model.getLoadedFileName()
                                                 : "No sample loaded",
                           juce::dontSendNotification);
 
@@ -124,12 +124,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     loopLengthSlider.setRange (1.0, 8.0, 1.0);
     loopLengthSlider.setNumDecimalPlacesToDisplay (0);
     loopLengthSlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 50, 20);
-    loopLengthSlider.setValue (processor.getLoopLengthBars(), juce::dontSendNotification);
+    loopLengthSlider.setValue (model.getLoopLengthBars(), juce::dontSendNotification);
     loopLengthSlider.onValueChange = [this]
     {
-        processor.setLoopLengthBars ((int) loopLengthSlider.getValue());
+        model.setLoopLengthBars ((int) loopLengthSlider.getValue());
 
-        const double bpm = processor.getCalculatedOriginalBpm();
+        const double bpm = model.getCalculatedOriginalBpm();
         calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
                                      juce::dontSendNotification);
 
@@ -150,10 +150,10 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     calculatedBpmLabel.setJustificationType (juce::Justification::centredLeft);
 
     controlsContent.addAndMakeVisible (manualBpmOverrideToggle);
-    manualBpmOverrideToggle.setToggleState (processor.getManualBpmOverrideEnabled(), juce::dontSendNotification);
+    manualBpmOverrideToggle.setToggleState (model.getManualBpmOverrideEnabled(), juce::dontSendNotification);
     manualBpmOverrideToggle.onClick = [this]
     {
-        processor.setManualBpmOverrideEnabled (manualBpmOverrideToggle.getToggleState());
+        model.setManualBpmOverrideEnabled (manualBpmOverrideToggle.getToggleState());
         updateManualBpmOverrideVisibility();
         updateAfterSampleOrSliceChange(); // refreshes the "~X BPM" label immediately
     };
@@ -166,11 +166,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     manualBpmOverrideSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     manualBpmOverrideSlider.setScrollWheelEnabled (false); // a holdover from when this editor scrolled internally; harmless now that it doesn't
     manualBpmOverrideSlider.setRange (20.0, 300.0, 0.1);
-    manualBpmOverrideSlider.setValue (processor.getManualBpmOverrideValue(), juce::dontSendNotification);
+    manualBpmOverrideSlider.setValue (model.getManualBpmOverrideValue(), juce::dontSendNotification);
     manualBpmOverrideSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 20);
     manualBpmOverrideSlider.onValueChange = [this]
     {
-        processor.setManualBpmOverrideValue (manualBpmOverrideSlider.getValue());
+        model.setManualBpmOverrideValue (manualBpmOverrideSlider.getValue());
         updateAfterSampleOrSliceChange(); // refreshes the "~X BPM" label live while dragging
     };
 
@@ -181,15 +181,15 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     controlsContent.addAndMakeVisible (pitchModeSegments);
     pitchModeSegments.setOptions ({ { "Repitch", std::nullopt }, { "Time-Stretch", std::nullopt } });
     {
-        const auto currentMode = processor.getPitchMode();
-        const int selectedIndex = currentMode == SlicerAudioProcessor::PitchMode::timeStretch ? 1 : 0;
+        const auto currentMode = model.getPitchMode();
+        const int selectedIndex = currentMode == SlicerModel::PitchMode::timeStretch ? 1 : 0;
         pitchModeSegments.setSelectedIndex (selectedIndex, juce::dontSendNotification);
     }
     pitchModeSegments.onSelectionChanged = [this] (int selectedIndex)
     {
-        const auto mode = selectedIndex == 1 ? SlicerAudioProcessor::PitchMode::timeStretch
-                                              : SlicerAudioProcessor::PitchMode::repitch;
-        processor.setPitchMode (mode);
+        const auto mode = selectedIndex == 1 ? SlicerModel::PitchMode::timeStretch
+                                              : SlicerModel::PitchMode::repitch;
+        engine.setPitchMode (mode);
         updatePitchModeVisibility();
 
         // Pitch Mode's own panel height is mode-aware now (Pass 5) -- the
@@ -198,10 +198,10 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     };
 
     controlsContent.addAndMakeVisible (beatQuantizeToggleRepitch);
-    beatQuantizeToggleRepitch.setToggleState (processor.getBeatQuantizeSliceLengthEnabledRepitch(), juce::dontSendNotification);
+    beatQuantizeToggleRepitch.setToggleState (model.getBeatQuantizeSliceLengthEnabledRepitch(), juce::dontSendNotification);
     beatQuantizeToggleRepitch.onClick = [this]
     {
-        processor.setBeatQuantizeSliceLengthEnabledRepitch (beatQuantizeToggleRepitch.getToggleState());
+        model.setBeatQuantizeSliceLengthEnabledRepitch (beatQuantizeToggleRepitch.getToggleState());
     };
 
     // Pass 3 -- viewed through pitchModeExtraViewport (see its own doc
@@ -220,11 +220,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     grainSizeSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     grainSizeSlider.setScrollWheelEnabled (false); // a holdover from when this editor scrolled internally; harmless now that it doesn't
     grainSizeSlider.setRange (20.0, 150.0, 1.0);
-    grainSizeSlider.setValue (processor.getGrainSizeMs(), juce::dontSendNotification);
+    grainSizeSlider.setValue (model.getGrainSizeMs(), juce::dontSendNotification);
     grainSizeSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
     grainSizeSlider.onValueChange = [this]
     {
-        processor.setGrainSizeMs ((float) grainSizeSlider.getValue());
+        model.setGrainSizeMs ((float) grainSizeSlider.getValue());
     };
 
     pitchModeExtraContent.addAndMakeVisible (windowShapeLabel);
@@ -234,20 +234,20 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     pitchModeExtraContent.addAndMakeVisible (windowShapeSelector);
     windowShapeSelector.addItem ("Hann", 1);
     windowShapeSelector.addItem ("Triangular", 2);
-    windowShapeSelector.setSelectedId (processor.getGrainWindowShape() == SlicerAudioProcessor::GrainWindowShape::triangular ? 2 : 1,
+    windowShapeSelector.setSelectedId (model.getGrainWindowShape() == SlicerModel::GrainWindowShape::triangular ? 2 : 1,
                                         juce::dontSendNotification);
     windowShapeSelector.onChange = [this]
     {
         const bool triangular = windowShapeSelector.getSelectedId() == 2;
-        processor.setGrainWindowShape (triangular ? SlicerAudioProcessor::GrainWindowShape::triangular
-                                                    : SlicerAudioProcessor::GrainWindowShape::hann);
+        model.setGrainWindowShape (triangular ? SlicerModel::GrainWindowShape::triangular
+                                                    : SlicerModel::GrainWindowShape::hann);
     };
 
     pitchModeExtraContent.addAndMakeVisible (beatQuantizeToggle);
-    beatQuantizeToggle.setToggleState (processor.getBeatQuantizeSliceLengthEnabled(), juce::dontSendNotification);
+    beatQuantizeToggle.setToggleState (model.getBeatQuantizeSliceLengthEnabled(), juce::dontSendNotification);
     beatQuantizeToggle.onClick = [this]
     {
-        processor.setBeatQuantizeSliceLengthEnabled (beatQuantizeToggle.getToggleState());
+        model.setBeatQuantizeSliceLengthEnabled (beatQuantizeToggle.getToggleState());
     };
 
     pitchModeExtraContent.addAndMakeVisible (pitchShiftLabel);
@@ -258,11 +258,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     pitchShiftSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     pitchShiftSlider.setScrollWheelEnabled (false); // a holdover from when this editor scrolled internally; harmless now that it doesn't
     pitchShiftSlider.setRange (-24.0, 24.0, 1.0);
-    pitchShiftSlider.setValue (processor.getPitchShiftSemitones(), juce::dontSendNotification);
+    pitchShiftSlider.setValue (model.getPitchShiftSemitones(), juce::dontSendNotification);
     pitchShiftSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
     pitchShiftSlider.onValueChange = [this]
     {
-        processor.setPitchShiftSemitones ((float) pitchShiftSlider.getValue());
+        model.setPitchShiftSemitones ((float) pitchShiftSlider.getValue());
     };
 
     controlsContent.addAndMakeVisible (sensitivityLabel);
@@ -275,7 +275,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     sensitivitySlider.setRange (0.0, 1.0, 0.01);
     sensitivitySlider.setNumDecimalPlacesToDisplay (2);
     sensitivitySlider.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 50, 20);
-    sensitivitySlider.setValue (processor.getSensitivity(), juce::dontSendNotification);
+    sensitivitySlider.setValue (model.getSensitivity(), juce::dontSendNotification);
     sensitivitySlider.onValueChange = [this]
     {
         // Committing (which resets every slice probability and briefly
@@ -289,25 +289,25 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         // or for non-drag changes.
         if (sensitivitySlider.isMouseButtonDown())
         {
-            auto preview = processor.previewSlicesAtSensitivity ((float) sensitivitySlider.getValue());
+            auto preview = model.previewSlicesAtSensitivity ((float) sensitivitySlider.getValue());
             waveformDisplay.showPreviewSlices (preview);
             return;
         }
 
-        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        model.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
         updateAfterSampleOrSliceChange();
     };
     sensitivitySlider.onDragEnd = [this]
     {
-        processor.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
+        model.setSensitivityAndRedetect ((float) sensitivitySlider.getValue());
         updateAfterSampleOrSliceChange();
     };
 
     controlsContent.addAndMakeVisible (quantizeTransientsToggle);
-    quantizeTransientsToggle.setToggleState (processor.getQuantizeTransientsEnabled(), juce::dontSendNotification);
+    quantizeTransientsToggle.setToggleState (model.getQuantizeTransientsEnabled(), juce::dontSendNotification);
     quantizeTransientsToggle.onClick = [this]
     {
-        processor.setQuantizeTransientsEnabled (quantizeTransientsToggle.getToggleState());
+        model.setQuantizeTransientsEnabled (quantizeTransientsToggle.getToggleState());
         updateQuantizeTransientsVisibility();
         updateAfterSampleOrSliceChange();
     };
@@ -317,12 +317,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     quantizeGridLabel.setJustificationType (juce::Justification::centredLeft);
 
     controlsContent.addAndMakeVisible (quantizeGridSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        quantizeGridSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    quantizeGridSelector.setSelectedId (processor.getQuantizeGridIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        quantizeGridSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    quantizeGridSelector.setSelectedId (model.getQuantizeGridIndex() + 1, juce::dontSendNotification);
     quantizeGridSelector.onChange = [this]
     {
-        processor.setQuantizeGridIndex (quantizeGridSelector.getSelectedId() - 1);
+        model.setQuantizeGridIndex (quantizeGridSelector.getSelectedId() - 1);
         updateAfterSampleOrSliceChange();
     };
 
@@ -334,11 +334,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     fadeInSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     fadeInSlider.setScrollWheelEnabled (false); // a holdover from when this editor scrolled internally; harmless now that it doesn't
     fadeInSlider.setRange (0.0, 100.0, 0.5);
-    fadeInSlider.setValue (processor.getFadeInMs(), juce::dontSendNotification);
+    fadeInSlider.setValue (model.getFadeInMs(), juce::dontSendNotification);
     fadeInSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
     fadeInSlider.onValueChange = [this]
     {
-        processor.setFadeInMs ((float) fadeInSlider.getValue());
+        model.setFadeInMs ((float) fadeInSlider.getValue());
     };
 
     controlsContent.addAndMakeVisible (fadeOutLabel);
@@ -349,11 +349,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     fadeOutSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     fadeOutSlider.setScrollWheelEnabled (false); // a holdover from when this editor scrolled internally; harmless now that it doesn't
     fadeOutSlider.setRange (0.0, 100.0, 0.5);
-    fadeOutSlider.setValue (processor.getFadeOutMs(), juce::dontSendNotification);
+    fadeOutSlider.setValue (model.getFadeOutMs(), juce::dontSendNotification);
     fadeOutSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 20);
     fadeOutSlider.onValueChange = [this]
     {
-        processor.setFadeOutMs ((float) fadeOutSlider.getValue());
+        model.setFadeOutMs ((float) fadeOutSlider.getValue());
     };
 
     subModeContent.addAndMakeVisible (sliceLengthClockLabel);
@@ -363,22 +363,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     subModeContent.addAndMakeVisible (sliceLengthClockSegments);
     sliceLengthClockSegments.setOptions ({ { "Slice Length", std::nullopt }, { "Clock", std::nullopt } });
     {
-        const auto currentMode = processor.getTriggerMode();
-        const int selectedIndex = currentMode == SlicerAudioProcessor::TriggerMode::clock ? 1 : 0;
+        const auto currentMode = model.getTriggerMode();
+        const int selectedIndex = currentMode == SlicerModel::TriggerMode::clock ? 1 : 0;
         sliceLengthClockSegments.setSelectedIndex (selectedIndex, juce::dontSendNotification);
     }
     sliceLengthClockSegments.onSelectionChanged = [this] (int selectedIndex)
     {
-        lastGenerateTriggerMode = selectedIndex == 1 ? SlicerAudioProcessor::TriggerMode::clock
-                                                      : SlicerAudioProcessor::TriggerMode::sliceLength;
+        lastGenerateTriggerMode = selectedIndex == 1 ? SlicerModel::TriggerMode::clock
+                                                      : SlicerModel::TriggerMode::sliceLength;
         syncTriggerModeToActiveTab();
     };
 
     controlsContent.addAndMakeVisible (playbackStyleSegments);
     {
         std::vector<SegmentedButtonRow::Option> styleOptions;
-        for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
-            styleOptions.push_back ({ SlicerAudioProcessor::getPlaybackStyleName (i), PlaybackStylePalette::getStyleColour (i) });
+        for (int i = 0; i < SlicerModel::numPlaybackStyleOptions; ++i)
+            styleOptions.push_back ({ SlicerModel::getPlaybackStyleName (i), PlaybackStylePalette::getStyleColour (i) });
         playbackStyleSegments.setOptions (std::move (styleOptions));
     }
     playbackStyleSegments.onSelectionChanged = [this] (int selectedIndex)
@@ -417,12 +417,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     clockReferenceLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (clockReferenceSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        clockReferenceSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    clockReferenceSelector.setSelectedId (processor.getClockReferenceIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        clockReferenceSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    clockReferenceSelector.setSelectedId (model.getClockReferenceIndex() + 1, juce::dontSendNotification);
     clockReferenceSelector.onChange = [this]
     {
-        processor.setClockReferenceIndex (clockReferenceSelector.getSelectedId() - 1);
+        model.setClockReferenceIndex (clockReferenceSelector.getSelectedId() - 1);
     };
 
     subModeContent.addAndMakeVisible (tapeStopScopeLabel);
@@ -430,15 +430,15 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     tapeStopScopeLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (tapeStopScopeSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numTapeStopScopeOptions; ++i)
-        tapeStopScopeSelector.addItem (SlicerAudioProcessor::getTapeStopScopeName (i), i + 1); // JUCE item IDs are 1-based
-    tapeStopScopeSelector.setSelectedId (processor.getTapeStopScope() == SlicerAudioProcessor::TapeStopScope::perTick ? 2 : 1,
+    for (int i = 0; i < SlicerModel::numTapeStopScopeOptions; ++i)
+        tapeStopScopeSelector.addItem (SlicerModel::getTapeStopScopeName (i), i + 1); // JUCE item IDs are 1-based
+    tapeStopScopeSelector.setSelectedId (model.getTapeStopScope() == SlicerModel::TapeStopScope::perTick ? 2 : 1,
                                           juce::dontSendNotification);
     tapeStopScopeSelector.onChange = [this]
     {
-        processor.setTapeStopScope (tapeStopScopeSelector.getSelectedId() == 2
-                                         ? SlicerAudioProcessor::TapeStopScope::perTick
-                                         : SlicerAudioProcessor::TapeStopScope::wholeWindow);
+        model.setTapeStopScope (tapeStopScopeSelector.getSelectedId() == 2
+                                         ? SlicerModel::TapeStopScope::perTick
+                                         : SlicerModel::TapeStopScope::wholeWindow);
     };
 
     subModeContent.addAndMakeVisible (filterSweepScopeLabel);
@@ -446,15 +446,15 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     filterSweepScopeLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (filterSweepScopeSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numFilterSweepScopeOptions; ++i)
-        filterSweepScopeSelector.addItem (SlicerAudioProcessor::getFilterSweepScopeName (i), i + 1); // JUCE item IDs are 1-based
-    filterSweepScopeSelector.setSelectedId (processor.getFilterSweepScope() == SlicerAudioProcessor::FilterSweepScope::perTick ? 2 : 1,
+    for (int i = 0; i < SlicerModel::numFilterSweepScopeOptions; ++i)
+        filterSweepScopeSelector.addItem (SlicerModel::getFilterSweepScopeName (i), i + 1); // JUCE item IDs are 1-based
+    filterSweepScopeSelector.setSelectedId (model.getFilterSweepScope() == SlicerModel::FilterSweepScope::perTick ? 2 : 1,
                                              juce::dontSendNotification);
     filterSweepScopeSelector.onChange = [this]
     {
-        processor.setFilterSweepScope (filterSweepScopeSelector.getSelectedId() == 2
-                                            ? SlicerAudioProcessor::FilterSweepScope::perTick
-                                            : SlicerAudioProcessor::FilterSweepScope::wholeWindow);
+        model.setFilterSweepScope (filterSweepScopeSelector.getSelectedId() == 2
+                                            ? SlicerModel::FilterSweepScope::perTick
+                                            : SlicerModel::FilterSweepScope::wholeWindow);
     };
 
     subModeContent.addAndMakeVisible (resetEveryLabel);
@@ -462,12 +462,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     resetEveryLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (resetEverySelector);
-    for (int i = 0; i < SlicerAudioProcessor::numResetBarsOptions; ++i)
-        resetEverySelector.addItem (SlicerAudioProcessor::getResetBarsName (i), i + 1); // JUCE item IDs are 1-based
-    resetEverySelector.setSelectedId (processor.getResetBarsIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numResetBarsOptions; ++i)
+        resetEverySelector.addItem (SlicerModel::getResetBarsName (i), i + 1); // JUCE item IDs are 1-based
+    resetEverySelector.setSelectedId (model.getResetBarsIndex() + 1, juce::dontSendNotification);
     resetEverySelector.onChange = [this]
     {
-        processor.setResetBarsIndex (resetEverySelector.getSelectedId() - 1);
+        model.setResetBarsIndex (resetEverySelector.getSelectedId() - 1);
     };
 
     subModeContent.addAndMakeVisible (subdivisionTableLabel);
@@ -481,12 +481,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     stepResolutionLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (stepResolutionSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        stepResolutionSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    stepResolutionSelector.setSelectedId (processor.getStepResolutionIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        stepResolutionSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    stepResolutionSelector.setSelectedId (model.getStepResolutionIndex() + 1, juce::dontSendNotification);
     stepResolutionSelector.onChange = [this]
     {
-        processor.setStepResolutionIndex (stepResolutionSelector.getSelectedId() - 1);
+        model.setStepResolutionIndex (stepResolutionSelector.getSelectedId() - 1);
     };
 
     subModeContent.addAndMakeVisible (patternLengthLabel);
@@ -494,12 +494,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     patternLengthLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (patternLengthSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numPatternLengthBarsOptions; ++i)
-        patternLengthSelector.addItem (SlicerAudioProcessor::getPatternLengthBarsName (i), i + 1); // JUCE item IDs are 1-based
-    patternLengthSelector.setSelectedId (processor.getPatternLengthBarsIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numPatternLengthBarsOptions; ++i)
+        patternLengthSelector.addItem (SlicerModel::getPatternLengthBarsName (i), i + 1); // JUCE item IDs are 1-based
+    patternLengthSelector.setSelectedId (model.getPatternLengthBarsIndex() + 1, juce::dontSendNotification);
     patternLengthSelector.onChange = [this]
     {
-        processor.setPatternLengthBarsIndex (patternLengthSelector.getSelectedId() - 1);
+        model.setPatternLengthBarsIndex (patternLengthSelector.getSelectedId() - 1);
     };
 
     subModeContent.addAndMakeVisible (randomizeSequenceButton);
@@ -523,11 +523,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     patternSwitchTimingSelector.addItem ("Set Interval", 2);
     patternSwitchTimingSelector.addItem ("End of Pattern", 3);
     patternSwitchTimingSelector.setSelectedId (
-        static_cast<int> (processor.getPatternSwitchTiming()) + 1, juce::dontSendNotification);
+        static_cast<int> (model.getPatternSwitchTiming()) + 1, juce::dontSendNotification);
     patternSwitchTimingSelector.onChange = [this]
     {
-        processor.setPatternSwitchTiming (
-            static_cast<SlicerAudioProcessor::PatternSwitchTiming> (patternSwitchTimingSelector.getSelectedId() - 1));
+        model.setPatternSwitchTiming (
+            static_cast<SlicerModel::PatternSwitchTiming> (patternSwitchTimingSelector.getSelectedId() - 1));
         updateActiveTabVisibility(); // Set Interval's own note-value picker only shows for that one timing mode (Sequence tab)
     };
 
@@ -539,12 +539,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     patternSwitchIntervalLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (patternSwitchIntervalSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        patternSwitchIntervalSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    patternSwitchIntervalSelector.setSelectedId (processor.getPatternSwitchIntervalIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        patternSwitchIntervalSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    patternSwitchIntervalSelector.setSelectedId (model.getPatternSwitchIntervalIndex() + 1, juce::dontSendNotification);
     patternSwitchIntervalSelector.onChange = [this]
     {
-        processor.setPatternSwitchIntervalIndex (patternSwitchIntervalSelector.getSelectedId() - 1);
+        model.setPatternSwitchIntervalIndex (patternSwitchIntervalSelector.getSelectedId() - 1);
     };
 
     // Performance mode (Pass 1) -- style/params panel points at Performance
@@ -557,22 +557,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     subModeContent.addAndMakeVisible (performanceStyleParameterPanel);
 
     subModeContent.addAndMakeVisible (performanceLoopToggle);
-    performanceLoopToggle.setToggleState (processor.getPerformanceWorkingLoop(), juce::dontSendNotification);
+    performanceLoopToggle.setToggleState (model.getPerformanceWorkingLoop(), juce::dontSendNotification);
     performanceLoopToggle.onClick = [this]
     {
-        processor.setPerformanceWorkingLoop (performanceLoopToggle.getToggleState());
+        model.setPerformanceWorkingLoop (performanceLoopToggle.getToggleState());
     };
 
     subModeContent.addAndMakeVisible (performanceSyncToggle);
-    performanceSyncToggle.setToggleState (processor.getPerformanceWorkingSync(), juce::dontSendNotification);
+    performanceSyncToggle.setToggleState (model.getPerformanceWorkingSync(), juce::dontSendNotification);
     performanceSyncToggle.onClick = [this]
     {
-        processor.setPerformanceWorkingSync (performanceSyncToggle.getToggleState());
+        model.setPerformanceWorkingSync (performanceSyncToggle.getToggleState());
     };
 
     // Trim Snap mode -- Transients (existing behaviour) / Grid (fixed
     // musical grid at the established tempo). Item IDs mirror
-    // SlicerAudioProcessor::TrimSnapMode's declaration order (1 = transients,
+    // SlicerModel::TrimSnapMode's declaration order (1 = transients,
     // 2 = grid), same "JUCE item IDs are 1-based" convention as every other
     // enum-backed selector here.
     subModeContent.addAndMakeVisible (performanceTrimSnapLabel);
@@ -583,11 +583,11 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     performanceTrimSnapSelector.addItem ("Transients", 1);
     performanceTrimSnapSelector.addItem ("Grid", 2);
     performanceTrimSnapSelector.setSelectedId (
-        static_cast<int> (processor.getPerformanceTrimSnapMode()) + 1, juce::dontSendNotification);
+        static_cast<int> (model.getPerformanceTrimSnapMode()) + 1, juce::dontSendNotification);
     performanceTrimSnapSelector.onChange = [this]
     {
-        processor.setPerformanceTrimSnapMode (
-            static_cast<SlicerAudioProcessor::TrimSnapMode> (performanceTrimSnapSelector.getSelectedId() - 1));
+        model.setPerformanceTrimSnapMode (
+            static_cast<SlicerModel::TrimSnapMode> (performanceTrimSnapSelector.getSelectedId() - 1));
         updatePerformanceTrimSnapVisibility();
     };
 
@@ -599,22 +599,22 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     performanceTrimGridLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (performanceTrimGridSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        performanceTrimGridSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    performanceTrimGridSelector.setSelectedId (processor.getPerformanceTrimGridIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        performanceTrimGridSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    performanceTrimGridSelector.setSelectedId (model.getPerformanceTrimGridIndex() + 1, juce::dontSendNotification);
     performanceTrimGridSelector.onChange = [this]
     {
-        processor.setPerformanceTrimGridIndex (performanceTrimGridSelector.getSelectedId() - 1);
+        model.setPerformanceTrimGridIndex (performanceTrimGridSelector.getSelectedId() - 1);
     };
 
     // Quantize Recall -- off (immediate, unchanged) by default, same
     // "preserve existing behaviour until explicitly opted into" convention
     // as Trim Snap's own toggle above.
     subModeContent.addAndMakeVisible (performanceQuantizeRecallToggle);
-    performanceQuantizeRecallToggle.setToggleState (processor.getPerformanceQuantizeRecallEnabled(), juce::dontSendNotification);
+    performanceQuantizeRecallToggle.setToggleState (model.getPerformanceQuantizeRecallEnabled(), juce::dontSendNotification);
     performanceQuantizeRecallToggle.onClick = [this]
     {
-        processor.setPerformanceQuantizeRecallEnabled (performanceQuantizeRecallToggle.getToggleState());
+        model.setPerformanceQuantizeRecallEnabled (performanceQuantizeRecallToggle.getToggleState());
         updatePerformanceQuantizeRecallVisibility();
     };
 
@@ -626,12 +626,12 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     performanceQuantizeRecallIntervalLabel.setJustificationType (juce::Justification::centredLeft);
 
     subModeContent.addAndMakeVisible (performanceQuantizeRecallIntervalSelector);
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
-        performanceQuantizeRecallIntervalSelector.addItem (SlicerAudioProcessor::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
-    performanceQuantizeRecallIntervalSelector.setSelectedId (processor.getPerformanceQuantizeRecallIntervalIndex() + 1, juce::dontSendNotification);
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
+        performanceQuantizeRecallIntervalSelector.addItem (SlicerModel::getNoteValueName (i), i + 1); // JUCE item IDs are 1-based
+    performanceQuantizeRecallIntervalSelector.setSelectedId (model.getPerformanceQuantizeRecallIntervalIndex() + 1, juce::dontSendNotification);
     performanceQuantizeRecallIntervalSelector.onChange = [this]
     {
-        processor.setPerformanceQuantizeRecallIntervalIndex (performanceQuantizeRecallIntervalSelector.getSelectedId() - 1);
+        model.setPerformanceQuantizeRecallIntervalIndex (performanceQuantizeRecallIntervalSelector.getSelectedId() - 1);
     };
 
     subModeContent.addAndMakeVisible (performanceKeyboardPanel);
@@ -683,7 +683,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         &performanceKeyboardPanel
     };
 
-    syncTriggerModeToActiveTab(); // no-op: both tab rows were already seeded from processor.getTriggerMode() above
+    syncTriggerModeToActiveTab(); // no-op: both tab rows were already seeded from model.getTriggerMode() above
     updateActiveTabVisibility(); // also drives updateSliceLengthClockVisibility()/updatePitchModeVisibility()/updateManualBpmOverrideVisibility()/updateQuantizeTransientsVisibility() for whichever tab is active
 
     // Zoom/pan (Step 31) — live directly on the editor, not controlsContent,
@@ -717,7 +717,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     // its own.
     updateWindowSize();
 
-    if (processor.hasSample())
+    if (model.hasSample())
         updateAfterSampleOrSliceChange();
 }
 
@@ -1136,7 +1136,7 @@ int SlicerAudioProcessorEditor::layoutPlaybackStyleSection (int contentWidth, in
     // for nothing. The editor resizes itself (updateWindowSize()) whenever
     // playbackStyleSegments changes, since this height now varies by style.
     constexpr int maxParameterViewportHeight = 80;
-    const int selectedStyle = juce::jlimit (0, SlicerAudioProcessor::numPlaybackStyleOptions - 1, playbackStyleSegments.getSelectedIndex());
+    const int selectedStyle = juce::jlimit (0, SlicerModel::numPlaybackStyleOptions - 1, playbackStyleSegments.getSelectedIndex());
     const int selectedStylePreferredHeight = PlaybackStyleParameterPanel::getPreferredHeightForStyle (selectedStyle);
     const int parameterViewportHeight = juce::jmin (maxParameterViewportHeight, selectedStylePreferredHeight);
 
@@ -1356,22 +1356,22 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
         chooseAndLoadFile();
     else if (button == &resetEditsButton)
     {
-        processor.resetAllManualEdits();
+        model.resetAllManualEdits();
         updateAfterSampleOrSliceChange();
     }
     else if (button == &undoButton)
     {
-        processor.undoLastEdit();
+        model.undoLastEdit();
         updateAfterSampleOrSliceChange();
     }
     else if (button == &redoButton)
     {
-        processor.redoLastEdit();
+        model.redoLastEdit();
         updateAfterSampleOrSliceChange();
     }
     else if (button == &auditionButton)
     {
-        processor.setAuditionActive (! processor.getAuditionActive());
+        model.setAuditionActive (! model.getAuditionActive());
     }
     else if (button == &zoomToTrimsButton)
     {
@@ -1383,25 +1383,25 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
     }
     else if (button == &randomizeSequenceButton)
     {
-        processor.randomizeSequence();
+        engine.randomizeSequence();
         sequencerGrid.repaint(); // immediate feedback rather than waiting for the next 30fps timer tick
     }
     else if (button == &clearSequenceButton)
     {
-        processor.clearSequence();
+        model.clearSequence();
         sequencerGrid.repaint();
     }
 }
 
 void SlicerAudioProcessorEditor::timerCallback()
 {
-    undoButton.setEnabled (processor.canUndoEdit());
-    redoButton.setEnabled (processor.canRedoEdit());
+    undoButton.setEnabled (model.canUndoEdit());
+    redoButton.setEnabled (model.canRedoEdit());
 
     // Polled rather than driven only by the button's own click, since the
     // processor can also stop an audition on its own (host transport
     // started) — the label/colour has to reflect that auto-stop too.
-    const bool auditioning = processor.getAuditionActive();
+    const bool auditioning = model.getAuditionActive();
     auditionButton.setButtonText (auditioning ? "Stop Audition" : "Audition");
     auditionButton.setColour (juce::TextButton::buttonColourId,
                                auditioning ? juce::Colours::orange.withAlpha (0.6f)
@@ -1413,11 +1413,11 @@ void SlicerAudioProcessorEditor::timerCallback()
     // them, so poll and resync rather than let them show a stale value
     // while SequencerGrid (which already polls dimensions live) shows the
     // newly recalled grid underneath.
-    const int processorStepResolutionId = processor.getStepResolutionIndex() + 1;
+    const int processorStepResolutionId = model.getStepResolutionIndex() + 1;
     if (stepResolutionSelector.getSelectedId() != processorStepResolutionId)
         stepResolutionSelector.setSelectedId (processorStepResolutionId, juce::dontSendNotification);
 
-    const int processorPatternLengthId = processor.getPatternLengthBarsIndex() + 1;
+    const int processorPatternLengthId = model.getPatternLengthBarsIndex() + 1;
     if (patternLengthSelector.getSelectedId() != processorPatternLengthId)
         patternLengthSelector.setSelectedId (processorPatternLengthId, juce::dontSendNotification);
 
@@ -1432,14 +1432,14 @@ void SlicerAudioProcessorEditor::timerCallback()
     // the getValue lambda passed to its constructor, but nothing else
     // triggers a repaint when that value changes from outside a drag on
     // this panel itself.
-    performanceStyleParameterPanel.setSelectedStyle (processor.getPerformanceWorkingStyle());
+    performanceStyleParameterPanel.setSelectedStyle (model.getPerformanceWorkingStyle());
     performanceStyleParameterPanel.repaint();
 
-    const bool processorPerformanceLoop = processor.getPerformanceWorkingLoop();
+    const bool processorPerformanceLoop = model.getPerformanceWorkingLoop();
     if (performanceLoopToggle.getToggleState() != processorPerformanceLoop)
         performanceLoopToggle.setToggleState (processorPerformanceLoop, juce::dontSendNotification);
 
-    const bool processorPerformanceSync = processor.getPerformanceWorkingSync();
+    const bool processorPerformanceSync = model.getPerformanceWorkingSync();
     if (performanceSyncToggle.getToggleState() != processorPerformanceSync)
         performanceSyncToggle.setToggleState (processorPerformanceSync, juce::dontSendNotification);
 }
@@ -1460,7 +1460,7 @@ void SlicerAudioProcessorEditor::chooseAndLoadFile()
 
         if (file.existsAsFile())
         {
-            processor.loadSample (file);
+            model.loadSample (file);
             updateAfterSampleOrSliceChange();
         }
     });
@@ -1515,11 +1515,11 @@ void SlicerAudioProcessorEditor::updatePerformanceTrimSnapVisibility()
     // Grid resolution only matters -- and is only shown -- while Performance
     // mode is the active trigger mode AND Grid is the selected Trim Snap
     // mode; Transients needs no resolution picker at all. Reads
-    // processor.getTriggerMode() directly now (Pass 1) rather than a UI
+    // model.getTriggerMode() directly now (Pass 1) rather than a UI
     // selector's index -- more robust than re-deriving "is Performance
     // active" from tab state, and this control only exists (and this
     // function is only called) while the Perform tab is actually showing it.
-    const bool performance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
+    const bool performance = model.getTriggerMode() == SlicerModel::TriggerMode::performance;
     const bool grid = performanceTrimSnapSelector.getSelectedId() == 2;
 
     performanceTrimGridLabel.setVisible (performance && grid);
@@ -1531,7 +1531,7 @@ void SlicerAudioProcessorEditor::updatePerformanceQuantizeRecallVisibility()
     // Recall interval only matters -- and is only shown -- while Performance
     // mode is the active trigger mode AND Quantize Recall is switched on;
     // off needs no interval picker at all (immediate, unchanged behaviour).
-    const bool performance = processor.getTriggerMode() == SlicerAudioProcessor::TriggerMode::performance;
+    const bool performance = model.getTriggerMode() == SlicerModel::TriggerMode::performance;
     const bool quantized = performanceQuantizeRecallToggle.getToggleState();
 
     performanceQuantizeRecallIntervalLabel.setVisible (performance && quantized);
@@ -1621,7 +1621,7 @@ void SlicerAudioProcessorEditor::updateActiveTabVisibility()
     if (sequenceActive)
     {
         const bool setInterval = patternSwitchTimingSelector.getSelectedId()
-            == static_cast<int> (SlicerAudioProcessor::PatternSwitchTiming::setInterval) + 1;
+            == static_cast<int> (SlicerModel::PatternSwitchTiming::setInterval) + 1;
         patternSwitchIntervalLabel.setVisible (setInterval);
         patternSwitchIntervalSelector.setVisible (setInterval);
     }
@@ -1638,7 +1638,7 @@ void SlicerAudioProcessorEditor::updateActiveTabVisibility()
 
 void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
 {
-    using TM = SlicerAudioProcessor::TriggerMode;
+    using TM = SlicerModel::TriggerMode;
 
     if (topLevelModeTabs.getSelectedIndex() != 0) // Textures: no trigger-mode implication
         return;
@@ -1647,11 +1647,11 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
                       : subModeTabs.getSelectedIndex() == 3 ? TM::performance // Perform tab
                                                              : lastGenerateTriggerMode; // Generate/Control
 
-    if (processor.getTriggerMode() == desired)
+    if (model.getTriggerMode() == desired)
         return; // guard: setTriggerMode() unconditionally resets clock/reset/sequenced/performance init flags even for a no-op mode
 
-    const bool wasPerformance = processor.getTriggerMode() == TM::performance;
-    processor.setTriggerMode (desired);
+    const bool wasPerformance = model.getTriggerMode() == TM::performance;
+    engine.setTriggerMode (desired);
 
     // Leaving Performance mode: Performance's own focus-change path
     // deliberately raw-stores trim (see setFocusedPerformanceStateSlot()'s
@@ -1662,7 +1662,7 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
     // already has, purely for its rebuild side effect (same fix the old
     // old triggerModeSelector.onChange applied).
     if (wasPerformance)
-        processor.setTrimEndSample (processor.getTrimEndSample(), false);
+        model.setTrimEndSample (model.getTrimEndSample(), false);
 
     // Only refresh Generate's own Clock-only/Slice-Length-only sub-groups if
     // Generate is actually the active tab right now -- updateSliceLengthClockVisibility()
@@ -1677,13 +1677,13 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
 
 void SlicerAudioProcessorEditor::updateAfterSampleOrSliceChange()
 {
-    const int numSlices = processor.getNumSlices();
-    const juce::String text = processor.getLoadedFileName()
+    const int numSlices = model.getNumSlices();
+    const juce::String text = model.getLoadedFileName()
                              + "  —  " + juce::String (numSlices)
                              + " slice" + (numSlices == 1 ? "" : "s");
     statusLabel.setText (text, juce::dontSendNotification);
 
-    const double bpm = processor.getCalculatedOriginalBpm();
+    const double bpm = model.getCalculatedOriginalBpm();
     calculatedBpmLabel.setText (bpm > 0.0 ? ("~" + juce::String (bpm, 1) + " BPM") : "",
                                  juce::dontSendNotification);
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
 
 //==============================================================================
 /** Step-16: subdivision probability, drawn as a horizontal multislider —
@@ -19,7 +19,7 @@
 class SubdivisionProbabilityGrid : public juce::Component
 {
 public:
-    explicit SubdivisionProbabilityGrid (SlicerAudioProcessor& processorToUse);
+    explicit SubdivisionProbabilityGrid (SlicerModel& modelToUse);
 
     void paint (juce::Graphics&) override;
 
@@ -36,7 +36,7 @@ private:
     void setProbabilityFromMouse (const juce::MouseEvent& event);
     int getRowIndexAtY (int y) const;
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
 
     static constexpr int rowHeight = 16;
     static constexpr int labelWidth = 44;

@@ -46,11 +46,11 @@ inline const char* getEasingCurveName (EasingCurve curve)
 }
 
 // Maps a plain option index (as stored in a per-step parameter override,
-// or offered by a right-click menu -- see SlicerAudioProcessor::
+// or offered by a right-click menu -- see SlicerModel::
 // getSequencerCellParameterOptionName()) to its EasingCurve value. An
 // out-of-range index falls back to Linear rather than asserting, matching
 // this codebase's existing defensive convention for similar lookups (see
-// SlicerAudioProcessor::indexToPlaybackStyle()).
+// SlicerEngine::indexToPlaybackStyle()).
 inline EasingCurve easingCurveFromIndex (int index)
 {
     if (index == 1) return EasingCurve::easeIn;

@@ -1,13 +1,13 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
 
 //==============================================================================
 /** Slice Length/Clock mode global-default parameter panel. A style selector
     (juce::ComboBox, same "Forward"/"Ping-Pong"/... order as
     PlaybackStylePalette/PlaybackStyleGrid) sits above a stack of rows showing
-    whichever parameters SlicerAudioProcessor::getApplicableSequencerCellParameters()
+    whichever parameters SlicerModel::getApplicableSequencerCellParameters()
     says the selected style actually uses (Subdivide excluded -- see its own
     doc comment below).
 
@@ -26,7 +26,7 @@
     into columns by a narrow parent).
 
     Unlike SequencerGrid, this panel reads/writes the GLOBAL default value for
-    each parameter (SlicerAudioProcessor::getSequencerCellParameterGlobalValue()/
+    each parameter (SlicerModel::getSequencerCellParameterGlobalValue()/
     setSequencerCellParameterGlobalValue()), not a per-step override -- the
     same storage a Sequencer step without its own override already falls back
     to, so editing here changes both Slice Length/Clock mode playback AND
@@ -34,7 +34,7 @@
 
     The style selector's current selection is purely local UI state for the
     default (Slice Length/Clock) construction, kept deliberately separate
-    from SlicerAudioProcessor::getSelectedDrawingStyle() (Sequenced mode's
+    from SlicerModel::getSelectedDrawingStyle() (Sequenced mode's
     "what style paints next" concept) -- reusing that value here would mean
     switching styles in this panel also changed what Sequenced mode's own
     grid draws with, and vice versa.
@@ -43,7 +43,7 @@
     parameters below: a getValue/setValue pair lets a caller point this panel
     at ANY per-index float storage instead of the global default value --
     Performance mode passes lambdas bound to
-    SlicerAudioProcessor::getPerformanceWorkingParameterValue()/
+    SlicerModel::getPerformanceWorkingParameterValue()/
     setPerformanceWorkingParameterValue() instead, so editing there can never
     read or write the same global values Slice Length/Clock use (they must
     stay fully independent). initialStyleId/onStyleChanged make the style
@@ -56,7 +56,7 @@
     sequencer's own step timing, with no meaning in Slice Length/Clock modes.
     Volume (index 19) is excluded for the same reason: it's a per-step gain
     ramp keyed to the Sequencer's own Whole Window step timing (see
-    PluginProcessor.h's own doc comment on isSequencerCellParameterSwept()),
+    SlicerModel.h's own doc comment on isSequencerCellParameterSwept()),
     has no global dial (getSequencerCellParameterGlobalValue() hardcodes its
     fallback the same way it does for Subdivide), and isn't meaningful outside
     Sequenced mode -- a possible later addition once the Sequencer version is
@@ -74,7 +74,7 @@ public:
     using GetParameterValue = std::function<float (int paramIndex)>;
     using SetParameterValue = std::function<void (int paramIndex, float value)>;
 
-    explicit PlaybackStyleParameterPanel (SlicerAudioProcessor& processorToUse,
+    explicit PlaybackStyleParameterPanel (SlicerModel& modelToUse,
                                            GetParameterValue getValueIn = nullptr,
                                            SetParameterValue setValueIn = nullptr,
                                            int initialStyleId = 1,
@@ -127,7 +127,7 @@ private:
     // Shape, a swept parameter's own Mode, Forward/Backward Curve, Rate) or
     // a continuous drag-bar (Resonance, Grain Size, Grain Speed, or a swept
     // parameter's own Value). paramIndex matches
-    // SlicerAudioProcessor::getSequencerCellParameterName()'s own indexing.
+    // SlicerModel::getSequencerCellParameterName()'s own indexing.
     struct PanelRow
     {
         int paramIndex;
@@ -146,7 +146,7 @@ private:
     void showDiscreteOptionsMenu (const PanelRow& row, juce::Rectangle<int> rowBounds);
     void updateContinuousValueFromMouseX (int paramIndex, int mouseX, const juce::Rectangle<int>& rowBounds);
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
     juce::ComboBox styleSelector;
     GetParameterValue getValue;
     SetParameterValue setValue;

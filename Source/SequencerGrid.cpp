@@ -41,11 +41,11 @@ namespace
     }
 }
 
-SequencerGrid::SequencerGrid (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+SequencerGrid::SequencerGrid (SlicerModel& modelToUse, SlicerEngine& engineToUse)
+    : model (modelToUse), engine (engineToUse)
 {
-    lastKnownNumRows = processor.getSequencerNumRows();
-    lastKnownNumColumns = processor.getSequencerNumSteps();
+    lastKnownNumRows = model.getSequencerNumRows();
+    lastKnownNumColumns = model.getSequencerNumSteps();
     lastKnownTargetWidth = targetWidth;
     setSize (juce::jmax (1, targetWidth), juce::jmax (1, lastKnownNumRows * rowHeight));
 
@@ -77,8 +77,8 @@ int SequencerGrid::computeRowHeight (int numRows) const
 
 void SequencerGrid::updateSizeIfNeeded()
 {
-    const int numRows = processor.getSequencerNumRows();
-    const int numColumns = processor.getSequencerNumSteps();
+    const int numRows = model.getSequencerNumRows();
+    const int numColumns = model.getSequencerNumSteps();
 
     if (numRows != lastKnownNumRows || numColumns != lastKnownNumColumns
         || targetWidth != lastKnownTargetWidth || availableHeight != lastKnownAvailableHeight)
@@ -94,7 +94,7 @@ void SequencerGrid::updateSizeIfNeeded()
 
 int SequencerGrid::getColumnWidth() const
 {
-    const int numColumns = processor.getSequencerNumSteps();
+    const int numColumns = model.getSequencerNumSteps();
 
     if (numColumns <= 0)
         return targetWidth;
@@ -111,16 +111,16 @@ void SequencerGrid::timerCallback()
     // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
     // done. This UI-thread timer is where the audio thread's Tape Stop
     // diagnostic mailbox actually gets printed -- see
-    // SlicerAudioProcessor::drainDebugTapeStopEvents()'s own doc comment
+    // SlicerModel::drainDebugTapeStopEvents()'s own doc comment
     // for why the printing itself can't happen on the audio thread.
-    processor.drainDebugTapeStopEvents();
-    processor.drainDebugStretchEvents();
+    engine.drainDebugTapeStopEvents();
+    engine.drainDebugStretchEvents();
 #endif
 }
 
 int SequencerGrid::getRowIndexAtY (int y) const
 {
-    const int numRows = processor.getSequencerNumRows();
+    const int numRows = model.getSequencerNumRows();
 
     if (numRows <= 0)
         return 0;
@@ -128,14 +128,14 @@ int SequencerGrid::getRowIndexAtY (int y) const
     // Row 0 (the first slice) renders at the BOTTOM of the grid (Step 38,
     // standard piano-roll convention -- see the class doc comment), so the
     // screen row read from y has to be inverted to get back to the data
-    // row index processor.getSequencerCell()/setSequencerCell() expect.
+    // row index model.getSequencerCell()/setSequencerCell() expect.
     const int screenRow = juce::jlimit (0, numRows - 1, y / rowHeight);
     return numRows - 1 - screenRow;
 }
 
 int SequencerGrid::getColumnIndexAtX (int x) const
 {
-    const int numColumns = processor.getSequencerNumSteps();
+    const int numColumns = model.getSequencerNumSteps();
 
     if (numColumns <= 0)
         return 0;
@@ -150,7 +150,7 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
     // locally, so this bar and Tape Stop's decel duration in Sequenced
     // mode (PluginProcessor::processBlock(), via the same
     // getSequencerCellDeclaredLengthSteps()) can never disagree.
-    const int desiredSteps = processor.getSequencerCellDeclaredLengthSteps (row, startColumn);
+    const int desiredSteps = model.getSequencerCellDeclaredLengthSteps (row, startColumn);
 
     // Cut short at whichever comes first: the desired length above, or
     // the next active cell anywhere in the grid (any row, not just this
@@ -171,7 +171,7 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
 
         for (int r = 0; r < numRows; ++r)
         {
-            if (processor.getSequencerCellStyle (r, checkColumn) >= 0)
+            if (model.getSequencerCellStyle (r, checkColumn) >= 0)
             {
                 columnHasActive = true;
                 break;
@@ -190,8 +190,8 @@ int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRow
 
 bool SequencerGrid::findExtendTargetAt (int x, int y, int& outRow, int& outStartColumn) const
 {
-    const int numRows = processor.getSequencerNumRows();
-    const int numColumns = processor.getSequencerNumSteps();
+    const int numRows = model.getSequencerNumRows();
+    const int numColumns = model.getSequencerNumSteps();
 
     if (numRows <= 0 || numColumns <= 0)
         return false;
@@ -201,7 +201,7 @@ bool SequencerGrid::findExtendTargetAt (int x, int y, int& outRow, int& outStart
 
     for (int col = 0; col < numColumns; ++col)
     {
-        if (processor.getSequencerCellStyle (row, col) < 0)
+        if (model.getSequencerCellStyle (row, col) < 0)
             continue;
 
         const int barLength = computeBarLengthInSteps (row, col, numRows, numColumns);
@@ -247,8 +247,8 @@ juce::Rectangle<int> SequencerGrid::getParameterSliderBounds (int row, int colum
 
 int SequencerGrid::findEditingParameterIndex() const
 {
-    for (int i = 0; i < SlicerAudioProcessor::numSequencerCellParameters; ++i)
-        if (SlicerAudioProcessor::getSequencerCellParameterName (i) == editingParameterName)
+    for (int i = 0; i < SlicerModel::numSequencerCellParameters; ++i)
+        if (SlicerModel::getSequencerCellParameterName (i) == editingParameterName)
             return i;
 
     return -1;
@@ -262,41 +262,41 @@ void SequencerGrid::updateEditingValueFromMouseX (int mouseX, const juce::Rectan
 
     const int paramIndex = findEditingParameterIndex();
 
-    if (SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
+    if (SlicerModel::isSequencerCellParameterSteppedSlider (paramIndex))
     {
         // Subdivide (Step 47): same drag gesture as every other slider
         // overlay, but snapped to one of its named stops (Off + the
         // shared note-value palette) rather than an arbitrary value --
         // the stored override is that stop's OPTION INDEX, not a
         // min/max-mapped float.
-        const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+        const int numOptions = SlicerModel::getSequencerCellParameterNumOptions (paramIndex);
         const int stepIndex = numOptions > 1
             ? juce::jlimit (0, numOptions - 1, juce::roundToInt (t * (float) (numOptions - 1)))
             : 0;
-        processor.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, (float) stepIndex);
+        model.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, (float) stepIndex);
         return;
     }
 
     // Generalized per-parameter range (Step 46) -- was hardcoded to
     // Resonance's own range back when it was the only continuous
     // parameter this overlay ever showed.
-    const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
-    const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
+    const float minValue = SlicerModel::getSequencerCellParameterMin (paramIndex);
+    const float maxValue = SlicerModel::getSequencerCellParameterMax (paramIndex);
     const float value = minValue + t * (maxValue - minValue);
 
-    processor.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, value);
+    model.setSequencerCellParameterOverride (editingRow, editingColumn, editingParameterName, value);
 }
 
 void SequencerGrid::showParameterMenuForCell (int row, int column)
 {
-    const int style = processor.getSequencerCellStyle (row, column);
+    const int style = model.getSequencerCellStyle (row, column);
 
     // Which parameters (if any) this step's own style actually uses
     // (Step 46) -- generalizes the v1 "only Filter Down/Up" hardcoded
     // check into a per-style table (see PluginProcessor.cpp). Empty means
     // this style has nothing to configure (e.g. Forward, or an empty
     // cell), so right-clicking it is a no-op, same as before.
-    const auto applicableParams = SlicerAudioProcessor::getApplicableSequencerCellParameters (style);
+    const auto applicableParams = SlicerModel::getApplicableSequencerCellParameters (style);
 
     if (applicableParams.empty())
         return;
@@ -305,9 +305,9 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
 
     for (int paramIndex : applicableParams)
     {
-        const juce::String name = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
+        const juce::String name = SlicerModel::getSequencerCellParameterName (paramIndex);
 
-        if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex))
+        if (SlicerModel::isSequencerCellParameterSwept (paramIndex))
         {
             // Swept parameters (Step 49): Sample Rate Reduction/Bit Depth
             // present as a submenu of their own Static/Sweep In/Sweep Out
@@ -321,16 +321,16 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
             // for this value index once it detects a swept-mode pick.
             juce::PopupMenu submenu;
             const int modeParamIndex = paramIndex + 1;
-            const int numModes = SlicerAudioProcessor::getSequencerCellParameterNumOptions (modeParamIndex);
+            const int numModes = SlicerModel::getSequencerCellParameterNumOptions (modeParamIndex);
 
             for (int option = 0; option < numModes; ++option)
                 submenu.addItem (discreteItemId (modeParamIndex, option),
-                                  SlicerAudioProcessor::getSequencerCellParameterOptionName (modeParamIndex, option));
+                                  SlicerModel::getSequencerCellParameterOptionName (modeParamIndex, option));
 
             menu.addSubMenu (name, submenu);
         }
-        else if (SlicerAudioProcessor::isSequencerCellParameterDiscrete (paramIndex)
-            && ! SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
+        else if (SlicerModel::isSequencerCellParameterDiscrete (paramIndex)
+            && ! SlicerModel::isSequencerCellParameterSteppedSlider (paramIndex))
         {
             // Discrete parameters (Filter Type, Curve Shape -- Step 46)
             // present as a submenu of their own small option list, picked
@@ -340,11 +340,11 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
             // isSequencerCellParameterSteppedSlider()'s doc comment for
             // why it takes the slider branch below instead.
             juce::PopupMenu submenu;
-            const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+            const int numOptions = SlicerModel::getSequencerCellParameterNumOptions (paramIndex);
 
             for (int option = 0; option < numOptions; ++option)
                 submenu.addItem (discreteItemId (paramIndex, option),
-                                  SlicerAudioProcessor::getSequencerCellParameterOptionName (paramIndex, option));
+                                  SlicerModel::getSequencerCellParameterOptionName (paramIndex, option));
 
             menu.addSubMenu (name, submenu);
         }
@@ -417,14 +417,14 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
             // built the submenu with) -- same "picking a mode configures
             // its amount next" flow regardless of which mode was picked,
             // including Static (still needs its fixed value set).
-            processor.setSequencerCellParameterOverride (row, column,
-                SlicerAudioProcessor::getSequencerCellParameterName (paramIndex), (float) optionIndex);
+            model.setSequencerCellParameterOverride (row, column,
+                SlicerModel::getSequencerCellParameterName (paramIndex), (float) optionIndex);
 
-            if (SlicerAudioProcessor::isSequencerCellParameterSwept (paramIndex - 1))
+            if (SlicerModel::isSequencerCellParameterSwept (paramIndex - 1))
             {
                 editingRow = row;
                 editingColumn = column;
-                editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex - 1);
+                editingParameterName = SlicerModel::getSequencerCellParameterName (paramIndex - 1);
             }
 
             repaint();
@@ -440,7 +440,7 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
             // (or the global default if none exists) live, every repaint.
             editingRow = row;
             editingColumn = column;
-            editingParameterName = SlicerAudioProcessor::getSequencerCellParameterName (paramIndex);
+            editingParameterName = SlicerModel::getSequencerCellParameterName (paramIndex);
             repaint();
         }
     });
@@ -448,8 +448,8 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
 
 void SequencerGrid::paint (juce::Graphics& g)
 {
-    const int numRows = processor.getSequencerNumRows();
-    const int numColumns = processor.getSequencerNumSteps();
+    const int numRows = model.getSequencerNumRows();
+    const int numColumns = model.getSequencerNumSteps();
 
     if (numRows <= 0 || numColumns <= 0)
     {
@@ -462,7 +462,7 @@ void SequencerGrid::paint (juce::Graphics& g)
     // Cell backgrounds, shaded every beat (not a hardcoded 4 columns --
     // stepsPerBeat varies with Step resolution) so the grid reads as bars
     // of beats regardless of resolution, plus a faint per-cell outline.
-    const double stepBeatsForShading = SlicerAudioProcessor::getNoteValueBeats (processor.getStepResolutionIndex());
+    const double stepBeatsForShading = SlicerModel::getNoteValueBeats (model.getStepResolutionIndex());
     const int stepsPerBeatForShading = juce::jmax (1, juce::roundToInt (stepBeatsForShading > 0.0 ? 1.0 / stepBeatsForShading : 4.0));
     const int columnWidth = getColumnWidth();
 
@@ -486,7 +486,7 @@ void SequencerGrid::paint (juce::Graphics& g)
 
     // Playhead -- current step column, drawn UNDER the active-cell bars
     // so a lit cell under the playhead stays clearly visible.
-    const int playingStep = processor.getCurrentlyPlayingStepIndex();
+    const int playingStep = model.getCurrentlyPlayingStepIndex();
 
     if (playingStep >= 0 && playingStep < numColumns)
     {
@@ -502,7 +502,7 @@ void SequencerGrid::paint (juce::Graphics& g)
 
         for (int col = 0; col < numColumns; ++col)
         {
-            const int style = processor.getSequencerCellStyle (row, col);
+            const int style = model.getSequencerCellStyle (row, col);
 
             if (style < 0)
                 continue;
@@ -525,7 +525,7 @@ void SequencerGrid::paint (juce::Graphics& g)
             // Small triangle marker (Step 45) in the cell's own top-right
             // corner -- the STARTING cell, not smeared across the whole
             // bar -- whenever it has at least one parameter override.
-            if (processor.getSequencerCellHasAnyParameterOverride (row, col))
+            if (model.getSequencerCellHasAnyParameterOverride (row, col))
             {
                 const float markerSize = (float) juce::jmin (columnWidth, rowHeight) * 0.4f;
                 const float right = (float) (col * columnWidth + columnWidth) - 1.0f;
@@ -551,27 +551,27 @@ void SequencerGrid::paint (juce::Graphics& g)
         {
             const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
             const int paramIndex = findEditingParameterIndex();
-            const float currentValue = processor.getSequencerCellParameterOverride (
-                editingRow, editingColumn, editingParameterName, processor.getSequencerCellParameterGlobalValue (paramIndex));
+            const float currentValue = model.getSequencerCellParameterOverride (
+                editingRow, editingColumn, editingParameterName, model.getSequencerCellParameterGlobalValue (paramIndex));
 
             float t = 0.0f;
             juce::String valueText;
 
-            if (SlicerAudioProcessor::isSequencerCellParameterSteppedSlider (paramIndex))
+            if (SlicerModel::isSequencerCellParameterSteppedSlider (paramIndex))
             {
                 // Subdivide (Step 47): fill fraction and label come from
                 // the snapped OPTION INDEX (Off, 1/4, 1/8, ...), not a
                 // min/max-mapped float -- same source of truth
                 // updateEditingValueFromMouseX() writes into the override.
-                const int numOptions = SlicerAudioProcessor::getSequencerCellParameterNumOptions (paramIndex);
+                const int numOptions = SlicerModel::getSequencerCellParameterNumOptions (paramIndex);
                 const int stepIndex = juce::jlimit (0, juce::jmax (0, numOptions - 1), juce::roundToInt (currentValue));
                 t = numOptions > 1 ? (float) stepIndex / (float) (numOptions - 1) : 0.0f;
-                valueText = SlicerAudioProcessor::getSequencerCellParameterOptionName (paramIndex, stepIndex);
+                valueText = SlicerModel::getSequencerCellParameterOptionName (paramIndex, stepIndex);
             }
             else
             {
-                const float minValue = SlicerAudioProcessor::getSequencerCellParameterMin (paramIndex);
-                const float maxValue = SlicerAudioProcessor::getSequencerCellParameterMax (paramIndex);
+                const float minValue = SlicerModel::getSequencerCellParameterMin (paramIndex);
+                const float maxValue = SlicerModel::getSequencerCellParameterMax (paramIndex);
                 const float range = maxValue - minValue;
                 t = range > 0.0f
                     ? juce::jlimit (0.0f, 1.0f, (currentValue - minValue) / range)
@@ -606,7 +606,7 @@ void SequencerGrid::paint (juce::Graphics& g)
 
 void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 {
-    if (processor.getSequencerNumRows() <= 0 || processor.getSequencerNumSteps() <= 0)
+    if (model.getSequencerNumRows() <= 0 || model.getSequencerNumSteps() <= 0)
         return;
 
     // Right-click / Cmd-Ctrl-click (Step 45) -- a completely separate
@@ -625,8 +625,8 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
     // underneath it.
     if (editingRow >= 0)
     {
-        const int numRows = processor.getSequencerNumRows();
-        const int numColumns = processor.getSequencerNumSteps();
+        const int numRows = model.getSequencerNumRows();
+        const int numColumns = model.getSequencerNumSteps();
         const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
 
         if (sliderBounds.contains (event.x, event.y))
@@ -656,7 +656,7 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
         {
             extendRow = row;
             extendStartColumn = startColumn;
-            extendLiveLengthSteps = computeBarLengthInSteps (row, startColumn, processor.getSequencerNumRows(), processor.getSequencerNumSteps());
+            extendLiveLengthSteps = computeBarLengthInSteps (row, startColumn, model.getSequencerNumRows(), model.getSequencerNumSteps());
         }
 
         return;
@@ -664,8 +664,8 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
 
     dragRow = getRowIndexAtY (event.y);
     const int col = getColumnIndexAtX (event.x);
-    const int selectedStyle = processor.getSelectedDrawingStyle();
-    const int existingStyle = processor.getSequencerCellStyle (dragRow, col);
+    const int selectedStyle = model.getSelectedDrawingStyle();
+    const int existingStyle = model.getSequencerCellStyle (dragRow, col);
 
     // A whole drag stroke keeps doing whichever this FIRST cell decided
     // (Step 41): toggle off (-1) if it already showed the currently
@@ -674,7 +674,7 @@ void SequencerGrid::mouseDown (const juce::MouseEvent& event)
     // every subsequent cell the drag passes over, same as the plain
     // toggle this replaced.
     dragTargetStyle = (existingStyle == selectedStyle) ? -1 : selectedStyle;
-    processor.setSequencerCell (dragRow, col, dragTargetStyle);
+    model.setSequencerCell (dragRow, col, dragTargetStyle);
     repaint();
 }
 
@@ -682,9 +682,9 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 {
     if (extendRow >= 0)
     {
-        const int numColumns = processor.getSequencerNumSteps();
+        const int numColumns = model.getSequencerNumSteps();
         const int columnWidth = getColumnWidth();
-        const int naturalSteps = processor.getSequencerNaturalLengthSteps (extendRow);
+        const int naturalSteps = model.getSequencerNaturalLengthSteps (extendRow);
 
         // Growth-only for this pass (per its own spec) -- dragging left of
         // the step's own natural length just holds it there rather than
@@ -700,8 +700,8 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
 
     if (sliderDragging)
     {
-        const int numRows = processor.getSequencerNumRows();
-        const int numColumns = processor.getSequencerNumSteps();
+        const int numRows = model.getSequencerNumRows();
+        const int numColumns = model.getSequencerNumSteps();
         const auto sliderBounds = getParameterSliderBounds (editingRow, editingColumn, numRows, numColumns);
         updateEditingValueFromMouseX (event.x, sliderBounds);
         repaint();
@@ -714,7 +714,7 @@ void SequencerGrid::mouseDrag (const juce::MouseEvent& event)
     // Row is locked to wherever the drag started -- "click-drag across
     // cells in A row," not a free paint across the whole grid.
     const int col = getColumnIndexAtX (event.x);
-    processor.setSequencerCell (dragRow, col, dragTargetStyle);
+    model.setSequencerCell (dragRow, col, dragTargetStyle);
     repaint();
 }
 
@@ -726,7 +726,7 @@ void SequencerGrid::mouseUp (const juce::MouseEvent&)
         // local, uncommitted preview only; this is the one point it
         // actually reaches the processor (and, in turn, clears any other
         // row's conflicting cells the newly-claimed span now covers).
-        processor.setSequencerCellExtendedLengthSteps (extendRow, extendStartColumn, extendLiveLengthSteps);
+        model.setSequencerCellExtendedLengthSteps (extendRow, extendStartColumn, extendLiveLengthSteps);
         extendRow = -1;
         extendStartColumn = -1;
         repaint();

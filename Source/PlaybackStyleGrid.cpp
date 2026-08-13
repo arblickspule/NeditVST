@@ -1,13 +1,13 @@
 #include "PlaybackStyleGrid.h"
 
-PlaybackStyleGrid::PlaybackStyleGrid (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+PlaybackStyleGrid::PlaybackStyleGrid (SlicerModel& modelToUse)
+    : model (modelToUse)
 {
 }
 
 int PlaybackStyleGrid::getPreferredHeight()
 {
-    return SlicerAudioProcessor::numPlaybackStyleOptions * rowHeight;
+    return SlicerModel::numPlaybackStyleOptions * rowHeight;
 }
 
 void PlaybackStyleGrid::paint (juce::Graphics& g)
@@ -18,13 +18,13 @@ void PlaybackStyleGrid::paint (juce::Graphics& g)
 
     g.setFont (11.0f);
 
-    for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
+    for (int i = 0; i < SlicerModel::numPlaybackStyleOptions; ++i)
     {
         const juce::Rectangle<int> row (bounds.getX(), bounds.getY() + i * rowHeight,
                                          bounds.getWidth(), rowHeight);
 
         g.setColour (juce::Colours::white.withAlpha (0.7f));
-        g.drawText (SlicerAudioProcessor::getPlaybackStyleName (i),
+        g.drawText (SlicerModel::getPlaybackStyleName (i),
                     row.withWidth (labelWidth - 6).withX (row.getX()),
                     juce::Justification::centredRight, false);
 
@@ -33,7 +33,7 @@ void PlaybackStyleGrid::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.fillRect (trackRow);
 
-        const float probability = processor.getPlaybackStyleProbability (i);
+        const float probability = model.getPlaybackStyleProbability (i);
         const float barWidth = trackWidth * probability;
 
         g.setColour (juce::Colours::orange.withAlpha (0.5f));
@@ -47,7 +47,7 @@ void PlaybackStyleGrid::paint (juce::Graphics& g)
 int PlaybackStyleGrid::getRowIndexAtY (int y) const
 {
     const int row = (y - getLocalBounds().getY()) / rowHeight;
-    return juce::jlimit (0, SlicerAudioProcessor::numPlaybackStyleOptions - 1, row);
+    return juce::jlimit (0, SlicerModel::numPlaybackStyleOptions - 1, row);
 }
 
 void PlaybackStyleGrid::setProbabilityFromMouse (const juce::MouseEvent& event)
@@ -56,7 +56,7 @@ void PlaybackStyleGrid::setProbabilityFromMouse (const juce::MouseEvent& event)
     const float trackWidth = (float) juce::jmax (1, getWidth() - labelWidth);
     const float fraction = juce::jlimit (0.0f, 1.0f, (float) (event.x - labelWidth) / trackWidth);
 
-    processor.setPlaybackStyleProbability (index, fraction);
+    model.setPlaybackStyleProbability (index, fraction);
     repaint();
 }
 

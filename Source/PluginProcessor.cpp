@@ -1,12 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "SlicerModel.h"
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstdlib>
-#include <limits>
-#include <iostream> // TEMPORARY DEBUG (Performance mode freeze investigation) -- see FreezeWatchdog
 
 SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -63,43 +57,6 @@ void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
 
 void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
 {
-}
-
-void SlicerAudioProcessor::randomizeSequence()
-{
-    engine.randomizeSequence();
-}
-
-#if JUCE_DEBUG
-void SlicerAudioProcessor::drainDebugTapeStopEvents()
-{
-    engine.drainDebugTapeStopEvents();
-}
-
-void SlicerAudioProcessor::drainDebugStretchEvents()
-{
-    engine.drainDebugStretchEvents();
-}
-#endif
-
-void SlicerAudioProcessor::setTriggerMode (TriggerMode mode)
-{
-    engine.setTriggerMode (mode);
-}
-
-void SlicerAudioProcessor::setPitchMode (PitchMode mode)
-{
-    engine.setPitchMode (mode);
-}
-
-bool SlicerAudioProcessor::getRandomizeParametersForStyle (int index) const
-{
-    return engine.getRandomizeParametersForStyle (index);
-}
-
-void SlicerAudioProcessor::setRandomizeParametersForStyle (int index, bool shouldRandomize)
-{
-    engine.setRandomizeParametersForStyle (index, shouldRandomize);
 }
 
 //==============================================================================

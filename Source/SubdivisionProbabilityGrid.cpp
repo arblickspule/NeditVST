@@ -1,13 +1,13 @@
 #include "SubdivisionProbabilityGrid.h"
 
-SubdivisionProbabilityGrid::SubdivisionProbabilityGrid (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+SubdivisionProbabilityGrid::SubdivisionProbabilityGrid (SlicerModel& modelToUse)
+    : model (modelToUse)
 {
 }
 
 int SubdivisionProbabilityGrid::getPreferredHeight()
 {
-    return SlicerAudioProcessor::numNoteValueOptions * rowHeight;
+    return SlicerModel::numNoteValueOptions * rowHeight;
 }
 
 void SubdivisionProbabilityGrid::paint (juce::Graphics& g)
@@ -18,13 +18,13 @@ void SubdivisionProbabilityGrid::paint (juce::Graphics& g)
 
     g.setFont (11.0f);
 
-    for (int i = 0; i < SlicerAudioProcessor::numNoteValueOptions; ++i)
+    for (int i = 0; i < SlicerModel::numNoteValueOptions; ++i)
     {
         const juce::Rectangle<int> row (bounds.getX(), bounds.getY() + i * rowHeight,
                                          bounds.getWidth(), rowHeight);
 
         g.setColour (juce::Colours::white.withAlpha (0.7f));
-        g.drawText (SlicerAudioProcessor::getNoteValueName (i),
+        g.drawText (SlicerModel::getNoteValueName (i),
                     row.withWidth (labelWidth - 6).withX (row.getX()),
                     juce::Justification::centredRight, false);
 
@@ -33,7 +33,7 @@ void SubdivisionProbabilityGrid::paint (juce::Graphics& g)
         g.setColour (juce::Colours::white.withAlpha (0.08f));
         g.fillRect (trackRow);
 
-        const float probability = processor.getSubdivisionProbability (i);
+        const float probability = model.getSubdivisionProbability (i);
         const float barWidth = trackWidth * probability;
 
         g.setColour (juce::Colours::orange.withAlpha (0.5f));
@@ -47,7 +47,7 @@ void SubdivisionProbabilityGrid::paint (juce::Graphics& g)
 int SubdivisionProbabilityGrid::getRowIndexAtY (int y) const
 {
     const int row = (y - getLocalBounds().getY()) / rowHeight;
-    return juce::jlimit (0, SlicerAudioProcessor::numNoteValueOptions - 1, row);
+    return juce::jlimit (0, SlicerModel::numNoteValueOptions - 1, row);
 }
 
 void SubdivisionProbabilityGrid::setProbabilityFromMouse (const juce::MouseEvent& event)
@@ -56,7 +56,7 @@ void SubdivisionProbabilityGrid::setProbabilityFromMouse (const juce::MouseEvent
     const float trackWidth = (float) juce::jmax (1, getWidth() - labelWidth);
     const float fraction = juce::jlimit (0.0f, 1.0f, (float) (event.x - labelWidth) / trackWidth);
 
-    processor.setSubdivisionProbability (index, fraction);
+    model.setSubdivisionProbability (index, fraction);
     repaint();
 }
 

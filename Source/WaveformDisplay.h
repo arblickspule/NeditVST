@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
 
 //==============================================================================
 /** Draws the loaded sample's waveform, a vertical line at each slice
@@ -54,7 +54,7 @@
         selector can switch this per-state trim's snap target from
         Transients to Grid (a fixed musical grid at the established tempo,
         entirely ignoring transients) — that branch lives inside
-        SlicerAudioProcessor::setTrimStartSample()/setTrimEndSample(), so
+        SlicerModel::setTrimStartSample()/setTrimEndSample(), so
         this component's own drag code (below) is unchanged either way;
         Shift still bypasses snapping regardless of which mode is selected.
       - Scroll wheel zooms; Shift+scroll wheel pans (Step 31).
@@ -65,7 +65,7 @@ class WaveformDisplay : public juce::Component,
                          private juce::Timer
 {
 public:
-    explicit WaveformDisplay (SlicerAudioProcessor& processorToUse);
+    explicit WaveformDisplay (SlicerModel& modelToUse);
 
     void paint (juce::Graphics& g) override;
     void resized() override;
@@ -145,7 +145,7 @@ private:
     enum class TrimHandle { none, start, end };
     TrimHandle findTrimHandleNear (int x) const;
 
-    SlicerAudioProcessor& processor;
+    SlicerModel& model;
 
     // One {min, max} pair per horizontal pixel column, built at the
     // current component width — avoids re-scanning the whole sample

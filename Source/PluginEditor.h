@@ -1,7 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "PluginProcessor.h"
+#include "SlicerModel.h"
+#include "SlicerEngine.h"
 #include "WaveformDisplay.h"
 #include "SubdivisionProbabilityGrid.h"
 #include "PlaybackStyleGrid.h"
@@ -132,6 +133,7 @@
     Loop Length and Transient Sensitivity (Pass 4) went back to plain
     juce::Slider number boxes (IncDecButtons style) instead of RotaryKnob --
     scoped to just these two; RotaryKnob itself is now unused and deleted. */
+class SlicerAudioProcessor;
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
                                     private juce::Timer
@@ -235,18 +237,22 @@ private:
     // called whenever either tab row changes.
     void updateActiveTabVisibility();
 
-    // Maps the active tab combination onto processor.setTriggerMode() --
+    // Maps the active tab combination onto engine.setTriggerMode() --
     // Sequence tab -> sequenced, Perform tab -> performance, Generate/Control
     // -> whichever of Slice Length/Clock Generate's own local timing row last
     // selected. Guards against calling setTriggerMode() with the mode it's
     // already in, since that method unconditionally resets clock/reset/
     // sequenced/performance init flags and MIDI-learn state even for a
-    // same-mode call (see SlicerAudioProcessor::setTriggerMode()'s own doc
+    // same-mode call (see SlicerEngine::setTriggerMode()'s own doc
     // comment) -- every tab-driven mode change must go through this, never
-    // call processor.setTriggerMode() directly from a tab callback.
+    // call engine.setTriggerMode() directly from a tab callback.
     void syncTriggerModeToActiveTab();
 
-    SlicerAudioProcessor& processor;
+    // The UI talks to the model/engine directly (Phase 3), not through the
+    // processor's forwarding shell -- bound in the constructor from the
+    // SlicerAudioProcessor that createEditor() hands us.
+    SlicerModel& model;
+    SlicerEngine& engine;
 
     // Layers 1-4 (load button through the sub-mode tab row) live inside
     // controlsContent, a plain non-scrolling child -- always fully visible,
@@ -288,12 +294,12 @@ private:
     SegmentedButtonRow subModeTabs; // "Generate" / "Sequence" / "Control" / "Perform"
 
     // Remembers which of Slice Length/Clock Generate's own Trigger Mode row
-    // last selected -- processor.getTriggerMode() gets forced to sequenced/
+    // last selected -- model.getTriggerMode() gets forced to sequenced/
     // performance while the Sequence/Perform tabs are active (see
     // syncTriggerModeToActiveTab()), so returning to the Generate tab needs
     // this to restore the right mode rather than always defaulting back to
     // Slice Length.
-    SlicerAudioProcessor::TriggerMode lastGenerateTriggerMode = SlicerAudioProcessor::TriggerMode::sliceLength;
+    SlicerModel::TriggerMode lastGenerateTriggerMode = SlicerModel::TriggerMode::sliceLength;
 
     // Layer 1 section (Pass 4) -- truly universal to both Beats and
     // Textures, laid out by layoutTopToolbar(), not gated on the Beats tab
@@ -577,34 +583,34 @@ private:
 
     // BankSource adapter -- PatternBankPanel (see its own class doc
     // comment) is generic over what a slot holds; this is the only place
-    // that generic interface gets tied back to SlicerAudioProcessor's
+    // that generic interface gets tied back to SlicerModel's
     // Sequencer pattern bank. Performance mode's own bank now uses
     // PerformanceKeyboardPanel::Source instead (see below) -- click-to-focus
     // + auto-save, not MIDI Learn, so it isn't a BankSource at all anymore.
     struct SequencerBankSource : public PatternBankPanel::BankSource
     {
-        explicit SequencerBankSource (SlicerAudioProcessor& p) : processor (p) {}
-        void armSave() override { processor.armMidiLearnForPatternSave(); }
-        void cancelLearn() override { processor.cancelMidiLearn(); }
-        bool isLearnArmed() const override { return processor.isMidiLearnArmed(); }
-        std::array<bool, 128> getPopulatedSlots() const override { return processor.getPopulatedPatternBankSlots(); }
-        int getActiveSlot() const override { return processor.getActivePatternBankSlot(); }
-        int getPendingSlot() const override { return processor.getPendingPatternSwitchSlot(); }
-        SlicerAudioProcessor& processor;
+        explicit SequencerBankSource (SlicerModel& m) : model (m) {}
+        void armSave() override { model.armMidiLearnForPatternSave(); }
+        void cancelLearn() override { model.cancelMidiLearn(); }
+        bool isLearnArmed() const override { return model.isMidiLearnArmed(); }
+        std::array<bool, 128> getPopulatedSlots() const override { return model.getPopulatedPatternBankSlots(); }
+        int getActiveSlot() const override { return model.getActivePatternBankSlot(); }
+        int getPendingSlot() const override { return model.getPendingPatternSwitchSlot(); }
+        SlicerModel& model;
     };
 
     // PerformanceKeyboardPanel::Source adapter -- the only place that
-    // generic interface gets tied back to SlicerAudioProcessor's
+    // generic interface gets tied back to SlicerModel's
     // Performance mode state bank. focusSlot() is the ENTIRE interaction
     // model now: clicking a key auto-saves whatever was being edited in the
     // previously-focused slot and loads (or creates) the clicked one.
     struct PerformanceKeyboardSource : public PerformanceKeyboardPanel::Source
     {
-        explicit PerformanceKeyboardSource (SlicerAudioProcessor& p) : processor (p) {}
-        void focusSlot (int noteNumber) override { processor.setFocusedPerformanceStateSlot (noteNumber); }
-        std::array<bool, 128> getPopulatedSlots() const override { return processor.getPopulatedPerformanceStateBankSlots(); }
-        int getFocusedSlot() const override { return processor.getFocusedPerformanceStateSlot(); }
-        SlicerAudioProcessor& processor;
+        explicit PerformanceKeyboardSource (SlicerModel& m) : model (m) {}
+        void focusSlot (int noteNumber) override { model.setFocusedPerformanceStateSlot (noteNumber); }
+        std::array<bool, 128> getPopulatedSlots() const override { return model.getPopulatedPerformanceStateBankSlots(); }
+        int getFocusedSlot() const override { return model.getFocusedPerformanceStateSlot(); }
+        SlicerModel& model;
     };
 
     // MIDI pattern bank (Sequenced mode only) -- populated/active slot

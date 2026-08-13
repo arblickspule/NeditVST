@@ -9,7 +9,7 @@
     "Save to..." button + arm-and-assign flow entirely. Clicking a key sets
     editing FOCUS to that slot (see Source::focusSlot()) and nothing else --
     it never plays audio by itself. Physical MIDI never changes focus (see
-    SlicerAudioProcessor::handlePerformanceStateNoteOn()); this panel is the
+    SlicerEngine::handlePerformanceStateNoteOn()); this panel is the
     only way focus moves.
 
     Reuses juce::MidiKeyboardComponent for the piano-key geometry/scrolling

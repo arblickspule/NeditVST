@@ -53,6 +53,45 @@ public:
     void setPerformanceTrimSnapMode (TrimSnapMode mode) { performanceTrimSnapMode.store (mode); }
     TrimSnapMode getPerformanceTrimSnapMode() const { return performanceTrimSnapMode.load(); }
 
+    //=== UI-facing accessors (Phase 3 -- moved from SlicerAudioProcessor) ===
+    // The UI now talks to the model directly instead of through the
+    // processor's forwarding shell; these are the accessors the processor's
+    // old inline forwarders provided for the sample and detection controls.
+    bool hasSample() const { return sampleLoaded; }
+    const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
+    double getSampleSampleRate() const { return sampleSampleRate; }
+    juce::String getLoadedFileName() const { return loadedFileName; }
+    int getNumSlices() const { return (int) slices.size(); }
+    const std::vector<Slice>& getSlices() const { return slices; }
+
+    // Live sensitivity control -- re-runs detection immediately (cheap,
+    // since TransientDetector caches the expensive envelope/derivative
+    // pass) and resets slice probabilities to 1.0, same as any other
+    // re-slice, since the slice boundaries themselves change.
+    void setSensitivityAndRedetect (float sensitivity)
+    {
+        currentSensitivity.store (juce::jlimit (0.0f, 1.0f, sensitivity));
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+    }
+
+    float getSensitivity() const { return currentSensitivity.load(); }
+
+    void setQuantizeTransientsEnabled (bool enabled)
+    {
+        quantizeTransientsEnabled.store (enabled);
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+    }
+
+    bool getQuantizeTransientsEnabled() const { return quantizeTransientsEnabled.load(); }
+
+    void setQuantizeGridIndex (int index)
+    {
+        quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, index));
+        redetectSlices (currentSensitivity.load(), computeMinimumHoldoffMs());
+    }
+
+    int getQuantizeGridIndex() const { return quantizeGridIndex.load(); }
+
     // Grid resolution -- same 20-value note-value palette as Clock
     // reference/Quantize Transients' Grid/Subdivide (getNoteValueName()/
     // getNoteValueBeats(), no separate table). Default index 13 (4n / one

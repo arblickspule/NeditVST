@@ -1,14 +1,14 @@
 #include "PlaybackStylePalette.h"
 
-PlaybackStylePalette::PlaybackStylePalette (SlicerAudioProcessor& processorToUse)
-    : processor (processorToUse)
+PlaybackStylePalette::PlaybackStylePalette (SlicerModel& modelToUse, SlicerEngine& engineToUse)
+    : model (modelToUse), engine (engineToUse)
 {
     setSize (preferredWidth, getPreferredHeight());
 }
 
 int PlaybackStylePalette::getPreferredHeight()
 {
-    return SlicerAudioProcessor::numPlaybackStyleOptions * rowHeight;
+    return SlicerModel::numPlaybackStyleOptions * rowHeight;
 }
 
 juce::Colour PlaybackStylePalette::getStyleColour (int styleIndex)
@@ -30,7 +30,7 @@ juce::Colour PlaybackStylePalette::getStyleColour (int styleIndex)
 
 int PlaybackStylePalette::getRowIndexAtY (int y) const
 {
-    return juce::jlimit (0, SlicerAudioProcessor::numPlaybackStyleOptions - 1, y / rowHeight);
+    return juce::jlimit (0, SlicerModel::numPlaybackStyleOptions - 1, y / rowHeight);
 }
 
 juce::Rectangle<int> PlaybackStylePalette::getCheckboxBounds (int row) const
@@ -41,9 +41,9 @@ juce::Rectangle<int> PlaybackStylePalette::getCheckboxBounds (int row) const
 
 void PlaybackStylePalette::paint (juce::Graphics& g)
 {
-    const int selected = processor.getSelectedDrawingStyle();
+    const int selected = model.getSelectedDrawingStyle();
 
-    for (int i = 0; i < SlicerAudioProcessor::numPlaybackStyleOptions; ++i)
+    for (int i = 0; i < SlicerModel::numPlaybackStyleOptions; ++i)
     {
         const juce::Rectangle<int> row (0, i * rowHeight, getWidth(), rowHeight);
         const auto checkboxBounds = getCheckboxBounds (i);
@@ -58,13 +58,13 @@ void PlaybackStylePalette::paint (juce::Graphics& g)
 
         g.setColour (juce::Colours::white);
         g.setFont (12.0f);
-        g.drawFittedText (SlicerAudioProcessor::getPlaybackStyleName (i), swatch.reduced (4, 0),
+        g.drawFittedText (SlicerModel::getPlaybackStyleName (i), swatch.reduced (4, 0),
                            juce::Justification::centred, 1);
 
         // "Randomize parameters" checkbox (see this class's own doc
         // comment) -- independent of the swatch's selected/unselected
         // border above.
-        const bool randomizeParams = processor.getRandomizeParametersForStyle (i);
+        const bool randomizeParams = engine.getRandomizeParametersForStyle (i);
 
         g.setColour (juce::Colours::black.withAlpha (0.6f));
         g.fillRect (checkboxBounds);
@@ -84,9 +84,9 @@ void PlaybackStylePalette::mouseDown (const juce::MouseEvent& event)
     const int row = getRowIndexAtY (event.y);
 
     if (getCheckboxBounds (row).contains (event.x, event.y))
-        processor.setRandomizeParametersForStyle (row, ! processor.getRandomizeParametersForStyle (row));
+        engine.setRandomizeParametersForStyle (row, ! engine.getRandomizeParametersForStyle (row));
     else
-        processor.setSelectedDrawingStyle (row);
+        model.setSelectedDrawingStyle (row);
 
     repaint();
 }
