@@ -66,6 +66,8 @@ target_sources(NeditVST
         Source/PluginProcessor.h
         Source/SlicerModel.cpp
         Source/SlicerModel.h
+        Source/SlicerEngine.cpp
+        Source/SlicerEngine.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
         Source/TransientDetector.cpp

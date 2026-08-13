@@ -15,6 +15,10 @@
             file="../Source/SlicerModel.cpp"/>
       <FILE id="jQr6Wm" name="SlicerModel.h" compile="0" resource="0"
             file="../Source/SlicerModel.h"/>
+      <FILE id="Vx7aQb" name="SlicerEngine.cpp" compile="1" resource="0"
+            file="../Source/SlicerEngine.cpp"/>
+      <FILE id="Yz8nRc" name="SlicerEngine.h" compile="0" resource="0"
+            file="../Source/SlicerEngine.h"/>
       <FILE id="CeHUNY" name="TransientDetector.cpp" compile="1" resource="0"
             file="../Source/TransientDetector.cpp"/>
       <FILE id="DCkotD" name="TransientDetector.h" compile="0" resource="0"
