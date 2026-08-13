@@ -101,11 +101,15 @@ TEST_CASE ("SlicerEngine::pickWeightedIndex")
     // Empty weight list -> no pick.
     CHECK (engine.pickWeightedIndex ({}) == -1);
 
-    // A single positive weight always wins.
-    const int singleAtOne = engine.pickWeightedIndex ({ 0.0f, 1.0f, 0.0f });
     const int onlyEntry = engine.pickWeightedIndex ({ 5.0f });
-    CHECK (singleAtOne == 1);
     CHECK (onlyEntry == 0);
+
+    // A single positive weight always wins -- and specifically a LEADING
+    // zero-weight entry is never selectable, even on the target == 0.0 draw
+    // that used to match its cumulative boundary. Only index 1 has weight,
+    // so the result is deterministic across every draw, regardless of RNG.
+    for (int i = 0; i < 1000; ++i)
+        CHECK (engine.pickWeightedIndex ({ 0.0f, 1.0f, 0.0f }) == 1);
 
     // All-zero weights fall back to uniform random, but stay in range.
     for (int i = 0; i < 100; ++i)
@@ -115,11 +119,12 @@ TEST_CASE ("SlicerEngine::pickWeightedIndex")
         CHECK (index < 3);
     }
 
-    // Mixed weights only ever draw from the nonzero entries.
-    for (int i = 0; i < 100; ++i)
+    // Mixed weights only ever draw from the nonzero entries -- zero-weight
+    // entries at the front, between, and at the back are all excluded.
+    for (int i = 0; i < 1000; ++i)
     {
-        const int index = engine.pickWeightedIndex ({ 1.0f, 0.0f, 0.0f, 2.0f });
-        const bool validPick = (index == 0 || index == 3);
+        const int index = engine.pickWeightedIndex ({ 0.0f, 3.0f, 0.0f, 0.0f, 2.0f, 0.0f });
+        const bool validPick = (index == 1 || index == 4);
         CHECK (validPick);
     }
 }

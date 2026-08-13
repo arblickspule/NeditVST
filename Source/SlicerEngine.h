@@ -76,16 +76,27 @@ public:
     // Weighted-random pick across a list of weights. Falls back to
     // uniform-random if every weight is 0 (rather than picking nothing
     // and stalling). Used for both slice selection and, in Clock mode,
-    // subdivision selection — same math, different weight lists.
+    // subdivision selection — same math, different weight lists. A
+    // zero-or-negative-weight entry is never selected (see the skip +
+    // strict-< test below -- guards the edge case where random.nextFloat()
+    // returns exactly 0.0 and would otherwise match a leading zero-weight
+    // entry's cumulative boundary).
     int pickWeightedIndex (const std::vector<float>& weights)
     {
         if (weights.empty())
             return -1;
 
         float totalWeight = 0.0f;
+        int lastPositiveIndex = -1;
 
-        for (auto w : weights)
-            totalWeight += juce::jmax (0.0f, w);
+        for (size_t i = 0; i < weights.size(); ++i)
+        {
+            if (weights[i] > 0.0f)
+            {
+                totalWeight += weights[i];
+                lastPositiveIndex = (int) i;
+            }
+        }
 
         if (totalWeight <= 0.0f)
             return random.nextInt ((int) weights.size());
@@ -95,13 +106,16 @@ public:
 
         for (size_t i = 0; i < weights.size(); ++i)
         {
-            cumulative += juce::jmax (0.0f, weights[i]);
+            if (weights[i] <= 0.0f)
+                continue; // never selectable, regardless of where target lands
 
-            if (target <= cumulative)
+            cumulative += weights[i];
+
+            if (target < cumulative)
                 return (int) i;
         }
 
-        return (int) weights.size() - 1; // float rounding fallback
+        return lastPositiveIndex; // float-rounding fallback -- always a positive-weight entry
     }
 
     int pickWeightedRandomSlice() { return pickWeightedIndex (model.sliceProbabilities); }

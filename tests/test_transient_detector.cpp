@@ -13,10 +13,10 @@ namespace
     // A short rectangular burst: the envelope follower's fast attack gives
     // its rising edge the largest derivative in the buffer, which is exactly
     // where detectSlices() should place the onset.
-    void addBurst (juce::AudioBuffer<float>& buffer, int at, int width = 5, float amplitude = 1.0f)
+    void addBurst (juce::AudioBuffer<float>& buffer, int at, int width = 5, float amplitude = 1.0f, int channel = 0)
     {
         for (int i = 0; i < width; ++i)
-            buffer.setSample (0, at + i, amplitude);
+            buffer.setSample (channel, at + i, amplitude);
     }
 
     TransientDetector analyzeBuffer (const juce::AudioBuffer<float>& buffer)
@@ -109,19 +109,36 @@ TEST_CASE ("TransientDetector holdoff suppresses onsets closer than the gap")
 
 TEST_CASE ("TransientDetector mono-sums multichannel buffers")
 {
-    juce::AudioBuffer<float> stereo (2, 44100);
-    stereo.clear();
-    addBurst (stereo, 10000);
-    addBurst (stereo, 10000);
+    // Burst on the SECOND channel only, first channel silent: detection has
+    // to sum across all channels (not just read channel 0) to find it. If it
+    // ignored channel 1 the derivative would stay flat and collapse to a
+    // single slice.
+    juce::AudioBuffer<float> rightOnly (2, 44100);
+    rightOnly.clear();
+    addBurst (rightOnly, 10000, 5, 1.0f, /* channel */ 1);
 
-    TransientDetector detector;
-    detector.analyze (stereo, 44100.0);
+    TransientDetector rightDetector;
+    rightDetector.analyze (rightOnly, 44100.0);
 
-    // Both channels carry the burst, so the mono sum matches the mono case
-    // exactly (each channel is scaled by 1/numChannels).
-    auto slices = detector.detectSlices (1.0f, 10.0f);
-    REQUIRE (slices.size() == 2);
-    CHECK (slices[1].startSample == 10000);
+    auto rightSlices = rightDetector.detectSlices (1.0f, 10.0f);
+    REQUIRE (rightSlices.size() == 2);
+    CHECK (rightSlices[0].startSample == 0);
+    CHECK (rightSlices[1].startSample == 10000);
+
+    // The same burst on BOTH channels: the mono sum is (|L| + |R|) / 2, so
+    // two equal bursts sum right back to a unit-amplitude envelope and
+    // detect the identical single boundary.
+    juce::AudioBuffer<float> both (2, 44100);
+    both.clear();
+    addBurst (both, 10000, 5, 1.0f, 0);
+    addBurst (both, 10000, 5, 1.0f, 1);
+
+    TransientDetector bothDetector;
+    bothDetector.analyze (both, 44100.0);
+
+    auto bothSlices = bothDetector.detectSlices (1.0f, 10.0f);
+    REQUIRE (bothSlices.size() == 2);
+    CHECK (bothSlices[1].startSample == 10000);
 }
 
 TEST_CASE ("TransientDetector findNearestPeak")
