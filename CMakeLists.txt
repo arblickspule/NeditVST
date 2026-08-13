@@ -157,6 +157,7 @@ target_sources(NeditVST_tests
     tests/test_transient_detector.cpp
     tests/test_granular_stretcher.cpp
     tests/test_model_slices.cpp
+    tests/test_engine_process.cpp
     Source/SlicerModel.cpp
     Source/SlicerModel.h
     Source/SlicerEngine.cpp
