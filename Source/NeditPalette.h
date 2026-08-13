@@ -6,9 +6,9 @@
 /** Shared colour palette for the redesigned UI (Pass 1: Generate page) --
     Tungsten (panel/section backgrounds, inactive states) and Salmon
     (selected/active states). Header-only so every custom-painted component
-    (SegmentedButtonRow, RotaryKnob, SectionPanel) and the LookAndFeel below
-    can use these without duplicating hex values, and so later passes
-    (Sequence/Control/Perform) can reuse the exact same palette. */
+    (SegmentedButtonRow, SectionPanel) and the LookAndFeel below can use
+    these without duplicating hex values, and so later passes (Sequence/
+    Control/Perform) can reuse the exact same palette. */
 namespace NeditPalette
 {
     inline const juce::Colour tungsten { 0xFF383838 };

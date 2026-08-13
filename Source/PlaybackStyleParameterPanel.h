@@ -88,10 +88,20 @@ public:
     void mouseUp (const juce::MouseEvent& event) override;
 
     // Fixed height sized for the worst-case style (most rows) -- see class
-    // doc comment. The editor reserves exactly this much space regardless
-    // of which style is currently selected, so choosing a different style
-    // never reflows anything laid out below this panel.
+    // doc comment. Some callers (Performance mode's own inline panel, which
+    // already lives inside an always-scrolling region) reserve exactly this
+    // much space regardless of which style is currently selected, so
+    // choosing a different style never reflows anything laid out below this
+    // panel there.
     static int getPreferredHeight();
+
+    // Preferred height for exactly styleIndex's own row count -- unlike
+    // getPreferredHeight() (worst-case across every style), this lets a
+    // caller that DOES want to reflow when the selection changes (the
+    // editor's global Playback Style section, via its own
+    // updateWindowSize()) size a reserved layout slot to just the currently
+    // selected style instead of always paying the worst-case cost.
+    static int getPreferredHeightForStyle (int styleIndex);
 
     // Hides (or reshows) the panel's own internal style-picker ComboBox
     // (Pass 1) -- for a caller that drives style selection with its own

@@ -81,6 +81,12 @@ int PlaybackStyleParameterPanel::getPreferredHeight()
     return styleSelectorHeight + rowGap + maxRows * (rowHeight + rowGap);
 }
 
+int PlaybackStyleParameterPanel::getPreferredHeightForStyle (int styleIndex)
+{
+    const int rowCount = (int) buildRowsForStyle (styleIndex).size();
+    return styleSelectorHeight + rowGap + rowCount * (rowHeight + rowGap);
+}
+
 juce::Rectangle<int> PlaybackStyleParameterPanel::getRowBounds (int rowIndex) const
 {
     const int y = styleSelectorHeight + rowGap + rowIndex * (rowHeight + rowGap);

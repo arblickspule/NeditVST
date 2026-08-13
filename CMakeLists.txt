@@ -90,8 +90,6 @@ target_sources(NeditVST
         Source/NeditPalette.h
         Source/SegmentedButtonRow.cpp
         Source/SegmentedButtonRow.h
-        Source/RotaryKnob.cpp
-        Source/RotaryKnob.h
         Source/SectionPanel.cpp
         Source/SectionPanel.h
 )
