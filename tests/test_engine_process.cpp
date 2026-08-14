@@ -154,7 +154,7 @@ TEST_CASE ("SlicerEngine: audition scales by sample-rate ratio")
     readyTheModel (model);
     SlicerEngine engine { model };
     engine.prepare (hostRate, blockSize);
-    model.setAuditionActive (true);
+    engine.setAuditionActive (true);
 
     juce::AudioBuffer<float> buffer (2, blockSize);
     buffer.clear();
@@ -176,8 +176,8 @@ TEST_CASE ("SlicerEngine: audition wraps at the trim end")
     readyTheModel (model);
     SlicerEngine engine { model };
     engine.prepare (hostRate, blockSize);
-    model.setAuditionActive (true);
-    model.auditionPosition = (double) (model.trimEndSample.load() - 1);
+    engine.setAuditionActive (true);
+    engine.auditionPosition = (double) (model.trimEndSample.load() - 1);
 
     juce::AudioBuffer<float> buffer (2, blockSize);
     buffer.clear();

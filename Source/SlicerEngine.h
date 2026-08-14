@@ -58,6 +58,42 @@ public:
     void setRandomizeParametersForStyle (int index, bool shouldRandomize);
     void randomizeSequence();
 
+    // Audition (Step 25) -- the UI's entry point, wrapping the model's
+    // plain setAuditionActive() store: re-arms this engine's read cursor at
+    // the current trim start on activation (the model itself no longer owns
+    // the cursor, so this is where "start fresh from the current trim, not
+    // wherever a stale position was left" lives now).
+    void setAuditionActive (bool active);
+
+    // Pattern Switch Timing / Quantize Recall -- the UI's entry points.
+    // These wrap the model's plain setters with the engine-owned side
+    // effect those setters used to do inline: changing the timing mode /
+    // recall setting abandons any deferred switch/recall still pending
+    // under the old one. (The pending notes themselves are engine state
+    // now -- see the private members below.)
+    void setPatternSwitchTiming (PatternSwitchTiming timing);
+    void setPerformanceQuantizeRecallEnabled (bool enabled);
+
+    // -1 if no slot has been recalled this session (pattern bank, Sequenced
+    // mode). Moved here with the recall state in the layering refactor.
+    int getActivePatternBankSlot() const { return activePatternBankSlot.load(); }
+
+    // -1 if no switch is currently pending; otherwise the MIDI note number
+    // (== pattern bank slot) a deferred switch is headed toward.
+    int getPendingPatternSwitchSlot() const { return pendingPatternSwitchNote.load(); }
+
+    // -1 if no recall is currently pending; otherwise the MIDI note number
+    // (== performance state bank slot) a deferred recall is headed toward.
+    int getPendingPerformanceRecallSlot() const { return pendingPerformanceRecallNote.load(); }
+
+    // The audition read cursor, mutated every sample in renderAudition().
+    // Moved here from the model in the layering refactor (it was model-
+    // owned only because the model's setAuditionActive() used to touch it;
+    // SlicerEngine::setAuditionActive() now re-arms it instead). Guarded by
+    // model.sampleLock exactly like the rest of renderAudition's state, and
+    // public because the existing processBlock() tests seed it directly.
+    double auditionPosition = 0.0;
+
 public:
     // Pure helper functions -- exposed for unit testing (Phase 3). The UI
     // and processBlock() both depend on this math, so it gets direct
@@ -193,7 +229,7 @@ private:
     // Sequenced mode's recall entry point (Pass 2) -- routes by
     // model.patternSwitchTiming: immediate applies handleSequencerPatternRecallNoteOn()
     // below right away (unchanged Pass 1 behaviour); setInterval/endOfPattern
-    // instead arm model.pendingPatternSwitchNote and let the per-sample boundary
+    // instead arm pendingPatternSwitchNote and let the per-sample boundary
     // check in processBlock()'s sequencedMode branch apply the switch once
     // the chosen boundary is crossed. Empty slot -> no-op either way, same
     // as Pass 1.
@@ -230,7 +266,7 @@ private:
     //     meaningful beat position to quantize against without it) --
     //     applies immediately via applyPerformanceStateRecall(), unchanged
     //     Pass 1 behaviour.
-    //   on AND transport playing -- arms model.pendingPerformanceRecallNote and
+    //   on AND transport playing -- arms pendingPerformanceRecallNote and
     //     lets the per-sample boundary check in processBlock()'s
     //     performanceMode branch apply it once the chosen grid point is
     //     reached. A newer note-on before that point just overwrites the
@@ -272,9 +308,10 @@ private:
 
     // Audition (Step 25) — the raw, generative-engine-bypassing loop
     // render. Called from processBlock() (model.sampleLock already held) in
-    // place of everything below it whenever model.auditionActive is set. Reads/
-    // writes model.auditionPosition; safe from the UI thread too only because
-    // setAuditionActive() takes the same lock.
+    // place of everything below it whenever model.auditionActive is set.
+    // Reads/writes auditionPosition (declared above in the public section);
+    // safe from the UI thread too only because setAuditionActive() (and its
+    // model wrapper) take the same lock.
     void renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate);
 
     juce::Random random;
@@ -453,6 +490,25 @@ private:
     bool performancePlaybackIsFocused = false;
     PerformanceStateSnapshot currentlyPlayingPerformanceSnapshot;
 
+    // Sequenced pattern-bank recall state (Pass 1/2) -- the currently
+    // recalled slot (-1 = none yet this session) and the deferred-switch
+    // target armed by handlePatternSwitchNoteOn() for Set Interval/End of
+    // Pattern, consumed by the per-sample boundary check in processBlock()'s
+    // sequencedMode branch. Moved here from the model in the layering
+    // refactor; atomics so the UI thread can abandon a pending switch (via
+    // SlicerEngine::setPatternSwitchTiming()) while the audio thread may be
+    // reading it in that same per-sample check.
+    std::atomic<int> activePatternBankSlot { -1 }; // -1 = no recall yet this session
+    std::atomic<int> pendingPatternSwitchNote { -1 };
+
+    // Performance mode's own pending-recall target (Pass 1) -- the
+    // counterpart to pendingPatternSwitchNote above, armed by
+    // handlePerformanceStateNoteOn() for Quantize Recall and consumed by the
+    // per-sample boundary check in processBlock()'s performanceMode branch.
+    // Same atomic/threading story: the UI thread can abandon it via
+    // SlicerEngine::setPerformanceQuantizeRecallEnabled().
+    std::atomic<int> pendingPerformanceRecallNote { -1 };
+
     // Set Interval pattern-switch scheduling (Pass 2, audio thread only) --
     // patternSwitchIntervalBoundaryArmed false means "next occurrence not
     // computed yet," forcing the per-sample check in processBlock() to snap
@@ -461,7 +517,7 @@ private:
     // same "arm now, resolve against the very next per-sample check" shape
     // clockModeInitialized/resetWindowInitialized use for their own first
     // boundary. Re-armed (set back to false) every time
-    // model.pendingPatternSwitchNote changes, including on replacement by a newer
+    // pendingPatternSwitchNote changes, including on replacement by a newer
     // note-on -- always tracks "next occurrence from NOW," not from
     // whenever the original note-on arrived.
     bool patternSwitchIntervalBoundaryArmed = false;
@@ -470,9 +526,9 @@ private:
     // Quantize Recall scheduling (Performance mode, audio thread only) --
     // exactly the same "arm now, resolve against the very next per-sample
     // check" shape as patternSwitchIntervalBoundaryArmed/Ppq just above,
-    // just for model.pendingPerformanceRecallNote instead of
-    // model.pendingPatternSwitchNote. Re-armed (set back to false) every time
-    // model.pendingPerformanceRecallNote changes, including on replacement by a
+    // just for pendingPerformanceRecallNote instead of
+    // pendingPatternSwitchNote. Re-armed (set back to false) every time
+    // pendingPerformanceRecallNote changes, including on replacement by a
     // newer note-on -- always tracks "next occurrence from NOW."
     bool performanceQuantizeRecallBoundaryArmed = false;
     double performanceQuantizeRecallBoundaryPpq = 0.0;

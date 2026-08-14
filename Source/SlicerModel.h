@@ -182,11 +182,10 @@ public:
     // (and instead of) everything below it.
     void setAuditionActive (bool active)
     {
-        const juce::ScopedLock sl (sampleLock); // guards auditionPosition, same lock processBlock uses
+        const juce::ScopedLock sl (sampleLock); // guards the UI playhead below; the engine's read cursor (SlicerEngine::auditionPosition) is re-armed by SlicerEngine::setAuditionActive(), which wraps this
 
         if (active)
         {
-            auditionPosition = (double) trimStartSample.load(); // always start fresh from the current trim, not wherever a stale position was left
             auditionPlaybackPositionForUI.store (trimStartSample.load()); // immediate UI feedback, rather than waiting for the first rendered block
         }
         else
@@ -825,9 +824,6 @@ public:
     // poll at a modest rate without hammering sampleLock 128 times a tick.
     std::array<bool, 128> getPopulatedPatternBankSlots() const;
 
-    // -1 if no slot has been recalled this session.
-    int getActivePatternBankSlot() const { return activePatternBankSlot.load(); }
-
     // Pattern Switch Timing (Pass 2) -- governs WHEN a recall note-on for a
     // populated slot actually takes effect.
     //   immediate    -- switches the instant the note-on arrives.
@@ -840,8 +836,10 @@ public:
 
     void setPatternSwitchTiming (PatternSwitchTiming timing)
     {
+        // Side-effect note: the engine's SlicerEngine::setPatternSwitchTiming()
+        // wrapper (the UI's real entry point) additionally abandons any
+        // deferred switch still pending under the old timing mode.
         patternSwitchTiming.store (timing);
-        pendingPatternSwitchNote.store (-1); // changing the timing mode abandons any switch already pending under the old one
     }
 
     PatternSwitchTiming getPatternSwitchTiming() const { return patternSwitchTiming.load(); }
@@ -854,10 +852,6 @@ public:
     }
 
     int getPatternSwitchIntervalIndex() const { return patternSwitchIntervalIndex.load(); }
-
-    // -1 if no switch is currently pending; otherwise the MIDI note number
-    // (== pattern bank slot) a deferred switch is headed toward.
-    int getPendingPatternSwitchSlot() const { return pendingPatternSwitchNote.load(); }
 
     //=== Performance mode state bank (click-to-focus + auto-save) ===
     // A 128-note-indexed, lazily-populated bank, each slot a self-
@@ -904,8 +898,11 @@ public:
     // (immediate, the original behaviour) by default.
     void setPerformanceQuantizeRecallEnabled (bool enabled)
     {
+        // Side-effect note: the engine's SlicerEngine::
+        // setPerformanceQuantizeRecallEnabled() wrapper (the UI's real entry
+        // point) additionally abandons any recall still pending under the old
+        // setting.
         performanceQuantizeRecallEnabled.store (enabled);
-        pendingPerformanceRecallNote.store (-1); // changing the setting abandons any switch already pending under the old one
     }
 
     bool getPerformanceQuantizeRecallEnabled() const { return performanceQuantizeRecallEnabled.load(); }
@@ -916,8 +913,6 @@ public:
     }
 
     int getPerformanceQuantizeRecallIntervalIndex() const { return performanceQuantizeRecallIntervalIndex.load(); }
-
-    int getPendingPerformanceRecallSlot() const { return pendingPerformanceRecallNote.load(); }
 
     // The "working state" -- style/params/loop/sync currently being edited
     // via the parameter panel/the Loop+Sync toggles, ahead of whatever the
@@ -1024,9 +1019,10 @@ public:
     std::atomic<int> tempoTrimEndSample { 0 };
 
     // Audition (written by the engine's renderAudition(), guarded by
-    // sampleLock).
+    // sampleLock). The engine owns the read cursor itself
+    // (SlicerEngine::auditionPosition); the model keeps the UI-facing
+    // active flag and lock-free playhead copy.
     std::atomic<bool> auditionActive { false };
-    double auditionPosition = 0.0;
     std::atomic<int> auditionPlaybackPositionForUI { -1 };
 
     std::atomic<bool> manualBpmOverrideEnabled { false };
@@ -1060,11 +1056,9 @@ public:
     std::array<SequencerPatternSnapshot, 128> patternBank;
     SequencerPatternSnapshot pendingSaveSnapshot;
     std::atomic<bool> midiLearnArmed { false };
-    std::atomic<int> activePatternBankSlot { -1 }; // -1 = no recall yet this session
 
     std::atomic<PatternSwitchTiming> patternSwitchTiming { PatternSwitchTiming::immediate };
     std::atomic<int> patternSwitchIntervalIndex { 19 };
-    std::atomic<int> pendingPatternSwitchNote { -1 };
 
     // Performance state bank + working state.
     std::array<PerformanceStateSnapshot, 128> performanceStateBank;
@@ -1073,7 +1067,6 @@ public:
 
     std::atomic<bool> performanceQuantizeRecallEnabled { false };
     std::atomic<int> performanceQuantizeRecallIntervalIndex { 13 };
-    std::atomic<int> pendingPerformanceRecallNote { -1 };
 
     // Parameter values (Slice Length/Clock globals).
     std::atomic<float> stretchGrainSizeMsValue { defaultStretchGrainSizeMs };

@@ -29,7 +29,7 @@ void SlicerAudioProcessorEditor::ComingSoonPanel::paint (juce::Graphics& g)
 SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     : AudioProcessorEditor (&p), model (p.model), engine (p.engine),
       playbackStyleGrid (model), playbackStyleParameterPanel (model), subdivisionGrid (model), playbackStylePalette (model, engine),
-      sequencerBankSource (model), patternBankPanel (sequencerBankSource),
+      sequencerBankSource (model, engine), patternBankPanel (sequencerBankSource),
       performanceStyleParameterPanel (model,
           [this] (int i) { return model.getPerformanceWorkingParameterValue (i); },
           [this] (int i, float v) { model.setPerformanceWorkingParameterValue (i, v); },
@@ -526,7 +526,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
         static_cast<int> (model.getPatternSwitchTiming()) + 1, juce::dontSendNotification);
     patternSwitchTimingSelector.onChange = [this]
     {
-        model.setPatternSwitchTiming (
+        engine.setPatternSwitchTiming (
             static_cast<SlicerModel::PatternSwitchTiming> (patternSwitchTimingSelector.getSelectedId() - 1));
         updateActiveTabVisibility(); // Set Interval's own note-value picker only shows for that one timing mode (Sequence tab)
     };
@@ -614,7 +614,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     performanceQuantizeRecallToggle.setToggleState (model.getPerformanceQuantizeRecallEnabled(), juce::dontSendNotification);
     performanceQuantizeRecallToggle.onClick = [this]
     {
-        model.setPerformanceQuantizeRecallEnabled (performanceQuantizeRecallToggle.getToggleState());
+        engine.setPerformanceQuantizeRecallEnabled (performanceQuantizeRecallToggle.getToggleState());
         updatePerformanceQuantizeRecallVisibility();
     };
 
@@ -1371,7 +1371,7 @@ void SlicerAudioProcessorEditor::buttonClicked (juce::Button* button)
     }
     else if (button == &auditionButton)
     {
-        model.setAuditionActive (! model.getAuditionActive());
+        engine.setAuditionActive (! model.getAuditionActive());
     }
     else if (button == &zoomToTrimsButton)
     {

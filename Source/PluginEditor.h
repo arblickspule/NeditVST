@@ -592,14 +592,15 @@ private:
     // + auto-save, not MIDI Learn, so it isn't a BankSource at all anymore.
     struct SequencerBankSource : public PatternBankPanel::BankSource
     {
-        explicit SequencerBankSource (SlicerModel& m) : model (m) {}
+        explicit SequencerBankSource (SlicerModel& m, SlicerEngine& e) : model (m), engine (e) {}
         void armSave() override { model.armMidiLearnForPatternSave(); }
         void cancelLearn() override { model.cancelMidiLearn(); }
         bool isLearnArmed() const override { return model.isMidiLearnArmed(); }
         std::array<bool, 128> getPopulatedSlots() const override { return model.getPopulatedPatternBankSlots(); }
-        int getActiveSlot() const override { return model.getActivePatternBankSlot(); }
-        int getPendingSlot() const override { return model.getPendingPatternSwitchSlot(); }
+        int getActiveSlot() const override { return engine.getActivePatternBankSlot(); }
+        int getPendingSlot() const override { return engine.getPendingPatternSwitchSlot(); }
         SlicerModel& model;
+        SlicerEngine& engine;
     };
 
     // PerformanceKeyboardPanel::Source adapter -- the only place that

@@ -196,7 +196,7 @@ void SlicerEngine::setTriggerMode (TriggerMode mode)
     if (mode != TriggerMode::sequenced)
     {
         model.midiLearnArmed.store (false);
-        model.pendingPatternSwitchNote.store (-1);
+        pendingPatternSwitchNote.store (-1);
     }
 
     // Performance mode's own editing focus (model.focusedPerformanceStateSlot)
@@ -211,6 +211,30 @@ void SlicerEngine::setPitchMode (PitchMode mode)
 {
     model.pitchMode.store (mode);
     granularNeedsReseed.store (true); // reseed the grain engine mid-pick, from wherever playback currently is
+}
+
+void SlicerEngine::setAuditionActive (bool active)
+{
+    model.setAuditionActive (active);
+
+    // Always start fresh from the current trim, not wherever a stale
+    // position was left -- the model's plain setAuditionActive() store can't
+    // do this anymore since the cursor moved here with the rest of the
+    // per-pick scheduling state.
+    if (active)
+        auditionPosition = (double) model.trimStartSample.load();
+}
+
+void SlicerEngine::setPatternSwitchTiming (PatternSwitchTiming timing)
+{
+    model.setPatternSwitchTiming (timing);
+    pendingPatternSwitchNote.store (-1); // changing the timing mode abandons any switch already pending under the old one
+}
+
+void SlicerEngine::setPerformanceQuantizeRecallEnabled (bool enabled)
+{
+    model.setPerformanceQuantizeRecallEnabled (enabled);
+    pendingPerformanceRecallNote.store (-1); // changing the setting abandons any recall already pending under the old one
 }
 
 bool SlicerEngine::getRandomizeParametersForStyle (int index) const
@@ -709,7 +733,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
 
                 // Pattern Switch Timing (Pass 2): Set Interval/End of
                 // Pattern both defer an already-armed recall
-                // (model.pendingPatternSwitchNote) to a boundary, checked every
+                // (pendingPatternSwitchNote) to a boundary, checked every
                 // SAMPLE right here alongside the step-boundary check just
                 // below it -- same per-sample discipline as everything else
                 // in this function, avoiding the Step 6 bug (a boundary
@@ -719,7 +743,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                 // below) -- "reaches the end of its OWN Pattern Length"
                 // means the currently playing pattern's own length, not the
                 // incoming one's.
-                const int pendingSwitchNote = model.pendingPatternSwitchNote.load();
+                const int pendingSwitchNote = pendingPatternSwitchNote.load();
 
                 if (pendingSwitchNote >= 0)
                 {
@@ -758,7 +782,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                     if (boundaryCrossed)
                     {
                         handleSequencerPatternRecallNoteOn (pendingSwitchNote);
-                        model.pendingPatternSwitchNote.store (-1);
+                        pendingPatternSwitchNote.store (-1);
                         patternSwitchIntervalBoundaryArmed = false;
 
                         // handleSequencerPatternRecallNoteOn() just forced
@@ -1216,7 +1240,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
             // boundary-crossing detection -- checked every SAMPLE, not once
             // per block, the same discipline that avoids the Step 6 bug (a
             // boundary computed once per block silently missing one that
-            // lands mid-block). A pending recall (model.pendingPerformanceRecallNote,
+            // lands mid-block). A pending recall (pendingPerformanceRecallNote,
             // armed by handlePerformanceStateNoteOn() while Quantize Recall
             // is on and the transport was playing at note-on time) is
             // applied the instant its chosen grid point is reached; a newer
@@ -1231,7 +1255,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
             // still while stopped, so an unplayed boundary would otherwise
             // never arrive) -- both preserve the "auditionable without
             // pressing play" behaviour Performance mode already has.
-            const int pendingRecallNote = model.pendingPerformanceRecallNote.load();
+            const int pendingRecallNote = pendingPerformanceRecallNote.load();
 
             if (pendingRecallNote >= 0)
             {
@@ -1258,7 +1282,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                 if (boundaryCrossed)
                 {
                     applyPerformanceStateRecall (pendingRecallNote);
-                    model.pendingPerformanceRecallNote.store (-1);
+                    pendingPerformanceRecallNote.store (-1);
                     performanceQuantizeRecallBoundaryArmed = false;
                 }
             }
@@ -2485,12 +2509,12 @@ void SlicerEngine::renderAudition (juce::AudioBuffer<float>& buffer, double host
 
     for (int i = 0; i < numSamples; ++i)
     {
-        if (model.auditionPosition < (double) trimStart || model.auditionPosition >= (double) (trimEnd - 1))
-            model.auditionPosition = (double) trimStart;
+        if (auditionPosition < (double) trimStart || auditionPosition >= (double) (trimEnd - 1))
+            auditionPosition = (double) trimStart;
 
-        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) model.auditionPosition);
+        const int idx0 = juce::jlimit (0, sourceLength - 1, (int) auditionPosition);
         const int idx1 = juce::jmin (idx0 + 1, sourceLength - 1);
-        const float frac = (float) (model.auditionPosition - (double) idx0);
+        const float frac = (float) (auditionPosition - (double) idx0);
 
         for (int outCh = 0; outCh < outChannels; ++outCh)
         {
@@ -2500,13 +2524,13 @@ void SlicerEngine::renderAudition (juce::AudioBuffer<float>& buffer, double host
             buffer.addSample (outCh, i, s0 + frac * (s1 - s0));
         }
 
-        model.auditionPosition += auditionRate;
+        auditionPosition += auditionRate;
     }
 
     // Audition playhead (Step 28) — once per block is plenty for a 30fps
     // UI poll (WaveformDisplay's timer), so this doesn't need to be a
     // per-sample store inside the loop above.
-    model.auditionPlaybackPositionForUI.store ((int) model.auditionPosition);
+    model.auditionPlaybackPositionForUI.store ((int) auditionPosition);
 }
 
 //==============================================================================
@@ -2564,9 +2588,10 @@ void SlicerEngine::handlePatternSwitchNoteOn (int noteNumber)
     // newer note-on arriving before that boundary just overwrites this same
     // atomic, so the newest one always wins -- there's never more than one
     // pending switch to track.
-    model.pendingPatternSwitchNote.store (noteNumber);
+    pendingPatternSwitchNote.store (noteNumber);
     patternSwitchIntervalBoundaryArmed = false; // force Set Interval's "next occurrence" to be recomputed fresh from wherever ppq is on the very next per-sample check
 }
+
 void SlicerEngine::handleSequencerPatternRecallNoteOn (int noteNumber)
 {
     const auto& snapshot = model.patternBank[(size_t) noteNumber];
@@ -2579,7 +2604,7 @@ void SlicerEngine::handleSequencerPatternRecallNoteOn (int noteNumber)
     model.sequencerCellExtendedLengthSteps = snapshot.extendedLengthSteps;
     model.stepResolutionIndex.store (snapshot.stepResolutionIndex);
     model.patternLengthBarsIndex.store (snapshot.patternLengthBarsIndex);
-    model.activePatternBankSlot.store (noteNumber);
+    activePatternBankSlot.store (noteNumber);
 
     // Force the step-boundary tracker to re-sync against the newly recalled
     // grid on the very next check, below in processBlock() -- same re-init
@@ -2617,7 +2642,7 @@ void SlicerEngine::handlePerformanceStateNoteOn (int noteNumber, bool hostTransp
         // boundary check in processBlock() recomputes "next occurrence"
         // fresh from wherever ppq is right now, not from whenever an
         // earlier pending note-on arrived.
-        model.pendingPerformanceRecallNote.store (noteNumber);
+        pendingPerformanceRecallNote.store (noteNumber);
         performanceQuantizeRecallBoundaryArmed = false;
         return;
     }
