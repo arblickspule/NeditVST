@@ -137,6 +137,9 @@ target_link_libraries(NeditVST
 # A separate console executable that compiles the non-UI engine/model sources
 # directly against JUCE -- no plugin client, no GUI -- so the DSP and model
 # logic can be exercised headlessly and runnable from ctest.
+# doctest v2.4.11 still declares cmake_minimum_required(VERSION 3.0), which
+# modern CMake (>= 3.28) refuses; treat it as 3.5 instead.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_Declare(
     doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
