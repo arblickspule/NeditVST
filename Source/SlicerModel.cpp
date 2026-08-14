@@ -459,6 +459,559 @@ void SlicerModel::setSequencerCellParameterGlobalValue (int index, float value)
 }
 
 //==============================================================================
+// State persistence (nextsteps 1.4) -- XML-encoded for the dev stage (see
+// docs/state-serialization-decision.md). The two methods are the only place
+// the encoding leaks: the processor's getStateInformation/setStateInformation
+// just forward the MemoryBlock. Additive + tolerant by design -- restoreState
+// ignores unknown tags, leaves absent sections unchanged, clamps every
+// restored index/value to its valid range, and size-guards the slice-indexed
+// tables (grid/overrides/slice probabilities) against a different sample.
+
+// Comma-joined list helpers shared by both methods below (anonymous-namespace
+// free functions, so they stay out of the class interface).
+namespace
+{
+    juce::String joinFloatList (const std::vector<float>& values)
+    {
+        juce::StringArray tokens;
+        for (float v : values)
+            tokens.add (juce::String (v, 6));
+        return tokens.joinIntoString (",");
+    }
+
+    juce::String joinIntList (const std::vector<int>& values)
+    {
+        juce::StringArray tokens;
+        for (int v : values)
+            tokens.add (juce::String (v));
+        return tokens.joinIntoString (",");
+    }
+
+    void parseFloatList (const juce::XmlElement* element, const char* attribute, std::vector<float>& out)
+    {
+        if (element == nullptr || ! element->hasAttribute (attribute))
+            return;
+
+        juce::StringArray tokens;
+        tokens.addTokens (element->getStringAttribute (attribute), ",", "");
+
+        out.clear();
+        out.reserve (tokens.size());
+        for (const auto& token : tokens)
+            out.push_back (token.getFloatValue());
+    }
+
+    void parseIntList (const juce::XmlElement* element, const char* attribute, std::vector<int>& out)
+    {
+        if (element == nullptr || ! element->hasAttribute (attribute))
+            return;
+
+        juce::StringArray tokens;
+        tokens.addTokens (element->getStringAttribute (attribute), ",", "");
+
+        out.clear();
+        out.reserve (tokens.size());
+        for (const auto& token : tokens)
+            out.push_back (token.getIntValue());
+    }
+}
+
+void SlicerModel::saveState (juce::MemoryBlock& destData)
+{
+    const juce::ScopedLock sl (sampleLock);
+
+    juce::XmlElement root ("neditvst");
+    root.setAttribute ("version", 1);
+
+    juce::XmlElement* globals = root.createNewChildElement ("globals");
+    globals->setAttribute ("loopLengthBars", loopLengthBars.load());
+    globals->setAttribute ("trimStartSample", trimStartSample.load());
+    globals->setAttribute ("trimEndSample", trimEndSample.load());
+    globals->setAttribute ("tempoTrimStartSample", tempoTrimStartSample.load());
+    globals->setAttribute ("tempoTrimEndSample", tempoTrimEndSample.load());
+    globals->setAttribute ("manualBpmOverrideEnabled", manualBpmOverrideEnabled.load());
+    globals->setAttribute ("manualBpmOverrideValue", (double) manualBpmOverrideValue.load());
+    globals->setAttribute ("sensitivity", currentSensitivity.load());
+    globals->setAttribute ("fadeInMs", fadeInMs.load());
+    globals->setAttribute ("fadeOutMs", fadeOutMs.load());
+    globals->setAttribute ("quantizeTransientsEnabled", quantizeTransientsEnabled.load());
+    globals->setAttribute ("quantizeGridIndex", quantizeGridIndex.load());
+    globals->setAttribute ("performanceTrimSnapMode", (int) performanceTrimSnapMode.load());
+    globals->setAttribute ("performanceTrimGridIndex", performanceTrimGridIndex.load());
+    globals->setAttribute ("triggerMode", (int) triggerMode.load());
+    globals->setAttribute ("clockReferenceIndex", clockReferenceIndex.load());
+    globals->setAttribute ("tapeStopScope", (int) tapeStopScope.load());
+    globals->setAttribute ("filterSweepScope", (int) filterSweepScope.load());
+    globals->setAttribute ("resetBarsIndex", resetBarsIndex.load());
+    globals->setAttribute ("pitchMode", (int) pitchMode.load());
+    globals->setAttribute ("grainSizeMs", grainSizeMs.load());
+    globals->setAttribute ("grainWindowShape", (int) grainWindowShape.load());
+    globals->setAttribute ("pitchShiftSemitones", pitchShiftSemitones.load());
+    globals->setAttribute ("beatQuantizeSliceLengthEnabled", beatQuantizeSliceLengthEnabled.load());
+    globals->setAttribute ("beatQuantizeSliceLengthEnabledRepitch", beatQuantizeSliceLengthEnabledRepitch.load());
+
+    // The style globals map 1:1 onto the cell-parameter indices 0..18 (the
+    // shared schema getSequencerCellParameter*() exposes), so both save and
+    // restore round-trip them through that same index space.
+    juce::XmlElement* styleGlobals = root.createNewChildElement ("styleGlobals");
+    styleGlobals->setAttribute ("stretchGrainSizeMs", stretchGrainSizeMsValue.load());
+    styleGlobals->setAttribute ("stretchSpeedMultiplier", stretchSpeedMultiplierValue.load());
+    styleGlobals->setAttribute ("filterSweepResonance", filterSweepResonanceValue.load());
+    styleGlobals->setAttribute ("filterSweepFilterType", filterSweepFilterTypeValue.load());
+    styleGlobals->setAttribute ("curveShape", curveShapeValue.load());
+    styleGlobals->setAttribute ("bitcrushRateReduction", bitcrushRateReductionGlobalValue.load());
+    styleGlobals->setAttribute ("bitcrushRateReductionMode", bitcrushRateReductionModeGlobalValue.load());
+    styleGlobals->setAttribute ("bitcrushBitDepth", bitcrushBitDepthGlobalValue.load());
+    styleGlobals->setAttribute ("bitcrushBitDepthMode", bitcrushBitDepthModeGlobalValue.load());
+    styleGlobals->setAttribute ("scratchRate", scratchRateGlobalValue.load());
+    styleGlobals->setAttribute ("scratchForwardCurve", scratchForwardCurveGlobalValue.load());
+    styleGlobals->setAttribute ("scratchBackwardCurve", scratchBackwardCurveGlobalValue.load());
+    styleGlobals->setAttribute ("flangerDelayTime", flangerDelayTimeGlobalValue.load());
+    styleGlobals->setAttribute ("flangerDelayTimeMode", flangerDelayTimeModeGlobalValue.load());
+    styleGlobals->setAttribute ("flangerMix", flangerMixGlobalValue.load());
+    styleGlobals->setAttribute ("flangerMixMode", flangerMixModeGlobalValue.load());
+    styleGlobals->setAttribute ("flangerFeedback", flangerFeedbackGlobalValue.load());
+    styleGlobals->setAttribute ("flangerFeedbackMode", flangerFeedbackModeGlobalValue.load());
+
+    juce::XmlElement* probabilities = root.createNewChildElement ("probabilities");
+    probabilities->setAttribute ("slice", joinFloatList (sliceProbabilities));
+    probabilities->setAttribute ("subdivision", joinFloatList (subdivisionProbabilities));
+    probabilities->setAttribute ("playbackStyle", joinFloatList (playbackStyleProbabilities));
+
+    juce::XmlElement* sequencer = root.createNewChildElement ("sequencer");
+    sequencer->setAttribute ("stepResolutionIndex", stepResolutionIndex.load());
+    sequencer->setAttribute ("patternLengthBarsIndex", patternLengthBarsIndex.load());
+    sequencer->setAttribute ("selectedDrawingStyle", selectedDrawingStyle.load());
+    sequencer->setAttribute ("grid", joinIntList (sequencerGrid));
+
+    for (const auto& cell : sequencerCellParameterOverrides)
+    {
+        juce::XmlElement* cellElement = sequencer->createNewChildElement ("override");
+        cellElement->setAttribute ("index", cell.first);
+
+        for (const auto& param : cell.second)
+        {
+            juce::XmlElement* paramElement = cellElement->createNewChildElement ("param");
+            paramElement->setAttribute ("name", param.first);
+            paramElement->setAttribute ("value", param.second);
+        }
+    }
+
+    for (const auto& cell : sequencerCellExtendedLengthSteps)
+    {
+        juce::XmlElement* cellElement = sequencer->createNewChildElement ("extendedLength");
+        cellElement->setAttribute ("index", cell.first);
+        cellElement->setAttribute ("steps", cell.second);
+    }
+
+    juce::XmlElement* recall = root.createNewChildElement ("recall");
+    recall->setAttribute ("patternSwitchTiming", (int) patternSwitchTiming.load());
+    recall->setAttribute ("patternSwitchIntervalIndex", patternSwitchIntervalIndex.load());
+    recall->setAttribute ("performanceQuantizeRecallEnabled", performanceQuantizeRecallEnabled.load());
+    recall->setAttribute ("performanceQuantizeRecallIntervalIndex", performanceQuantizeRecallIntervalIndex.load());
+
+    juce::XmlElement* patternBankElement = root.createNewChildElement ("patternBank");
+    for (int slot = 0; slot < 128; ++slot)
+    {
+        const auto& pattern = patternBank[(size_t) slot];
+        if (! pattern.populated)
+            continue;
+
+        juce::XmlElement* patternElement = patternBankElement->createNewChildElement ("pattern");
+        patternElement->setAttribute ("slot", slot);
+        patternElement->setAttribute ("populated", true);
+        patternElement->setAttribute ("rows", pattern.rows);
+        patternElement->setAttribute ("columns", pattern.columns);
+        patternElement->setAttribute ("stepResolutionIndex", pattern.stepResolutionIndex);
+        patternElement->setAttribute ("patternLengthBarsIndex", pattern.patternLengthBarsIndex);
+        patternElement->setAttribute ("grid", joinIntList (pattern.grid));
+
+        for (const auto& cell : pattern.parameterOverrides)
+        {
+            juce::XmlElement* cellElement = patternElement->createNewChildElement ("override");
+            cellElement->setAttribute ("index", cell.first);
+
+            for (const auto& param : cell.second)
+            {
+                juce::XmlElement* paramElement = cellElement->createNewChildElement ("param");
+                paramElement->setAttribute ("name", param.first);
+                paramElement->setAttribute ("value", param.second);
+            }
+        }
+
+        for (const auto& cell : pattern.extendedLengthSteps)
+        {
+            juce::XmlElement* cellElement = patternElement->createNewChildElement ("extendedLength");
+            cellElement->setAttribute ("index", cell.first);
+            cellElement->setAttribute ("steps", cell.second);
+        }
+    }
+
+    juce::XmlElement* performanceBankElement = root.createNewChildElement ("performanceBank");
+    for (int slot = 0; slot < 128; ++slot)
+    {
+        const auto& state = performanceStateBank[(size_t) slot];
+        if (! state.populated)
+            continue;
+
+        juce::XmlElement* stateElement = performanceBankElement->createNewChildElement ("state");
+        stateElement->setAttribute ("slot", slot);
+        stateElement->setAttribute ("populated", true);
+        stateElement->setAttribute ("trimStartSample", state.trimStartSample);
+        stateElement->setAttribute ("trimEndSample", state.trimEndSample);
+        stateElement->setAttribute ("style", state.style);
+        stateElement->setAttribute ("loop", state.loop);
+        stateElement->setAttribute ("sync", state.sync);
+        stateElement->setAttribute ("parameters", joinFloatList (std::vector<float> (state.parameterValues.begin(),
+                                                                                     state.parameterValues.end())));
+    }
+
+    juce::XmlElement* workingElement = root.createNewChildElement ("performanceWorkingState");
+    workingElement->setAttribute ("style", performanceWorkingState.style);
+    workingElement->setAttribute ("loop", performanceWorkingState.loop);
+    workingElement->setAttribute ("sync", performanceWorkingState.sync);
+    workingElement->setAttribute ("parameters", joinFloatList (std::vector<float> (performanceWorkingState.parameterValues.begin(),
+                                                                                   performanceWorkingState.parameterValues.end())));
+    workingElement->setAttribute ("focusedPerformanceStateSlot", focusedPerformanceStateSlot.load());
+
+    juce::MemoryOutputStream out (destData, false);
+    root.writeTo (out);
+}
+
+void SlicerModel::restoreState (const void* data, int sizeInBytes)
+{
+    if (data == nullptr || sizeInBytes <= 0)
+        return;
+
+    const juce::String xml ((const char*) data, (size_t) sizeInBytes);
+    auto root = juce::XmlDocument::parse (xml);
+
+    if (root == nullptr || ! root->hasTagName ("neditvst"))
+        return;
+
+    const juce::ScopedLock sl (sampleLock);
+
+    // The version attribute is deliberately ignored -- the reader below is
+    // additive (unknown tags skipped) and tolerant (absent sections leave
+    // current state untouched), so older saves degrade gracefully and
+    // newer saves lose only the sections this build doesn't know.
+    const int version = root->getIntAttribute ("version", 1); (void) version;
+
+    // Clamps a restored cell-parameter value (continuous values to the
+    // parameter's own min/max, discrete values to a rounded, in-range
+    // option index) -- shared by the style globals, the performance bank
+    // slots, and the working state, all of which store the same 0..18
+    // index space. Indices 5 (Subdivide) and 19/20 (Volume/Volume Mode)
+    // have no global dial but still valid ranges in the banks.
+    auto clampCellParameter = [this] (int index, float value) -> float
+    {
+        if (index < 0 || index >= numSequencerCellParameters)
+            return value;
+
+        if (isSequencerCellParameterDiscrete (index))
+        {
+            const int numOptions = getSequencerCellParameterNumOptions (index);
+            return (float) juce::jlimit (0, juce::jmax (0, numOptions - 1), juce::roundToInt (value));
+        }
+
+        return juce::jlimit (getSequencerCellParameterMin (index), getSequencerCellParameterMax (index), value);
+    };
+
+    if (auto* globals = root->getChildByName ("globals"))
+    {
+        if (globals->hasAttribute ("loopLengthBars"))
+            loopLengthBars.store (globals->getIntAttribute ("loopLengthBars", loopLengthBars.load()));
+        if (globals->hasAttribute ("trimStartSample"))
+            trimStartSample.store (globals->getIntAttribute ("trimStartSample", trimStartSample.load()));
+        if (globals->hasAttribute ("trimEndSample"))
+            trimEndSample.store (globals->getIntAttribute ("trimEndSample", trimEndSample.load()));
+        if (globals->hasAttribute ("tempoTrimStartSample"))
+            tempoTrimStartSample.store (globals->getIntAttribute ("tempoTrimStartSample", tempoTrimStartSample.load()));
+        if (globals->hasAttribute ("tempoTrimEndSample"))
+            tempoTrimEndSample.store (globals->getIntAttribute ("tempoTrimEndSample", tempoTrimEndSample.load()));
+        if (globals->hasAttribute ("manualBpmOverrideEnabled"))
+            manualBpmOverrideEnabled.store (globals->getBoolAttribute ("manualBpmOverrideEnabled", manualBpmOverrideEnabled.load()));
+        if (globals->hasAttribute ("manualBpmOverrideValue"))
+            manualBpmOverrideValue.store (globals->getDoubleAttribute ("manualBpmOverrideValue", manualBpmOverrideValue.load()));
+        if (globals->hasAttribute ("sensitivity"))
+            currentSensitivity.store (globals->getDoubleAttribute ("sensitivity", currentSensitivity.load()));
+        if (globals->hasAttribute ("fadeInMs"))
+            fadeInMs.store (globals->getDoubleAttribute ("fadeInMs", fadeInMs.load()));
+        if (globals->hasAttribute ("fadeOutMs"))
+            fadeOutMs.store (globals->getDoubleAttribute ("fadeOutMs", fadeOutMs.load()));
+        if (globals->hasAttribute ("quantizeTransientsEnabled"))
+            quantizeTransientsEnabled.store (globals->getBoolAttribute ("quantizeTransientsEnabled", quantizeTransientsEnabled.load()));
+        if (globals->hasAttribute ("quantizeGridIndex"))
+            quantizeGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, globals->getIntAttribute ("quantizeGridIndex", quantizeGridIndex.load())));
+        if (globals->hasAttribute ("performanceTrimSnapMode"))
+            performanceTrimSnapMode.store ((TrimSnapMode) juce::jlimit ((int) TrimSnapMode::transients, (int) TrimSnapMode::grid,
+                                                                         globals->getIntAttribute ("performanceTrimSnapMode", (int) performanceTrimSnapMode.load())));
+        if (globals->hasAttribute ("performanceTrimGridIndex"))
+            performanceTrimGridIndex.store (juce::jlimit (0, numNoteValueOptions - 1, globals->getIntAttribute ("performanceTrimGridIndex", performanceTrimGridIndex.load())));
+        if (globals->hasAttribute ("triggerMode"))
+            triggerMode.store ((TriggerMode) juce::jlimit ((int) TriggerMode::sliceLength, (int) TriggerMode::performance,
+                                                            globals->getIntAttribute ("triggerMode", (int) triggerMode.load())));
+        if (globals->hasAttribute ("clockReferenceIndex"))
+            clockReferenceIndex.store (juce::jlimit (0, numNoteValueOptions - 1, globals->getIntAttribute ("clockReferenceIndex", clockReferenceIndex.load())));
+        if (globals->hasAttribute ("tapeStopScope"))
+            tapeStopScope.store ((TapeStopScope) juce::jlimit (0, numTapeStopScopeOptions - 1,
+                                                                globals->getIntAttribute ("tapeStopScope", (int) tapeStopScope.load())));
+        if (globals->hasAttribute ("filterSweepScope"))
+            filterSweepScope.store ((FilterSweepScope) juce::jlimit (0, numFilterSweepScopeOptions - 1,
+                                                                      globals->getIntAttribute ("filterSweepScope", (int) filterSweepScope.load())));
+        if (globals->hasAttribute ("resetBarsIndex"))
+            resetBarsIndex.store (juce::jlimit (0, numResetBarsOptions - 1, globals->getIntAttribute ("resetBarsIndex", resetBarsIndex.load())));
+        if (globals->hasAttribute ("pitchMode"))
+            pitchMode.store ((PitchMode) juce::jlimit ((int) PitchMode::repitch, (int) PitchMode::timeStretch,
+                                                        globals->getIntAttribute ("pitchMode", (int) pitchMode.load())));
+        if (globals->hasAttribute ("grainSizeMs"))
+            grainSizeMs.store (globals->getDoubleAttribute ("grainSizeMs", grainSizeMs.load()));
+        if (globals->hasAttribute ("grainWindowShape"))
+            grainWindowShape.store ((GrainWindowShape) juce::jlimit ((int) GrainWindowShape::hann, (int) GrainWindowShape::triangular,
+                                                                      globals->getIntAttribute ("grainWindowShape", (int) grainWindowShape.load())));
+        if (globals->hasAttribute ("pitchShiftSemitones"))
+            pitchShiftSemitones.store (globals->getDoubleAttribute ("pitchShiftSemitones", pitchShiftSemitones.load()));
+        if (globals->hasAttribute ("beatQuantizeSliceLengthEnabled"))
+            beatQuantizeSliceLengthEnabled.store (globals->getBoolAttribute ("beatQuantizeSliceLengthEnabled", beatQuantizeSliceLengthEnabled.load()));
+        if (globals->hasAttribute ("beatQuantizeSliceLengthEnabledRepitch"))
+            beatQuantizeSliceLengthEnabledRepitch.store (globals->getBoolAttribute ("beatQuantizeSliceLengthEnabledRepitch", beatQuantizeSliceLengthEnabledRepitch.load()));
+    }
+
+    if (auto* styleGlobals = root->getChildByName ("styleGlobals"))
+    {
+        struct StyleGlobalField { const char* name; int paramIndex; };
+        const StyleGlobalField fields[] = {
+            { "filterSweepResonance", 0 }, { "filterSweepFilterType", 1 }, { "curveShape", 2 },
+            { "stretchGrainSizeMs", 3 }, { "stretchSpeedMultiplier", 4 },
+            { "bitcrushRateReduction", 6 }, { "bitcrushRateReductionMode", 7 },
+            { "bitcrushBitDepth", 8 }, { "bitcrushBitDepthMode", 9 },
+            { "scratchRate", 10 }, { "scratchForwardCurve", 11 }, { "scratchBackwardCurve", 12 },
+            { "flangerDelayTime", 13 }, { "flangerDelayTimeMode", 14 },
+            { "flangerMix", 15 }, { "flangerMixMode", 16 },
+            { "flangerFeedback", 17 }, { "flangerFeedbackMode", 18 }
+        };
+
+        for (const auto& field : fields)
+        {
+            if (! styleGlobals->hasAttribute (field.name))
+                continue;
+
+            const float value = clampCellParameter (field.paramIndex, styleGlobals->getDoubleAttribute (field.name, 0.0));
+            switch (field.paramIndex)
+            {
+                case 0: filterSweepResonanceValue.store (value); break;
+                case 1: filterSweepFilterTypeValue.store ((int) value); break;
+                case 2: curveShapeValue.store ((int) value); break;
+                case 3: stretchGrainSizeMsValue.store (value); break;
+                case 4: stretchSpeedMultiplierValue.store (value); break;
+                case 6: bitcrushRateReductionGlobalValue.store (value); break;
+                case 7: bitcrushRateReductionModeGlobalValue.store ((int) value); break;
+                case 8: bitcrushBitDepthGlobalValue.store (value); break;
+                case 9: bitcrushBitDepthModeGlobalValue.store ((int) value); break;
+                case 10: scratchRateGlobalValue.store ((int) value); break;
+                case 11: scratchForwardCurveGlobalValue.store ((int) value); break;
+                case 12: scratchBackwardCurveGlobalValue.store ((int) value); break;
+                case 13: flangerDelayTimeGlobalValue.store (value); break;
+                case 14: flangerDelayTimeModeGlobalValue.store ((int) value); break;
+                case 15: flangerMixGlobalValue.store (value); break;
+                case 16: flangerMixModeGlobalValue.store ((int) value); break;
+                case 17: flangerFeedbackGlobalValue.store (value); break;
+                case 18: flangerFeedbackModeGlobalValue.store ((int) value); break;
+                default: break;
+            }
+        }
+    }
+
+    if (auto* probabilities = root->getChildByName ("probabilities"))
+    {
+        std::vector<float> restored;
+
+        // Slice probabilities are slice-indexed -- only meaningful when the
+        // stored length matches the current slice count, otherwise the table
+        // would index a different sample's slices.
+        parseFloatList (probabilities, "slice", restored);
+        if (! restored.empty() && (int) restored.size() == (int) slices.size())
+            sliceProbabilities = restored;
+
+        parseFloatList (probabilities, "subdivision", restored);
+        if ((int) restored.size() == numNoteValueOptions)
+            subdivisionProbabilities = restored;
+
+        parseFloatList (probabilities, "playbackStyle", restored);
+        if ((int) restored.size() == numPlaybackStyleOptions)
+            playbackStyleProbabilities = restored;
+    }
+
+    // Sequencer: indices first (they define the grid's dimensions -- but
+    // stored directly, NOT via the clamps-reset-grid setters, so the grid
+    // being restored below isn't wiped), then the grid/overrides, each
+    // size-guarded against the resulting dimensions.
+    if (auto* sequencer = root->getChildByName ("sequencer"))
+    {
+        if (sequencer->hasAttribute ("stepResolutionIndex"))
+            stepResolutionIndex.store (juce::jlimit (0, numNoteValueOptions - 1, sequencer->getIntAttribute ("stepResolutionIndex", stepResolutionIndex.load())));
+        if (sequencer->hasAttribute ("patternLengthBarsIndex"))
+            patternLengthBarsIndex.store (juce::jlimit (0, numPatternLengthBarsOptions - 1, sequencer->getIntAttribute ("patternLengthBarsIndex", patternLengthBarsIndex.load())));
+        if (sequencer->hasAttribute ("selectedDrawingStyle"))
+            selectedDrawingStyle.store (juce::jlimit (0, numPlaybackStyleOptions - 1, sequencer->getIntAttribute ("selectedDrawingStyle", selectedDrawingStyle.load())));
+
+        const size_t expectedGridSize = (size_t) juce::jmax (0, getSequencerNumRows() * getSequencerNumSteps());
+
+        std::vector<int> restoredGrid;
+        parseIntList (sequencer, "grid", restoredGrid);
+        const bool gridMatches = (restoredGrid.size() == expectedGridSize);
+        if (gridMatches)
+            sequencerGrid = restoredGrid;
+
+        // The overrides/extended lengths index the STORED grid; when that
+        // grid was rejected (size mismatch against the current slices) they
+        // would describe a different layout, so they are skipped as a set.
+        sequencerCellParameterOverrides.clear();
+        sequencerCellExtendedLengthSteps.clear();
+
+        if (gridMatches)
+        {
+            for (auto* cellElement : sequencer->getChildWithTagNameIterator ("override"))
+            {
+                const int flatIndex = cellElement->getIntAttribute ("index", -1);
+                if (flatIndex < 0 || (size_t) flatIndex >= restoredGrid.size())
+                    continue;
+
+                for (auto* paramElement : cellElement->getChildWithTagNameIterator ("param"))
+                {
+                    const juce::String name = paramElement->getStringAttribute ("name");
+                    const float value = paramElement->getDoubleAttribute ("value", 0.0);
+                    if (name.isNotEmpty())
+                        sequencerCellParameterOverrides[flatIndex][name] = value;
+                }
+            }
+
+            for (auto* cellElement : sequencer->getChildWithTagNameIterator ("extendedLength"))
+            {
+                const int flatIndex = cellElement->getIntAttribute ("index", -1);
+                if (flatIndex < 0 || (size_t) flatIndex >= restoredGrid.size())
+                    continue;
+
+                sequencerCellExtendedLengthSteps[flatIndex] = cellElement->getIntAttribute ("steps", 0);
+            }
+        }
+    }
+
+    if (auto* recall = root->getChildByName ("recall"))
+    {
+        if (recall->hasAttribute ("patternSwitchTiming"))
+            patternSwitchTiming.store ((PatternSwitchTiming) juce::jlimit ((int) PatternSwitchTiming::immediate, (int) PatternSwitchTiming::endOfPattern,
+                                                                            recall->getIntAttribute ("patternSwitchTiming", (int) patternSwitchTiming.load())));
+        if (recall->hasAttribute ("patternSwitchIntervalIndex"))
+            patternSwitchIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, recall->getIntAttribute ("patternSwitchIntervalIndex", patternSwitchIntervalIndex.load())));
+        if (recall->hasAttribute ("performanceQuantizeRecallEnabled"))
+            performanceQuantizeRecallEnabled.store (recall->getBoolAttribute ("performanceQuantizeRecallEnabled", performanceQuantizeRecallEnabled.load()));
+        if (recall->hasAttribute ("performanceQuantizeRecallIntervalIndex"))
+            performanceQuantizeRecallIntervalIndex.store (juce::jlimit (0, numNoteValueOptions - 1, recall->getIntAttribute ("performanceQuantizeRecallIntervalIndex", performanceQuantizeRecallIntervalIndex.load())));
+    }
+
+    if (auto* patternBankElement = root->getChildByName ("patternBank"))
+    {
+        for (auto* patternElement : patternBankElement->getChildWithTagNameIterator ("pattern"))
+        {
+            const int slot = patternElement->getIntAttribute ("slot", -1);
+            if (slot < 0 || slot >= 128)
+                continue;
+
+            const int rows = juce::jlimit (0, numSequencerRows, patternElement->getIntAttribute ("rows", 0));
+            const int columns = juce::jlimit (0, maxSequencerColumns, patternElement->getIntAttribute ("columns", 0));
+
+            std::vector<int> grid;
+            parseIntList (patternElement, "grid", grid);
+
+            // Self-consistency guard: the engine indexes a recalled pattern
+            // by its own rows*columns; a mismatched grid would go out of
+            // bounds, so a corrupt/mismatched slot is skipped entirely.
+            if ((int) grid.size() != rows * columns)
+                continue;
+
+            SequencerPatternSnapshot& restored = patternBank[(size_t) slot];
+            restored.populated = true;
+            restored.rows = rows;
+            restored.columns = columns;
+            restored.stepResolutionIndex = juce::jlimit (0, numNoteValueOptions - 1, patternElement->getIntAttribute ("stepResolutionIndex", 0));
+            restored.patternLengthBarsIndex = juce::jlimit (0, numPatternLengthBarsOptions - 1, patternElement->getIntAttribute ("patternLengthBarsIndex", 0));
+            restored.grid = grid;
+            restored.parameterOverrides.clear();
+            restored.extendedLengthSteps.clear();
+
+            for (auto* cellElement : patternElement->getChildWithTagNameIterator ("override"))
+            {
+                const int flatIndex = cellElement->getIntAttribute ("index", -1);
+                if (flatIndex < 0 || (size_t) flatIndex >= restored.grid.size())
+                    continue;
+
+                for (auto* paramElement : cellElement->getChildWithTagNameIterator ("param"))
+                {
+                    const juce::String name = paramElement->getStringAttribute ("name");
+                    const float value = paramElement->getDoubleAttribute ("value", 0.0);
+                    if (name.isNotEmpty())
+                        restored.parameterOverrides[flatIndex][name] = value;
+                }
+            }
+
+            for (auto* cellElement : patternElement->getChildWithTagNameIterator ("extendedLength"))
+            {
+                const int flatIndex = cellElement->getIntAttribute ("index", -1);
+                if (flatIndex < 0 || (size_t) flatIndex >= restored.grid.size())
+                    continue;
+
+                restored.extendedLengthSteps[flatIndex] = cellElement->getIntAttribute ("steps", 0);
+            }
+        }
+    }
+
+    if (auto* performanceBankElement = root->getChildByName ("performanceBank"))
+    {
+        for (auto* stateElement : performanceBankElement->getChildWithTagNameIterator ("state"))
+        {
+            const int slot = stateElement->getIntAttribute ("slot", -1);
+            if (slot < 0 || slot >= 128)
+                continue;
+
+            PerformanceStateSnapshot& restored = performanceStateBank[(size_t) slot];
+            restored.populated = true;
+            restored.trimStartSample = stateElement->getIntAttribute ("trimStartSample", 0);
+            restored.trimEndSample = stateElement->getIntAttribute ("trimEndSample", 0);
+            restored.style = juce::jlimit (0, numPlaybackStyleOptions - 1, stateElement->getIntAttribute ("style", 0));
+            restored.loop = stateElement->getBoolAttribute ("loop", false);
+            restored.sync = stateElement->getBoolAttribute ("sync", true);
+
+            std::vector<float> restoredParams;
+            parseFloatList (stateElement, "parameters", restoredParams);
+            for (int i = 0; i < numSequencerCellParameters; ++i)
+                restored.parameterValues[(size_t) i] = (i < (int) restoredParams.size())
+                    ? clampCellParameter (i, restoredParams[(size_t) i])
+                    : getSequencerCellParameterGlobalValue (i);
+        }
+    }
+
+    if (auto* workingElement = root->getChildByName ("performanceWorkingState"))
+    {
+        performanceWorkingState.style = juce::jlimit (0, numPlaybackStyleOptions - 1, workingElement->getIntAttribute ("style", performanceWorkingState.style));
+        performanceWorkingState.loop = workingElement->getBoolAttribute ("loop", performanceWorkingState.loop);
+        performanceWorkingState.sync = workingElement->getBoolAttribute ("sync", performanceWorkingState.sync);
+
+        std::vector<float> restoredParams;
+        parseFloatList (workingElement, "parameters", restoredParams);
+        for (int i = 0; i < numSequencerCellParameters; ++i)
+            performanceWorkingState.parameterValues[(size_t) i] = (i < (int) restoredParams.size())
+                ? clampCellParameter (i, restoredParams[(size_t) i])
+                : getSequencerCellParameterGlobalValue (i);
+
+        if (workingElement->hasAttribute ("focusedPerformanceStateSlot"))
+            focusedPerformanceStateSlot.store (juce::jlimit (-1, 127, workingElement->getIntAttribute ("focusedPerformanceStateSlot", -1)));
+    }
+
+    onPickStateInvalidated(); // restored structure/parameters -- the engine must force a fresh pick
+}
+
+//==============================================================================
 // Audio-thread data path (engine support).
 
 void SlicerModel::loadSample (const juce::File& file)

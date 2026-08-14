@@ -59,6 +59,13 @@ bank, performance bank, globals) and the full schema tables
 The TODO's premise ("once there are parameters worth persisting") is stale —
 see 3.14.
 
+**DONE** — decision doc `docs/state-serialization-decision.md` (XML for the
+dev stage; scope = all settings + banks, no audio); `SlicerModel::saveState`/
+`restoreState` implemented; processor delegates to the model. Follow-up (NOT
+in scope of the batch): the editor is push-based with no ChangeListener, so
+a host-initiated `setStateInformation` (preset change while the editor is
+open) won't refresh any controls — needs a "refresh all controls" hook.
+
 ### 1.5 Processor no-op [DEAD CODE]
 
 `PluginProcessor.cpp:9-13` — `model.cancelMidiLearn()` in the constructor is a

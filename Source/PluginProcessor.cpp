@@ -45,16 +45,20 @@ juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
     return new SlicerAudioProcessorEditor (*this);
 }
 
-void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
+void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // Persistence was never implemented -- the model owns ~30 stored
-    // parameters (probability tables, pattern bank, performance bank,
-    // globals) plus the schema tables to serialize them, but nothing writes
-    // them to a MemoryBlock yet.
+    // Full instrument state (globals, probabilities, sequencer grid +
+    // overrides, pattern bank, performance bank + working state) -- XML-
+    // encoded by the model behind its saveState API (nextsteps 1.4, see
+    // docs/state-serialization-decision.md). The audio sample itself is
+    // intentionally NOT persisted; the restored preset is meaningful once
+    // the matching sample is re-loaded.
+    model.saveState (destData);
 }
 
-void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
+void SlicerAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
+    model.restoreState (data, sizeInBytes);
 }
 
 //==============================================================================

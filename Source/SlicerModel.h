@@ -927,6 +927,23 @@ public:
     bool getPerformanceWorkingSync() const;
     void setPerformanceWorkingSync (bool sync);
 
+    //=== State persistence (nextsteps 1.4) ===
+    // Full instrument-state serialization -- everything except the audio
+    // sample itself (transient by design, see
+    // docs/state-serialization-decision.md): global parameters, probability
+    // tables, sequencer grid + per-cell overrides, the 128-slot pattern
+    // bank, the 128-slot performance state bank, and the performance
+    // working state. XML-encoded for the dev stage, behind these methods so
+    // the encoding is a swappable detail (the processor's
+    // getStateInformation/setStateInformation are the only other callers).
+    // Message-thread entry points; both take sampleLock. restoreState()
+    // ignores unknown tags, leaves absent sections unchanged, clamps every
+    // index to its valid range, size-guards the slice-indexed tables (only
+    // meaningful once the matching sample is loaded), and ends with
+    // onPickStateInvalidated() under the lock.
+    void saveState (juce::MemoryBlock& destData);
+    void restoreState (const void* data, int sizeInBytes);
+
     //=== Audio-thread data path (engine support) ===
     // The engine (processBlock() and the MIDI/audition helpers) reads these
     // directly. They live here because they're pure
