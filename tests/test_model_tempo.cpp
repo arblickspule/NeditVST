@@ -130,3 +130,57 @@ TEST_CASE ("SlicerModel quantize grid index clamps to the note-value palette")
     model.setQuantizeGridIndex (500); // clamps to the last palette entry
     CHECK (model.getQuantizeGridIndex() == SlicerModel::numNoteValueOptions - 1);
 }
+
+TEST_CASE ("SlicerModel getSequencerNaturalLengthSteps from slice spans")
+{
+    SlicerModel model;
+
+    // No slices -- any row (including out-of-range) falls back to 1.
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 1);
+    CHECK (model.getSequencerNaturalLengthSteps (-1) == 1);
+
+    // 120 BPM sample (1 bar over 2s) with three known slice lengths:
+    // 1 beat, 0.5 beats, and 2 beats (beat = 0.5s = 22050 samples @ 44100).
+    model.sampleBuffer.setSize (1, 44100 * 2);
+    model.sampleBuffer.clear();
+    model.sampleSampleRate = 44100.0;
+    model.sampleLoaded = true;
+    model.tempoTrimStartSample.store (0);
+    model.tempoTrimEndSample.store (44100 * 2);
+    model.loopLengthBars.store (1);
+    model.slices = { { 0, 22050 }, { 22050, 33075 }, { 33075, 77175 } };
+
+    // Default step resolution is 16n (0.25 beats).
+    model.stepResolutionIndex.store (7);
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 4);
+    CHECK (model.getSequencerNaturalLengthSteps (1) == 2);
+    CHECK (model.getSequencerNaturalLengthSteps (2) == 8);
+
+    // Out-of-range row clamps to 1 even with slices present.
+    CHECK (model.getSequencerNaturalLengthSteps (3) == 1);
+
+    // 8n (0.5 beats) halves each natural length.
+    model.stepResolutionIndex.store (10);
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 2);
+    CHECK (model.getSequencerNaturalLengthSteps (2) == 4);
+
+    // 4n (1.0 beats) makes each slice's length in beats its step count.
+    model.stepResolutionIndex.store (13);
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 1);
+    CHECK (model.getSequencerNaturalLengthSteps (2) == 2);
+
+    // A slice too short to reach one step clamps up to 1.
+    model.slices = { { 0, 100 } };
+    model.stepResolutionIndex.store (7);
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 1);
+
+    // A zero-length slice is treated the same way (sliceLength > 0 guard).
+    model.slices = { { 1000, 1000 } };
+    CHECK (model.getSequencerNaturalLengthSteps (0) == 1);
+
+    // No loaded sample -> getCalculatedOriginalBpm() is 0 -> even a real
+    // slice falls back to 1.
+    SlicerModel bare;
+    bare.slices = { { 0, 22050 } };
+    CHECK (bare.getSequencerNaturalLengthSteps (0) == 1);
+}

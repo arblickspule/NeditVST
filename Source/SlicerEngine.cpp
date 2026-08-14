@@ -1806,7 +1806,7 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
         const int flangerDelayBufferLength = flangerDelayBuffer.getNumSamples();
         const int effectiveFlangerDelaySamples = (flangerActive && flangerDelayBufferLength > 2)
             ? juce::jlimit (1, flangerDelayBufferLength - 2, juce::roundToInt (
-                  (sweptFlangerValue (currentPickFlangerDelayValue, currentPickFlangerDelayMode, SlicerModel::SlicerModel::flangerDelayTimeExtremeMs) / 1000.0) * hostSampleRate))
+                  (sweptFlangerValue (currentPickFlangerDelayValue, currentPickFlangerDelayMode, SlicerModel::flangerDelayTimeExtremeMs) / 1000.0) * hostSampleRate))
             : 1;
         const float effectiveFlangerMix = flangerActive
             ? juce::jlimit (0.0f, 1.0f, sweptFlangerValue (currentPickFlangerMixValue, currentPickFlangerMixMode, SlicerModel::flangerMixExtreme))
@@ -2664,29 +2664,18 @@ void SlicerEngine::randomizeSequence()
     if (rows <= 0 || columns <= 0)
         return;
 
-    const double stepBeats = SlicerModel::getNoteValueBeats (model.stepResolutionIndex.load());
-    const double originalBpm = model.getCalculatedOriginalBpm();
-
     // Each row's natural length in steps, computed once up front (Step 40)
-    // -- same math SequencerGrid's piano-roll bar uses. Needed per-row on
-    // every pass below, so it's not worth recomputing from scratch each time.
+    // -- the shared SlicerModel::getSequencerNaturalLengthSteps() accessor,
+    // the same one SequencerGrid's piano-roll bar (and the engine's own
+    // step-extension clamp) uses, so this can never drift from them. Needed
+    // per-row on every pass below, so it's not worth recomputing from
+    // scratch each time. The accessor's own lock is re-entrant -- we
+    // already hold model.sampleLock (same as the model setters this loop
+    // body calls).
     std::vector<int> naturalStepsPerRow ((size_t) rows, 1);
 
     for (int row = 0; row < rows; ++row)
-    {
-        const auto& slice = model.slices[(size_t) row];
-        const int sliceLength = slice.endSample - slice.startSample;
-        int naturalSteps = 1;
-
-        if (sliceLength > 0 && model.sampleSampleRate > 0.0 && stepBeats > 0.0 && originalBpm > 0.0)
-        {
-            const double sliceSeconds = (double) sliceLength / model.sampleSampleRate;
-            const double naturalBeats = sliceSeconds * (originalBpm / 60.0);
-            naturalSteps = juce::jmax (1, juce::roundToInt (naturalBeats / stepBeats));
-        }
-
-        naturalStepsPerRow[(size_t) row] = naturalSteps;
-    }
+        naturalStepsPerRow[(size_t) row] = model.getSequencerNaturalLengthSteps (row);
 
     // Tracks which columns are already claimed by some previously-placed
     // hit's FULL span, not just its starting column -- what stops a longer
