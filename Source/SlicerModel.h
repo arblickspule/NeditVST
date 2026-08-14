@@ -9,7 +9,7 @@
 #include <vector>
 
 //==============================================================================
-// SlicerModel -- Phase 1 of the decomposition of the former god-class
+// SlicerModel -- the model layer of the decomposition of the former god-class
 // SlicerAudioProcessor (target architecture: Engine <- Model <-> UI).
 //
 // Owns ALL shared audio state (the sample buffer, detected/manual slices,
@@ -19,22 +19,22 @@
 // serialization/schema logic (static name/value/range tables) that used to
 // live on the processor.
 //
-// Phase 1 is PURE RELOCATION: behavior must be byte-identical. The processor
-// retains its full public API as one-line forwarders so the UI compiles
-// unchanged; the audio-thread engine still lives in the processor and reads
-// this model's (public) members directly under model.sampleLock.
+// Phase 1 was PURE RELOCATION: behavior is byte-identical. Phase 3 deleted
+// the processor's forwarding shell -- the UI now talks to this model and to
+// SlicerEngine directly, and the real-time audio core lives in SlicerEngine
+// (which reads this model's (public) members under model.sampleLock).
 //
 // Members are deliberately public for now: the engine's processBlock() and
-// the UI both need broad read access, and Phase 1's rule is "move, don't
-// redesign access control". Tightening the surface is a later phase.
+// the UI both need broad read access, and the refactor's rule is "move,
+// don't redesign access control". Tightening the surface is a later phase.
 //
 // One explicit coupling to the engine: onPickStateInvalidated. The engine
 // keeps per-pick/window scheduling state (hasCurrentPick,
 // clockModeInitialized, clockCurrentPickValid) that loadSample() and
 // rebuildSlicesFromDetectionAndManualPoints() must reset when the model's
 // structure changes. The model calls this callback (under sampleLock, at the
-// exact points the original code reset those flags); the processor binds it
-// in its constructor. A no-op until bound.
+// exact points the original code reset those flags); the engine binds it in
+// its constructor. A no-op until bound.
 //==============================================================================
 class SlicerModel
 {
@@ -55,8 +55,8 @@ public:
 
     //=== UI-facing accessors (Phase 3 -- moved from SlicerAudioProcessor) ===
     // The UI now talks to the model directly instead of through the
-    // processor's forwarding shell; these are the accessors the processor's
-    // old inline forwarders provided for the sample and detection controls.
+    // processor's forwarding shell (Phase 3 deleted it); these are the
+    // accessors the sample and detection controls read.
     bool hasSample() const { return sampleLoaded; }
     const juce::AudioBuffer<float>& getSampleBuffer() const { return sampleBuffer; }
     double getSampleSampleRate() const { return sampleSampleRate; }
@@ -178,7 +178,7 @@ public:
     // Plays [trimStart, trimEnd) on a tight raw loop at native pitch/speed
     // (sample-rate-matched only), completely bypassing the generative
     // engine. Auto-stops the instant host transport starts. See the
-    // processor's processBlock() auditionActive check, which runs before
+    // engine's processBlock() auditionActive check, which runs before
     // (and instead of) everything below it.
     void setAuditionActive (bool active)
     {
@@ -202,7 +202,7 @@ public:
     //=== Audition playhead (Step 28) ===
     // Lock-free copy of the audition engine's current read position, for
     // the waveform's playhead indicator. -1 means "not currently
-    // auditioning". Written every block by the processor's renderAudition()
+    // auditioning". Written every block by the engine's renderAudition()
     // while it's running.
     int getAuditionPlaybackPosition() const { return auditionPlaybackPositionForUI.load(); }
 
@@ -406,10 +406,9 @@ public:
     //     on MIDI recall from a 128-note-indexed state bank.
     enum class TriggerMode { sliceLength, clock, sequenced, performance };
 
-    // Low-level store only -- the processor's SlicerAudioProcessor::
-    // setTriggerMode() wraps this and also resets its own engine
-    // scheduling flags (clockModeInitialized etc.), which live on the
-    // engine side and are NOT this model's concern.
+    // Low-level store only -- the engine's setTriggerMode() wraps this and
+    // also resets its own engine scheduling flags (clockModeInitialized
+    // etc.), which are NOT this model's concern.
     void setTriggerMode (TriggerMode mode) { triggerMode.store (mode); }
     TriggerMode getTriggerMode() const { return triggerMode.load(); }
 
@@ -628,9 +627,8 @@ public:
     //   timeStretch -- lightweight overlap-add granular synthesis.
     enum class PitchMode { repitch, timeStretch };
 
-    // Low-level store only -- the processor's SlicerAudioProcessor::
-    // setPitchMode() wraps this and also sets its own granularNeedsReseed
-    // engine flag.
+    // Low-level store only -- the engine's setPitchMode() wraps this and
+    // also sets its own granularNeedsReseed engine flag.
     void setPitchMode (PitchMode mode) { pitchMode.store (mode); }
     PitchMode getPitchMode() const { return pitchMode.load(); }
 
@@ -935,8 +933,8 @@ public:
     void setPerformanceWorkingSync (bool sync);
 
     //=== Audio-thread data path (engine support) ===
-    // The processor's engine (processBlock() and the MIDI/audition
-    // helpers) reads these directly. They live here because they're pure
+    // The engine (processBlock() and the MIDI/audition helpers) reads these
+    // directly. They live here because they're pure
     // model state: the loaded sample, its detected/manual slices, and the
     // per-pick/recall structures the engine mutates.
     void loadSample (const juce::File& file);
@@ -1108,15 +1106,6 @@ public:
     // UI telemetry, written by the audio-thread engine.
     std::atomic<int> currentlyPlayingSliceIndexForUI { -1 };
     std::atomic<int> currentlyPlayingStepIndexForUI { -1 };
-
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Performance mode freeze investigation) -- the
-    // message thread's setFocusedPerformanceStateSlot() marks its focus
-    // change window here, for the processor's freezeWatchdog to report.
-    std::atomic<bool> debugFocusChangeInProgress { false };
-    std::atomic<juce::int64> debugFocusChangeStartMs { 0 };
-    std::atomic<int> debugFocusChangeNoteNumber { -1 };
-#endif
 
     // Engine invalidation hook -- see the class doc comment at the top.
     std::function<void()> onPickStateInvalidated;

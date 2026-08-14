@@ -3,9 +3,11 @@
 #include <JuceHeader.h>
 
 //==============================================================================
-/** A titled, visually-bounded group backdrop for the Generate page's five
-    sections (Sample / Trim & Tempo / Detection / Engine / Playback Style) --
-    and, in later passes, Sequence/Control/Perform's own grouped sections.
+/** A titled, visually-bounded group backdrop for the Generate page's
+    sections (Sample / Trim & Tempo / Detection / Fade In/Out / Pitch Mode /
+    Playback Style in controlsContent, plus Timing inside the Generate
+    sub-mode tab) -- and, in later passes, Sequence/Control/Perform's own
+    grouped sections.
 
     Deliberately does NOT own or reparent its child controls -- the real
     controls (buttons, knobs, segmented rows, labels) stay direct children of
@@ -24,8 +26,6 @@ class SectionPanel : public juce::Component
 {
 public:
     explicit SectionPanel (juce::String titleText);
-
-    void setTitle (juce::String newTitle);
 
     // Local-space area below the title bar -- callers lay real controls out
     // into this rect (offset by this panel's own position within its

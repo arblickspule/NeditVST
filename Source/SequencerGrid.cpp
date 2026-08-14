@@ -41,8 +41,8 @@ namespace
     }
 }
 
-SequencerGrid::SequencerGrid (SlicerModel& modelToUse, SlicerEngine& engineToUse)
-    : model (modelToUse), engine (engineToUse)
+SequencerGrid::SequencerGrid (SlicerModel& modelToUse)
+    : model (modelToUse)
 {
     lastKnownNumRows = model.getSequencerNumRows();
     lastKnownNumColumns = model.getSequencerNumSteps();
@@ -106,16 +106,6 @@ void SequencerGrid::timerCallback()
 {
     updateSizeIfNeeded();
     repaint(); // cheap enough at this grid's typical size to just always repaint, same as WaveformDisplay's own timer
-
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG -- remove once step-extension Tape Stop testing is
-    // done. This UI-thread timer is where the audio thread's Tape Stop
-    // diagnostic mailbox actually gets printed -- see
-    // SlicerModel::drainDebugTapeStopEvents()'s own doc comment
-    // for why the printing itself can't happen on the audio thread.
-    engine.drainDebugTapeStopEvents();
-    engine.drainDebugStretchEvents();
-#endif
 }
 
 int SequencerGrid::getRowIndexAtY (int y) const
@@ -146,9 +136,9 @@ int SequencerGrid::getColumnIndexAtX (int x) const
 int SequencerGrid::computeBarLengthInSteps (int row, int startColumn, int numRows, int numColumns) const
 {
     // Natural (Step-resolution-quantized) length, or the Step-extension
-    // override if longer -- read from the processor rather than computed
+    // override if longer -- read from the model rather than computed
     // locally, so this bar and Tape Stop's decel duration in Sequenced
-    // mode (PluginProcessor::processBlock(), via the same
+    // mode (SlicerEngine::processBlock(), via the same
     // getSequencerCellDeclaredLengthSteps()) can never disagree.
     const int desiredSteps = model.getSequencerCellDeclaredLengthSteps (row, startColumn);
 
@@ -293,7 +283,8 @@ void SequencerGrid::showParameterMenuForCell (int row, int column)
 
     // Which parameters (if any) this step's own style actually uses
     // (Step 46) -- generalizes the v1 "only Filter Down/Up" hardcoded
-    // check into a per-style table (see PluginProcessor.cpp). Empty means
+    // check into a per-style table (see
+    // SlicerModel::getApplicableSequencerCellParameters()). Empty means
     // this style has nothing to configure (e.g. Forward, or an empty
     // cell), so right-clicking it is a no-op, same as before.
     const auto applicableParams = SlicerModel::getApplicableSequencerCellParameters (style);
@@ -509,7 +500,7 @@ void SequencerGrid::paint (juce::Graphics& g)
 
             // Step-extension (Pass 1): while this exact cell is the target
             // of an in-progress Shift+drag, show the live uncommitted
-            // preview length instead of the processor's still-unchanged
+            // preview length instead of the model's still-unchanged
             // stored value.
             const int barLengthSteps = (row == extendRow && col == extendStartColumn)
                 ? extendLiveLengthSteps
@@ -724,7 +715,7 @@ void SequencerGrid::mouseUp (const juce::MouseEvent&)
     {
         // Release commits (Pass 1) -- the whole gesture up to now was a
         // local, uncommitted preview only; this is the one point it
-        // actually reaches the processor (and, in turn, clears any other
+        // actually reaches the model (and, in turn, clears any other
         // row's conflicting cells the newly-claimed span now covers).
         model.setSequencerCellExtendedLengthSteps (extendRow, extendStartColumn, extendLiveLengthSteps);
         extendRow = -1;

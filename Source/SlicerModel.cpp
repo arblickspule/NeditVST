@@ -4,7 +4,6 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
-#include <iostream> // TEMPORARY DEBUG (Performance mode freeze investigation) -- see the model's debugFocusChange* members
 
 namespace
 {
@@ -969,34 +968,12 @@ void SlicerModel::setFocusedPerformanceStateSlot (int noteNumber)
     if (noteNumber < 0 || noteNumber >= 128)
         return;
 
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Performance mode freeze investigation) -- this
-    // function runs on the message thread, so I/O here is safe (unlike
-    // inside processBlock()); marks the window during which this thread
-    // might be blocked waiting for sampleLock, for the processor's
-    // FreezeWatchdog to report.
-    debugFocusChangeNoteNumber.store (noteNumber, std::memory_order_relaxed);
-    debugFocusChangeStartMs.store ((juce::int64) juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
-    debugFocusChangeInProgress.store (true, std::memory_order_relaxed);
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- about to acquire sampleLock" << std::endl;
-#endif
-
     const juce::ScopedLock sl (sampleLock);
-
-#if JUCE_DEBUG
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- sampleLock acquired" << std::endl;
-#endif
 
     const int previous = focusedPerformanceStateSlot.load();
 
     if (noteNumber == previous)
-    {
-#if JUCE_DEBUG
-        std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- already focused, no-op" << std::endl;
-        debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
-#endif
         return; // already focused -- nothing to save away from or load
-    }
 
     // Auto-save (replaces the old MIDI-Learn "Save to..." button entirely):
     // whatever was being edited in the previously-focused slot is captured
@@ -1038,11 +1015,6 @@ void SlicerModel::setFocusedPerformanceStateSlot (int noteNumber)
     }
 
     focusedPerformanceStateSlot.store (noteNumber);
-
-#if JUCE_DEBUG
-    std::cerr << "[UI] setFocusedPerformanceStateSlot(" << noteNumber << ") -- done" << std::endl;
-    debugFocusChangeInProgress.store (false, std::memory_order_relaxed);
-#endif
 }
 
 std::array<bool, 128> SlicerModel::getPopulatedPerformanceStateBankSlots() const

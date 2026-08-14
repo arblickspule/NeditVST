@@ -1,9 +1,5 @@
 #include "PerformanceKeyboardPanel.h"
 
-#if JUCE_DEBUG
-#include <iostream> // TEMPORARY DEBUG (Performance mode freeze investigation)
-#endif
-
 PerformanceKeyboardPanel::PerformanceKeyboardPanel (Source& sourceToUse)
     : juce::MidiKeyboardState(),
       juce::MidiKeyboardComponent (*this, juce::MidiKeyboardComponent::horizontalKeyboard),
@@ -27,17 +23,7 @@ PerformanceKeyboardPanel::~PerformanceKeyboardPanel()
 
 bool PerformanceKeyboardPanel::mouseDownOnKey (int midiNoteNumber, const juce::MouseEvent&)
 {
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Performance mode freeze investigation) -- confirms
-    // the click reached here at all, before anything that could block.
-    std::cerr << "[UI] PerformanceKeyboardPanel::mouseDownOnKey(" << midiNoteNumber << ")" << std::endl;
-#endif
-
     source.focusSlot (midiNoteNumber);
-
-#if JUCE_DEBUG
-    std::cerr << "[UI] PerformanceKeyboardPanel::mouseDownOnKey(" << midiNoteNumber << ") -- focusSlot() returned" << std::endl;
-#endif
 
     populatedSlots = source.getPopulatedSlots();
     focusedSlot = source.getFocusedSlot();

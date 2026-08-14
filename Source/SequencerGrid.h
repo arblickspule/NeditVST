@@ -2,7 +2,6 @@
 
 #include <JuceHeader.h>
 #include "SlicerModel.h"
-#include "SlicerEngine.h"
 #include "PlaybackStylePalette.h"
 
 //==============================================================================
@@ -18,7 +17,7 @@
     across already-lit cells erases them and dragging across dark ones
     lights them, rather than flickering as the cursor crosses cell
     boundaries. Structural monophony (only one active cell per column,
-    grid-wide) is enforced by the processor's setSequencerCell(), not this
+    grid-wide) is enforced by the model's setSequencerCell(), not this
     component -- it just reflects whatever state comes back.
 
     An active cell draws as a bar spanning however many subsequent
@@ -60,7 +59,7 @@
     comments. Column width/step resolution are untouched by this -- they
     remain governed by Pattern Length and step resolution, not slice count.
 
-    Self-sizing: polls the processor's current row/column counts on a
+    Self-sizing: polls the model's current row/column counts on a
     timer (same 30fps live-update pattern WaveformDisplay already uses)
     and resizes itself whenever they (or the target width) change. The
     same timer also drives the live playhead column highlight.
@@ -118,7 +117,7 @@
     pass. Shift-clicking anywhere that ISN'T near an active step's right
     edge is a no-op, rather than falling through to the ordinary
     toggle-draw gesture below. Tape Stop's decel duration in Sequenced mode
-    (PluginProcessor::processBlock()) is driven by this exact same declared
+    (SlicerEngine::processBlock()) is driven by this exact same declared
     length (SlicerModel::getSequencerCellDeclaredLengthSteps()),
     so the bar this class renders and the decel time actually heard can
     never disagree. */
@@ -126,7 +125,7 @@ class SequencerGrid : public juce::Component,
                        private juce::Timer
 {
 public:
-    explicit SequencerGrid (SlicerModel& modelToUse, SlicerEngine& engineToUse);
+    explicit SequencerGrid (SlicerModel& modelToUse);
 
     void paint (juce::Graphics&) override;
 
@@ -189,7 +188,6 @@ private:
     int findEditingParameterIndex() const;
 
     SlicerModel& model;
-    SlicerEngine& engine;
 
     // Row height floor -- whatever used to be the fixed row height before
     // dynamic scaling. Busy samples (many detected slices) still land
@@ -246,7 +244,7 @@ private:
     // being grown (its style/starting column never change during the
     // gesture); extendLiveLengthSteps is the live, uncommitted preview
     // length paint() renders for that one cell in place of the normal
-    // computeBarLengthInSteps() result, committed to the processor only on
+    // computeBarLengthInSteps() result, committed to the model only on
     // mouseUp.
     int extendRow = -1;
     int extendStartColumn = -1;

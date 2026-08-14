@@ -6,10 +6,6 @@ SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
                            .withOutput ("Output", juce::AudioChannelSet::stereo(), true))
 {
-    // Ensure no stale MIDI-learn arm survives construction. Everything else
-    // the constructor used to do (filter setup, onPickStateInvalidated,
-    // debug watchdog) now lives in SlicerEngine (Phase 2).
-    model.cancelMidiLearn();
 }
 
 SlicerAudioProcessor::~SlicerAudioProcessor()
@@ -51,8 +47,10 @@ juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
 
 void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
 {
-    // TODO once there are parameters worth persisting (loop length, slice
-    // probabilities) — not wired up yet in this step.
+    // Persistence was never implemented -- the model owns ~30 stored
+    // parameters (probability tables, pattern bank, performance bank,
+    // globals) plus the schema tables to serialize them, but nothing writes
+    // them to a MemoryBlock yet.
 }
 
 void SlicerAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)

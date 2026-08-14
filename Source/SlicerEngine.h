@@ -11,10 +11,10 @@
 //==============================================================================
 // The real-time audio core (Phase 2) -- SlicerEngine owns everything the
 // audio thread touches that isn't shared model state: the per-pick playback
-// state (currentPick*/clock/reset/sequenced/performance scheduling), the
-// effect buffers (filter/bitcrush/flanger), the Random sources, and the
-// debug mailboxes/watchdog. SlicerAudioProcessor keeps the plugin plumbing
-// (buses, editor, state serialization) and forwards the public API here.
+// state (currentPick*/clock/reset/sequenced/performance scheduling) and the
+// effect buffers (filter/bitcrush/flanger) and Random sources.
+// SlicerAudioProcessor keeps the plugin plumbing (buses, editor, state
+// serialization) and forwards the public API here.
 //
 // model is a public reference, fixed at construction -- the engine never
 // outlives the SlicerModel it was built with (the processor owns both, in
@@ -57,16 +57,6 @@ public:
     bool getRandomizeParametersForStyle (int index) const;
     void setRandomizeParametersForStyle (int index, bool shouldRandomize);
     void randomizeSequence();
-
-#if JUCE_DEBUG
-    void drainDebugTapeStopEvents();
-    void drainDebugStretchEvents();
-#endif
-
-private:
-    // Moved verbatim from SlicerAudioProcessor's private section (Phase 2):
-    // audio-thread helper declarations + all per-pick/effect/scheduling/
-    // debug state. Callers of the MIDI handlers etc. hold model.sampleLock.
 
 public:
     // Pure helper functions -- exposed for unit testing (Phase 3). The UI
@@ -187,18 +177,6 @@ public:
                                                           double hostBpm, double hostSampleRate, double playbackRate);
 
 private:
-    // Sequenced Trigger Mode (Step 37) -- clears the pattern to all-off,
-    // sized to the CURRENT grid dimensions (getSequencerNumRows()/
-    // getSequencerNumSteps()). Called whenever either dimension changes:
-    // model.slices rebuild (rows), or loop length/step resolution change
-    // (columns). Must be called with model.sampleLock already held.
-    void resetSequencerGrid () { model.resetSequencerGrid (); }
-
-    // One pattern bank slot's full contents (Step: MIDI pattern bank) --
-    // see captureCurrentSequencerPatternSnapshot()/model.patternBank below for how
-    // it's populated and read.
-    using SequencerPatternSnapshot = SlicerModel::SequencerPatternSnapshot;
-
     // MIDI input dispatch layer -- see the public "MIDI input / Sequencer
     // pattern bank" section above for the overall design. All of these,
     // plus completeMidiLearn()/handleSequencerPatternRecallNoteOn() below,
@@ -291,7 +269,6 @@ private:
     // mode starts repointing the shared trim atomics at whichever state slot
     // has editing focus, which must NOT feed back into "the sample's
     // original tempo."
-    double computeSourceSpanSeconds () const { return model.computeSourceSpanSeconds (); }
 
     // Audition (Step 25) — the raw, generative-engine-bypassing loop
     // render. Called from processBlock() (model.sampleLock already held) in
@@ -601,143 +578,6 @@ private:
     // section below. Meaningless/unused for every other style.
     EasingCurve currentPickScratchForwardCurve = EasingCurve::linear;
     EasingCurve currentPickScratchBackwardCurve = EasingCurve::linear;
-
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Tape Stop position-exhaustion verification) --
-    // remove once step-extension Tape Stop testing is done.
-    //
-    // Edge-detection state for processBlock()'s Tape Stop render path --
-    // plain (non-atomic) since it's only ever touched from the audio
-    // thread itself, same as every other processBlock()-only member here.
-    // Reset at every pick-start so each pick's own transitions are
-    // detected fresh rather than carrying over stale state from whatever
-    // played before it.
-    bool debugTapeStopPrevWithinSchedule = false;
-    bool debugTapeStopPrevExhausted = false;
-
-    // TEMPORARY DEBUG (gain-ramp-vs-render-gate verification) -- same
-    // reasoning/lifecycle as the two above. Edge-detects the sample the
-    // Tape Stop gain ramp (tapeStopRateMultiplier) first drops below
-    // debugTapeStopGainNearZeroThreshold, so its samplesSincePickStart can
-    // be compared directly against currentPickTapeStopDurationHostSamples
-    // -- confirms (or refutes) whether the ramp's own reach-zero point
-    // actually lines up with the pick's full (possibly extended) duration,
-    // as opposed to some shorter value.
-    bool debugTapeStopPrevGainNearZero = false;
-    static constexpr double debugTapeStopGainNearZeroThreshold = 0.02;
-
-    // Lock-free "mailbox" -- the audio thread only ever does cheap atomic
-    // stores into these (real-time-safe), never calls DBG()/console I/O
-    // itself. drainDebugTapeStopEvents() (called from a UI-thread timer --
-    // see SequencerGrid's) polls the *Pending flags and does the actual
-    // printing off the audio thread entirely. Calling DBG() directly from
-    // inside processBlock() -- which this replaces -- did string
-    // formatting and a blocking console-I/O syscall while model.sampleLock was
-    // held, which could stall the audio callback long enough that every
-    // UI-thread call needing that same lock (SequencerGrid's own 30fps
-    // poll among them) blocked too, freezing the whole app.
-    std::atomic<bool> debugTapeStopPickStartEventPending { false };
-    std::atomic<int> debugTapeStopPickStartRow { -1 };
-    std::atomic<int> debugTapeStopPickStartStep { -1 };
-    std::atomic<int> debugTapeStopPickStartDeclaredLengthSteps { 0 };
-    std::atomic<double> debugTapeStopPickStartDeclaredLengthHostSamples { 0.0 };
-    std::atomic<double> debugTapeStopPickStartSamplesUntilNextActiveStep { 0.0 };
-    std::atomic<double> debugTapeStopPickStartDurationHostSamples { 0.0 };
-
-    std::atomic<bool> debugTapeStopFreezeEventPending { false };
-    std::atomic<double> debugTapeStopFreezeSamplesSincePickStart { 0.0 };
-    std::atomic<double> debugTapeStopFreezeDurationHostSamples { 0.0 };
-    std::atomic<double> debugTapeStopFreezePosition { 0.0 };
-    std::atomic<int> debugTapeStopFreezeSchedulingEndSample { 0 };
-
-    std::atomic<bool> debugTapeStopStopEventPending { false };
-    std::atomic<double> debugTapeStopStopSamplesSincePickStart { 0.0 };
-    std::atomic<double> debugTapeStopStopDurationHostSamples { 0.0 };
-    std::atomic<bool> debugTapeStopStopEverFroze { false };
-
-    // TEMPORARY DEBUG (gain-ramp-vs-render-gate verification) -- see
-    // debugTapeStopPrevGainNearZero's own doc comment above for why this
-    // exists.
-    std::atomic<bool> debugTapeStopGainNearZeroEventPending { false };
-    std::atomic<double> debugTapeStopGainNearZeroSamplesSincePickStart { 0.0 };
-    std::atomic<double> debugTapeStopGainNearZeroDurationHostSamples { 0.0 };
-    std::atomic<double> debugTapeStopGainNearZeroGainValue { 0.0 };
-    std::atomic<double> debugTapeStopGainNearZeroRateMultiplier { 0.0 };
-    std::atomic<bool> debugTapeStopGainNearZeroWasExhausted { false };
-    std::atomic<bool> debugTapeStopGainNearZeroWasGranular { false };
-
-    // TEMPORARY DEBUG (Stretch step-extension verification) -- remove
-    // together with the Tape Stop debug members above once this is done.
-    // Originally added to confirm Stretch's target length had no
-    // relationship to the step's own declared length
-    // (getSequencerCellDeclaredLengthSteps(), the mechanism Tape Stop
-    // already used) -- it didn't, and duration is now authoritative from
-    // that same declared length (see processBlock()'s stretchActive
-    // branches). passLengthHostSamples (speedMultiplier * natural, the
-    // fixed-character length of ONE stretched pass) is logged alongside
-    // finalLengthHostSamples so it's easy to tell, per pick, whether the
-    // declared length actually required the new loop-to-repeat behaviour
-    // (finalLength > passLength) or was covered by a single pass.
-    // Same lock-free mailbox/drain pattern as the Tape Stop members
-    // above -- see their own doc comment for why.
-    std::atomic<bool> debugStretchPickStartEventPending { false };
-    std::atomic<int> debugStretchPickStartRow { -1 };
-    std::atomic<int> debugStretchPickStartStep { -1 };
-    std::atomic<int> debugStretchPickStartDeclaredLengthSteps { 0 };
-    std::atomic<double> debugStretchPickStartDeclaredLengthHostSamples { 0.0 };
-    std::atomic<double> debugStretchPickStartNaturalLengthHostSamples { 0.0 };
-    std::atomic<double> debugStretchPickStartSpeedMultiplier { 0.0 };
-    std::atomic<double> debugStretchPickStartPassLengthHostSamples { 0.0 };
-    std::atomic<double> debugStretchPickStartSamplesUntilNextActiveStep { 0.0 };
-    std::atomic<double> debugStretchPickStartFinalLengthHostSamples { 0.0 };
-
-    // TEMPORARY DEBUG (Forward/Ping-Pong/Filter Down/Up step-extension
-    // verification) -- remove together with the debug members above once
-    // this is done. Same shape/mailbox pattern as the Tape Stop/Stretch
-    // pick-start logs -- styleName distinguishes which of the three fired
-    // (they share one branch in processBlock()). naturalLengthHostSamples
-    // logged alongside finalLengthHostSamples so it's easy to tell, per
-    // pick, whether the declared length actually required looping past
-    // one natural unit (finalLength > natural) or was covered by it.
-    std::atomic<bool> debugLoopStylePickStartEventPending { false };
-    std::atomic<int> debugLoopStylePickStartRow { -1 };
-    std::atomic<int> debugLoopStylePickStartStep { -1 };
-    // PlaybackStyle ordinal (indexToPlaybackStyle()'s own numbering), NOT a
-    // juce::String -- constructing/assigning a String from a literal
-    // allocates, which isn't real-time-safe on the audio thread (the exact
-    // class of bug the DBG()-on-the-audio-thread freeze earlier this
-    // session was). drainDebugStretchEvents() maps this to a name for
-    // printing, on the UI thread where allocating is fine.
-    std::atomic<int> debugLoopStylePickStartStyleIndex { -1 };
-    std::atomic<int> debugLoopStylePickStartDeclaredLengthSteps { 0 };
-    std::atomic<double> debugLoopStylePickStartDeclaredLengthHostSamples { 0.0 };
-    std::atomic<double> debugLoopStylePickStartNaturalLengthHostSamples { 0.0 };
-    std::atomic<double> debugLoopStylePickStartSamplesUntilNextActiveStep { 0.0 };
-    std::atomic<double> debugLoopStylePickStartFinalLengthHostSamples { 0.0 };
-#endif
-
-#if JUCE_DEBUG
-    // TEMPORARY DEBUG (Performance mode click-to-focus freeze investigation)
-    // -- remove once this is done. Same "lock-free mailbox, no I/O on the
-    // audio thread" discipline as the Tape Stop/Stretch debug members
-    // above (see their own doc comment) -- the audio thread only ever does
-    // atomic stores here. A dedicated juce::HighResolutionTimer thread
-    // (deliberately NOT the message thread, which is the one under
-    // suspicion of being the one that's stuck) polls these once a second
-    // and prints directly, so the log keeps updating even if the message
-    // thread is wedged inside setFocusedPerformanceStateSlot().
-    std::atomic<juce::int64> debugAudioProcessBlockEntries { 0 }; // incremented at the very top of processBlock(), before model.sampleLock is even attempted
-    std::atomic<juce::int64> debugAudioLockAcquiredCount { 0 };   // incremented immediately after processBlock() acquires model.sampleLock
-
-    struct FreezeWatchdog : public juce::HighResolutionTimer
-    {
-        explicit FreezeWatchdog (SlicerEngine& ownerToUse) : owner (ownerToUse) {}
-        void hiResTimerCallback() override;
-        SlicerEngine& owner;
-    };
-
-    FreezeWatchdog freezeWatchdog { *this };
-#endif
 
     // Fade tracking, in host-output-sample units (not source-sample units,
     // so fade length in ms stays constant regardless of repitching).

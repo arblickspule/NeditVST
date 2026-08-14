@@ -7,12 +7,6 @@ SectionPanel::SectionPanel (juce::String titleText)
     setInterceptsMouseClicks (false, true); // pure backdrop -- clicks pass through to the real controls drawn on top
 }
 
-void SectionPanel::setTitle (juce::String newTitle)
-{
-    title = std::move (newTitle);
-    repaint();
-}
-
 juce::Rectangle<int> SectionPanel::getContentArea() const
 {
     return getLocalBounds().withTrimmedTop (titleBarHeight).reduced (8, 6);
