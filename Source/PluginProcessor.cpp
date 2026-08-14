@@ -1,6 +1,6 @@
 #include "PluginProcessor.h"
-#include "PluginEditor.h"
 #include "SlicerModel.h"
+#include "ui/contract.h"
 
 SlicerAudioProcessor::SlicerAudioProcessor()
     : AudioProcessor (BusesProperties()
@@ -42,7 +42,11 @@ void SlicerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
 juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
 {
-    return new SlicerAudioProcessorEditor (*this);
+    // The whole UI lives behind the ui::contract seam (gui.cpp); swapping
+    // the GUI means swapping that implementation, never this line (docs/
+    // ui-layout-decision.md). The old PluginEditor stays in the build until
+    // the new Generate/Sequence/Perform pages replace it.
+    return ui::makeEditor (*this, model, engine, {}).release();
 }
 
 void SlicerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)

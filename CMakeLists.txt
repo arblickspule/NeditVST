@@ -70,6 +70,9 @@ target_sources(NeditVST
         Source/SlicerEngine.h
         Source/PluginEditor.cpp
         Source/PluginEditor.h
+        Source/ui/gui.cpp
+        Source/ui/contract.h
+        Source/ui/layout/Layout.h
         Source/TransientDetector.cpp
         Source/TransientDetector.h
         Source/WaveformDisplay.cpp
