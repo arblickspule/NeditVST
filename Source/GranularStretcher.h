@@ -19,7 +19,7 @@
 
     Owns no reference to the source buffer or to any scheduling state
     (which slice is picked, when the next one gets triggered) — that stays
-    entirely the processor's job and is identical for both pitch modes.
+    entirely the engine's job and is identical for both pitch modes.
     This only turns "the pick currently in progress, from this source
     position" into one host output sample at a time. */
 class GranularStretcher
@@ -40,19 +40,19 @@ public:
     // marching on unbounded (forward) or bouncing there-and-back
     // (pingPong) -- "keep actively repeating the same stretched pass"
     // rather than either running off the end or reversing direction. See
-    // PluginProcessor's Stretch render branch for why this exists: once a
+    // the engine's Stretch render branch for why this exists: once a
     // step's declared length exceeds one full stretched pass, the SAME
     // pass repeats to fill the remainder, and this is what makes that
     // happen automatically (for as long as the render-continue gate keeps
     // letting rendering happen) without any separate pass-boundary
     // bookkeeping in the caller.
     //
-    // pingPong is also what PluginProcessor's Scratch style (v1) passes
+    // pingPong is also what the engine's Scratch style (v1) passes
     // here -- it's the same bounce fold, just with Scratch's own Rate-
     // driven cycle length standing in for Ping-Pong's slice-derived one
-    // (see PluginProcessor.cpp's bounceFoldLengthSamples). Named for its
+    // (see SlicerEngine.cpp's bounceFoldLengthSamples). Named for its
     // first use rather than renamed to something more generic, since it's
-    // an internal implementation detail only PluginProcessor and this
+    // an internal implementation detail only the engine and this
     // class ever see.
     enum class PlaybackStyle { forward, pingPong, loop };
 
@@ -60,7 +60,7 @@ public:
 
     // Step 19: shared position-mapping, used identically by both pitch
     // modes' render paths — this class's own grain-start scheduling
-    // below, and PluginProcessor's direct-read (Repitch) path, which
+    // below, and the engine's direct-read (Repitch) path, which
     // calls this same function directly. Forward is the identity (today's
     // behaviour, byte-for-byte). Ping-Pong folds an unbounded, ever-
     // increasing "elapsed since slice start" into [0, sliceLength):
@@ -81,7 +81,7 @@ public:
     // counting-up leg, backwardCurve for the counting-down one) -- see
     // applyEasingCurve()'s own doc comment for what each shape implies
     // about the resulting speed. Only ever non-default for Scratch, from
-    // both PluginProcessor's own direct-read call and this class's
+    // both the engine's own direct-read call and this class's
     // internal grain-start-scheduling call inside renderAndAdvance(), so
     // the two pitch modes keep behaving identically the same way they
     // already always have for every other style.

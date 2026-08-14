@@ -23,8 +23,9 @@
         does, since the two callbacks are independent hooks;
       - overrides drawWhiteNote()/drawBlackNote() to layer two highlights on
         top of the normal key painting: a filled tint for any slot with a
-        saved state (populatedSlots, sourced from the processor's actual
-        bank contents), and a bright border for whichever slot currently has
+        saved state (populatedSlots, sourced from the model's actual bank
+        contents via the Source adapter), and a bright border for whichever
+        slot currently has
         focus -- deliberately distinct from each other, so "already saved"
         and "being edited right now" are never conflated even when they're
         the same key;

@@ -40,7 +40,7 @@ FetchContent_MakeAvailable(JUCE)
 # NEEDS_MIDI_INPUT TRUE matches the .jucer's pluginCharacteristicsValue
 # ("pluginIsSynth,pluginWantsMidiIn") and PluginProcessor::acceptsMidi(),
 # which now returns true -- MIDI note-on input drives Sequencer pattern-bank
-# recall while Sequenced Trigger Mode is active (see PluginProcessor.h's
+# recall while Sequenced Trigger Mode is active (see SlicerModel.h's
 # "MIDI input / Sequencer pattern bank" section).
 juce_add_plugin(NeditVST
     COMPANY_NAME "yourcompany"

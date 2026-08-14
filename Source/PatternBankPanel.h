@@ -21,14 +21,15 @@
     identifying a slot doesn't require memorizing raw MIDI note numbers.
 
     Deliberately generic over WHAT gets saved/recalled -- everything specific
-    to a slot's own contents (Sequencer patterns, Performance states, or any
-    future context) lives entirely on the BankSource side; this class only
-    ever asks BankSource for slot occupancy/active/pending state and to
-    arm/cancel Learn. Two contexts share this today: the Sequencer pattern
-    bank (whose BankSource wraps SlicerModel's own pattern-bank
-    methods, including its real Pattern Switch Timing pending slot) and
-    Performance mode's state bank (Pass 1 -- Immediate switching only, so its
-    BankSource::getPendingSlot() always returns -1).
+    to a slot's own contents (Sequencer patterns, or any future context)
+    lives entirely on the BankSource side; this class only ever asks
+    BankSource for slot occupancy/active/pending state and to arm/cancel
+    Learn. Its one context today is the Sequencer pattern bank, whose
+    BankSource wraps SlicerModel's own pattern-bank methods, including its
+    real Pattern Switch Timing pending slot. (Performance mode used to
+    share it but now uses PerformanceKeyboardPanel::Source instead --
+    click-to-focus + auto-save, not MIDI Learn, so it isn't a BankSource
+    anymore.)
 
     Polls the source on a timer (same reasoning as SequencerGrid's own 30fps
     poll -- the audio thread can populate/activate slots on its own, via an
@@ -38,8 +39,7 @@ class PatternBankPanel : public juce::Component,
 {
 public:
     // Everything this panel needs from whatever context it's showing a bank
-    // for -- see class doc comment above. getPendingSlot() returns -1 for a
-    // context with no quantized-switch concept (Performance mode, Pass 1).
+    // for -- see class doc comment above.
     struct BankSource
     {
         virtual ~BankSource() = default;

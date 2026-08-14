@@ -33,7 +33,7 @@ double GranularStretcher::foldPosition (double elapsedSourceSamples, double slic
     // multiply/divide here never introduces a floating-point difference.
     // cycle (elapsed TIME since this leg started, folded) is linear in
     // elapsedSourceSamples, which both this function's own grain-start
-    // caller and PluginProcessor's direct-read caller build from a
+    // caller and the engine's direct-read caller build from a
     // constant-per-sample advance -- so legProgress here really is "how
     // far through this leg's TIME we are," exactly what
     // applyEasingCurve() expects.
@@ -131,7 +131,7 @@ void GranularStretcher::renderAndAdvance (const juce::AudioBuffer<float>& source
         channelSumsOut[ch] = 0.0f;
 
     // nextGrainSourceStart marches forward unbounded (same "elapsed since
-    // slice start, unfolded" quantity PluginProcessor's currentPosition
+    // slice start, unfolded" quantity the engine's currentPosition
     // tracks for its own render path) -- foldPosition() is applied only at
     // the moment a grain actually spawns, so each grain's OWN read still
     // runs forward at its native rate below; only where consecutive grains

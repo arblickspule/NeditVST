@@ -12,7 +12,7 @@
 //     tables and every parameter -> SlicerModel (the UI now talks to the
 //     model directly, not through this class).
 //   - Phase 2: the real-time audio core (processBlock() DSP, MIDI dispatch,
-//     audition, per-pick state, FreezeWatchdog) -> SlicerEngine.
+//     audition, per-pick state) -> SlicerEngine.
 //   - Phase 3: the ~220 public forwarding accessors the UI previously
 //     called on this class were deleted once the UI retargeted onto
 //     SlicerModel/SlicerEngine (target architecture: Engine <- Model <-> UI).

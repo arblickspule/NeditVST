@@ -4,13 +4,13 @@
 /** Scratch v2: a small, shared "shape a 0..1 progress value" utility --
     standard easing-function definitions, the same category of thing every
     animation/UI toolkit calls "easing curves." Deliberately its own
-    header (not folded into PluginProcessor.cpp's anonymous-namespace
+    header (not folded into SlicerEngine.cpp's anonymous-namespace
     applyCurveShape(), the older Linear/Exponential curve used by Tape
     Stop's decel and Ping-Pong's turnaround fade) because it needs to be
     usable from GranularStretcher.cpp too -- Scratch's granular (Time-
     Stretch pitch mode) render path calls GranularStretcher::foldPosition()
     directly, which needs these same shapes to warp grain-start positions
-    the identical way PluginProcessor's own direct-read (Repitch) path
+    the identical way the engine's own direct-read (Repitch) path
     warps its read position, keeping the two pitch modes sounding alike
     the same way foldPosition() already always has. No JUCE dependency on
     purpose, so either translation unit can include this cheaply.
@@ -21,7 +21,7 @@
     purpose animation curve library.
 
     Retrofitting this onto Tape Stop/Ping-Pong's own existing Linear/
-    Exponential curve (PluginProcessor.cpp's applyCurveShape()) is
+    Exponential curve (SlicerEngine.cpp's applyCurveShape()) is
     explicitly future work, not done here -- the two systems stay
     independent for this pass. */
 enum class EasingCurve

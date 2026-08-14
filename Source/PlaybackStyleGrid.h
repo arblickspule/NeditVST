@@ -4,7 +4,8 @@
 #include "SlicerModel.h"
 
 //==============================================================================
-/** Step-19: playback style probability (Forward / Ping-Pong), drawn as a
+/** Playback style probability (Forward / Ping-Pong / Tape Stop / Stretch /
+    Filter Down / Filter Up / Bitcrush / Scratch / Flanger), drawn as a
     horizontal multislider — same custom-painted pattern as
     SubdivisionProbabilityGrid (one row per option, label on the left, a
     draggable horizontal bar filling the rest of the row), but that class
@@ -13,9 +14,11 @@
     style table instead of a forced reuse.
 
     Drag anywhere in a row sets that style's probability from the
-    horizontal position (left edge = 0.0, right edge = 1.0). Visible in
-    both Trigger Modes — unlike the Clock-only subdivision grid, playback
-    style is rolled on every pick in Slice Length mode too. */
+    horizontal position (left edge = 0.0, right edge = 1.0). Lives in
+    Layer 3's always-visible Playback Style block, so it's present across
+    all trigger modes; in Sequenced mode each cell's own style comes from
+    the sequencer grid's right-click menu, while this table stays the
+    global fallback. */
 class PlaybackStyleGrid : public juce::Component
 {
 public:

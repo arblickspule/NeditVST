@@ -36,7 +36,7 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
           model.getPerformanceWorkingStyle() + 1,
           [this] (int style) { model.setPerformanceWorkingStyle (style); }),
       performanceKeyboardSource (model), performanceKeyboardPanel (performanceKeyboardSource),
-      sequencerGrid (model, engine), waveformDisplay (model)
+      sequencerGrid (model), waveformDisplay (model)
 {
     addAndMakeVisible (controlsContent); // Pass 3: Layers 1-4, plain non-scrolling child
     controlsContent.setLookAndFeel (&neditLookAndFeel); // Tungsten/Salmon palette for every native-widget control below (Pass 1)
@@ -60,9 +60,9 @@ SlicerAudioProcessorEditor::SlicerAudioProcessorEditor (SlicerAudioProcessor& p)
     subModeTabs.setOptions ({ { "Generate", std::nullopt }, { "Sequence", std::nullopt },
                                { "Control", std::nullopt }, { "Perform", std::nullopt } });
 
-    // Seed both tab rows from the processor's own current trigger mode so
+    // Seed both tab rows from the model's own current trigger mode so
     // the initial syncTriggerModeToActiveTab() call below is a no-op --
-    // e.g. if the processor is already in Performance mode (persisted
+    // e.g. if the model is already in Performance mode (persisted
     // state), land on Beats>Perform at startup rather than silently
     // resetting it back to Slice Length.
     {
@@ -743,12 +743,12 @@ void SlicerAudioProcessorEditor::paint (juce::Graphics& g)
     g.drawFittedText ("NeditVST - step 46: Filter Type, Curve Shape, Stretch Grain step editing",
                        getLocalBounds().removeFromTop (30), juce::Justification::centred, 1);
 
-    // Loop Length staleness highlight (Step 33). loopLengthLabel/Knob live
-    // inside controlsContent -- rather than computing their position by
+    // Loop Length staleness highlight (Step 33). loopLengthSlider/label
+    // live inside controlsContent -- rather than computing their position by
     // hand, getLocalArea() walks the whole parent chain to get their real
     // on-screen rectangle in THIS component's coordinate space, so the
     // highlight tracks correctly regardless of how deeply nested inside a
-    // SectionPanel's visual area the knob ends up (getLocalArea() doesn't
+    // SectionPanel's visual area the control ends up (getLocalArea() doesn't
     // care, only real bounds
     // matter -- see SectionPanel's own class doc comment). Loop Length is
     // part of the Beats-specific block now (Pass 4) -- Beats-only, unlike
@@ -1399,7 +1399,7 @@ void SlicerAudioProcessorEditor::timerCallback()
     redoButton.setEnabled (model.canRedoEdit());
 
     // Polled rather than driven only by the button's own click, since the
-    // processor can also stop an audition on its own (host transport
+    // engine can also stop an audition on its own (host transport
     // started) — the label/colour has to reflect that auto-stop too.
     const bool auditioning = model.getAuditionActive();
     auditionButton.setButtonText (auditioning ? "Stop Audition" : "Audition");
@@ -1407,8 +1407,8 @@ void SlicerAudioProcessorEditor::timerCallback()
                                auditioning ? juce::Colours::orange.withAlpha (0.6f)
                                            : getLookAndFeel().findColour (juce::TextButton::buttonColourId));
 
-    // These two are otherwise write-only (UI -> processor via onChange
-    // below) -- a MIDI pattern-bank recall can change the processor's
+    // These two are otherwise write-only (UI -> model via onChange
+    // below) -- a MIDI pattern-bank recall can change the model's
     // stepResolutionIndex/patternLengthBarsIndex on its own, out from under
     // them, so poll and resync rather than let them show a stale value
     // while SequencerGrid (which already polls dimensions live) shows the
@@ -1659,8 +1659,8 @@ void SlicerAudioProcessorEditor::syncTriggerModeToActiveTab()
     // stale against wherever Performance mode left the trim. Force one
     // rebuild here -- a one-off UI-thread action, not a hot path -- by
     // re-invoking the existing public trim setter with the same value it
-    // already has, purely for its rebuild side effect (same fix the old
-    // old triggerModeSelector.onChange applied).
+    // already has, purely for its rebuild side effect (same fix the
+    // triggerModeSelector.onChange applied before the tab refactor).
     if (wasPerformance)
         model.setTrimEndSample (model.getTrimEndSample(), false);
 

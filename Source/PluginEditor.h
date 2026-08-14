@@ -16,7 +16,7 @@
 #include "SectionPanel.h"
 
 //==============================================================================
-/** Step-41 editor: load button, reset-edits safety net, undo/redo, an
+/** Step-46 editor: load button, reset-edits safety net, undo/redo, an
     Audition button (plays the current trim on a tight raw loop,
     independent of host transport, auto-stopping the instant the
     transport starts, and available regardless of Pitch Mode), status
@@ -41,16 +41,16 @@
     mode-only, same visibility pattern as Tape Stop scope) controlling
     whether that sweep resets every tick or runs continuously across a
     whole Clock window — no other UI for either style), trigger
-    mode (Slice Length vs Clock, with its clock-reference menu, Tape Stop
-    scope selector, Filter Sweep scope selector, and subdivision
-    probability grid — Slice Length mode instead gets a mandatory "Reset
-    every" 1/2/4/8-bar selector, Step 34, forcing a hard resync at a fixed
-    bar interval, since Slice Length's purely self-paced natural-completion
-    scheduling has no other host-position awareness and can otherwise drift
-    arbitrarily far from the beat grid) — laid out within a fixed,
-    non-scrolling window sized once at construction to fit the tallest
-    sub-mode tab's content in full (Pass 3 -- see controlsContent's own doc
-    comment) — and, below a "Zoom to Trims"/"Reset Zoom" button pair
+    mode (Slice Length vs Clock vs Sequenced vs Performance, with the
+    clock-reference menu, Tape Stop scope selector, Filter Sweep scope
+    selector, and subdivision probability grid — Slice Length mode instead
+    gets a mandatory "Reset every" 1/2/4/8-bar selector, Step 34, forcing a
+    hard resync at a fixed bar interval, since Slice Length's purely self-
+    paced natural-completion scheduling has no other host-position
+    awareness and can otherwise drift arbitrarily far from the beat grid) —
+    laid out in a fixed window whose active sub-mode tab's content scrolls
+    internally (Pass 4 -- see controlsContent's own doc comment) — and,
+    below a "Zoom to Trims"/"Reset Zoom" button pair
     (Step 31), the (now wider) waveform display, which stays outside
     controlsContent, always fully visible below it: it owns slice
     visualization, drag-and-
@@ -88,7 +88,10 @@
     which only feeds the loaded audio's tempo calculation) sets the column
     count, and a Randomize Sequence button fills the pattern with
     constraint-aware random hits (each row's own slice length excludes
-    where a next hit in that row may land). Every juce::Slider in this
+    where a next hit in that row may land). A fourth value, Performance,
+    recalls 128 hand-defined performance states from a piano-roll keyboard
+    on MIDI note-on -- independent of host transport (see
+    PerformanceKeyboardPanel). Every juce::Slider in this
     editor has scroll-wheel input disabled -- a holdover from when this
     editor scrolled internally; harmless now that it doesn't. A Clear Sequence button (Step 41) wipes the pattern
     with no generation, sitting next to Randomize; a Style Palette sidebar
@@ -131,8 +134,8 @@
     playbackStyleParameterViewport, for the same reason (its own
     getPreferredHeight() reserves worst-case-across-all-styles row count).
     Loop Length and Transient Sensitivity (Pass 4) went back to plain
-    juce::Slider number boxes (IncDecButtons style) instead of RotaryKnob --
-    scoped to just these two; RotaryKnob itself is now unused and deleted. */
+    juce::Slider number boxes (IncDecButtons style) --
+    scoped to just these two. */
 class SlicerAudioProcessor;
 class SlicerAudioProcessorEditor : public juce::AudioProcessorEditor,
                                     private juce::Button::Listener,
@@ -384,7 +387,7 @@ private:
     // confirmed by ear before worrying about the DAW's own playback state.
     // Label toggles between "Audition"/"Stop Audition" in timerCallback()
     // (same polling mechanism already used to keep Undo/Redo's enabled
-    // state in sync) since the processor can also stop it on its own the
+    // state in sync) since the engine can also stop it on its own the
     // instant host transport starts — the button has to reflect that
     // auto-stop, not just its own clicks.
     juce::TextButton auditionButton { "Audition" };
@@ -458,7 +461,7 @@ private:
     juce::Slider sensitivitySlider; // 0.00-1.00 -- plain IncDecButtons number box (Pass 4: back from RotaryKnob, scoped to just this + loopLengthSlider)
 
     // Quantize detected transients to grid (Step 35) — auto-detected
-    // transients only, never manual points (see PluginProcessor.h's
+    // transients only, never manual points (see SlicerModel.cpp's
     // doc comment for why). Grid dropdown visible only while the toggle
     // is on, same show/hide-in-reserved-space pattern used throughout
     // this editor.
@@ -575,7 +578,7 @@ private:
 
     // Style Palette (Step 41) -- a fixed-width sidebar of colour swatches
     // beside sequencerViewport, one per PlaybackStyle; clicking one sets
-    // the processor's currently selected drawing style. sequencerGrid's
+    // the model's currently selected drawing style. sequencerGrid's
     // own target width (set in resized()) is reduced by this component's
     // width so the COMBINED row still lines up with WaveformDisplay's
     // width, same as it did alone before this existed.

@@ -19,7 +19,8 @@ fun is genuinely welcome.
   detected transients — these are your slices.
 - Press play in your DAW. NeditVST won't make sound until the host
   transport is running — it has no "preview" playback of its own outside
-  of the Audition button (see below).
+  of the Audition button (see below). The exception is **Performance**
+  mode, which plays on MIDI note-on even with the transport stopped.
 
 ## 2. Trimming and tempo sync
 
@@ -98,6 +99,10 @@ Controls *when* slices get picked and played.
   window — a rhythmic "roll" feel, tightly locked to the grid.
 - **Sequenced** — fully manual, hand-programmed step sequencer. See
   section 6.
+- **Performance** — a 128-note state bank, recalled from a piano-roll
+  keyboard on MIDI note-on. Hand-define a segment + style + settings per
+  slot, then trigger whole recalled states live. Unlike the other three
+  modes this plays with the host transport stopped.
 
 ## 6. Playback Styles
 
@@ -166,8 +171,8 @@ Switch **Trigger Mode** to **Sequenced** to reveal the step grid.
   Static/Sweep modes); left unchecked (the default), that style keeps
   its plain default settings when randomized.
 - **Clear** — wipes the pattern.
-- **Right-click an active step** (click near the left edge of the step)
-  to open its parameter menu — adjust that specific step's resonance,
+- **Right-click an active step** (anywhere on the cell) to open its
+  parameter menu — adjust that specific step's resonance,
   filter type, curve shape, grain settings, rate, delay/mix/feedback,
   **Volume** (Static / Ramp Up / Ramp Down — raises or lowers the
   step's volume smoothly across its own duration), or **Subdivide**

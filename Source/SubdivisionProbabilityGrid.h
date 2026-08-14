@@ -11,7 +11,7 @@
 
     Custom-painted and mouse-driven the same way WaveformDisplay handles
     its own per-slice probability faders: no juce::Slider objects, the
-    component reads straight from the processor in paint() and writes
+    component reads straight from the model in paint() and writes
     straight back to it on drag.
 
     Drag anywhere in a row sets that note value's probability from the
