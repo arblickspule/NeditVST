@@ -255,6 +255,140 @@ void SlicerEngine::setRandomizeParametersForStyle (int index, bool shouldRandomi
         randomizeParametersForStyle[(size_t) index] = shouldRandomize;
 }
 
+SlicerEngine::PickStyleValues SlicerEngine::capturePickStyleValues (PickValueSource source, int row, int step) const
+{
+    PickStyleValues v;
+
+    if (source == PickValueSource::stepOverride)
+    {
+        // Sequenced mode: this step's own override if it has one, else the
+        // global value. Modes/discrete parameters round to int -- the same
+        // conversions each original block applied at its own capture site.
+        v.stretchGrainSizeMs = model.getSequencerCellParameterOverride (row, step, "Grain Size", model.stretchGrainSizeMsValue.load());
+        v.stretchSpeedMultiplier = model.getSequencerCellParameterOverride (row, step, "Grain Speed", model.stretchSpeedMultiplierValue.load());
+        v.filterSweepResonance = model.getSequencerCellParameterOverride (row, step, "Resonance", model.filterSweepResonanceValue.load());
+        v.filterSweepType = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Filter Type", (float) model.filterSweepFilterTypeValue.load()));
+        v.curveShape = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Curve Shape", (float) model.curveShapeValue.load()));
+        v.bitcrushRateValue = model.getSequencerCellParameterOverride (row, step, "Sample Rate Reduction", model.bitcrushRateReductionGlobalValue.load());
+        v.bitcrushRateMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Sample Rate Reduction Mode", (float) model.bitcrushRateReductionModeGlobalValue.load()));
+        v.bitcrushBitDepthValue = model.getSequencerCellParameterOverride (row, step, "Bit Depth", model.bitcrushBitDepthGlobalValue.load());
+        v.bitcrushBitDepthMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Bit Depth Mode", (float) model.bitcrushBitDepthModeGlobalValue.load()));
+        v.flangerDelayValue = model.getSequencerCellParameterOverride (row, step, "Delay Time", model.flangerDelayTimeGlobalValue.load());
+        v.flangerDelayMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Delay Time Mode", (float) model.flangerDelayTimeModeGlobalValue.load()));
+        v.flangerMixValue = model.getSequencerCellParameterOverride (row, step, "Mix", model.flangerMixGlobalValue.load());
+        v.flangerMixMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Mix Mode", (float) model.flangerMixModeGlobalValue.load()));
+        v.flangerFeedbackValue = model.getSequencerCellParameterOverride (row, step, "Feedback", model.flangerFeedbackGlobalValue.load());
+        v.flangerFeedbackMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Feedback Mode", (float) model.flangerFeedbackModeGlobalValue.load()));
+        v.volumeValue = model.getSequencerCellParameterOverride (row, step, "Volume", 1.0f);
+        v.volumeMode = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Volume Mode", 0.0f));
+        v.scratchRateIndex = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Rate", (float) model.scratchRateGlobalValue.load()));
+        v.scratchForwardCurveIndex = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Forward Curve", (float) model.scratchForwardCurveGlobalValue.load()));
+        v.scratchBackwardCurveIndex = juce::roundToInt (model.getSequencerCellParameterOverride (row, step, "Backward Curve", (float) model.scratchBackwardCurveGlobalValue.load()));
+    }
+    else
+    {
+        v.stretchGrainSizeMs = model.stretchGrainSizeMsValue.load();
+        v.stretchSpeedMultiplier = model.stretchSpeedMultiplierValue.load();
+        v.filterSweepResonance = model.filterSweepResonanceValue.load();
+        v.filterSweepType = model.filterSweepFilterTypeValue.load();
+        v.curveShape = model.curveShapeValue.load();
+        v.bitcrushRateValue = model.bitcrushRateReductionGlobalValue.load();
+        v.bitcrushRateMode = model.bitcrushRateReductionModeGlobalValue.load();
+        v.bitcrushBitDepthValue = model.bitcrushBitDepthGlobalValue.load();
+        v.bitcrushBitDepthMode = model.bitcrushBitDepthModeGlobalValue.load();
+        v.flangerDelayValue = model.flangerDelayTimeGlobalValue.load();
+        v.flangerDelayMode = model.flangerDelayTimeModeGlobalValue.load();
+        v.flangerMixValue = model.flangerMixGlobalValue.load();
+        v.flangerMixMode = model.flangerMixModeGlobalValue.load();
+        v.flangerFeedbackValue = model.flangerFeedbackGlobalValue.load();
+        v.flangerFeedbackMode = model.flangerFeedbackModeGlobalValue.load();
+        v.scratchRateIndex = model.scratchRateGlobalValue.load();
+        v.scratchForwardCurveIndex = model.scratchForwardCurveGlobalValue.load();
+        v.scratchBackwardCurveIndex = model.scratchBackwardCurveGlobalValue.load();
+        // volumeValue/volumeMode keep their struct defaults (1.0 / Static) --
+        // there's no global dial, exactly the fallback the Sequenced-mode
+        // override lookup itself uses for an absent Volume override.
+    }
+
+    return v;
+}
+
+void SlicerEngine::applyPickState (const PickStyleValues& values,
+                                   int sliceStartSample, int sliceEndSample,
+                                   PlaybackStyle style, int uiSliceIndex,
+                                   bool styleEndSampleFormula,
+                                   double rate, double hostBpm, double hostSampleRate,
+                                   double& naturalLengthHostSamplesOut,
+                                   double& roundTripLengthHostSamplesOut)
+{
+    const bool pingPong = (style == PlaybackStyle::pingPong);
+    const bool stretch = (style == PlaybackStyle::stretch);
+    const bool scratch = (style == PlaybackStyle::scratch);
+
+    currentPlaybackStyle = style;
+    currentSliceStartSample = sliceStartSample;
+    currentSliceLength = sliceEndSample - sliceStartSample;
+    currentPosition = (double) sliceStartSample;
+
+    // Stretch grain settings -- captured before currentEndSample below, since
+    // Grain Speed feeds directly into that calculation.
+    currentPickStretchGrainSizeMs = values.stretchGrainSizeMs;
+    currentPickStretchSpeedMultiplier = values.stretchSpeedMultiplier;
+
+    // Scratch cycle (v1) + curves (v2) -- also captured before
+    // currentEndSample below, since the cycle length feeds directly into it.
+    currentPickScratchCycleLengthHostSamples = scratch
+        ? computeScratchCycleLengthHostSamples (values.scratchRateIndex, currentSliceLength,
+                                                 hostBpm, hostSampleRate, rate)
+        : 0.0;
+    currentPickScratchForwardCurve = easingCurveFromIndex (values.scratchForwardCurveIndex);
+    currentPickScratchBackwardCurve = easingCurveFromIndex (values.scratchBackwardCurveIndex);
+
+    currentEndSample = styleEndSampleFormula
+        ? (pingPong ? (2 * sliceEndSample - sliceStartSample)
+           : stretch ? (int) (sliceStartSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
+           : scratch ? (int) (sliceStartSample + currentPickScratchCycleLengthHostSamples * rate)
+                     : sliceEndSample)
+        : sliceEndSample;
+
+    hasCurrentPick = true;
+    model.currentlyPlayingSliceIndexForUI.store (uiSliceIndex);
+
+    currentPickBeatQuantized = false;
+    currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
+
+    currentPickFilterSweepResonance = values.filterSweepResonance;
+    currentPickFilterSweepType = values.filterSweepType;
+    currentPickCurveShape = values.curveShape;
+
+    currentPickBitcrushRateValue = values.bitcrushRateValue;
+    currentPickBitcrushRateMode = values.bitcrushRateMode;
+    currentPickBitcrushBitDepthValue = values.bitcrushBitDepthValue;
+    currentPickBitcrushBitDepthMode = values.bitcrushBitDepthMode;
+
+    currentPickFlangerDelayValue = values.flangerDelayValue;
+    currentPickFlangerDelayMode = values.flangerDelayMode;
+    currentPickFlangerMixValue = values.flangerMixValue;
+    currentPickFlangerMixMode = values.flangerMixMode;
+    currentPickFlangerFeedbackValue = values.flangerFeedbackValue;
+    currentPickFlangerFeedbackMode = values.flangerFeedbackMode;
+
+    currentPickVolumeValue = values.volumeValue;
+    currentPickVolumeMode = values.volumeMode;
+
+    samplesSincePickStart = 0.0;
+    const double naturalLengthHostSamples = (rate > 0.0) ? ((double) currentSliceLength / rate) : 0.0;
+    currentPickMidpointHostSamples = scratch
+        ? (currentPickScratchCycleLengthHostSamples * 0.5)
+        : naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise. Scratch (v1) uses half its OWN cycle length instead.
+
+    naturalLengthHostSamplesOut = naturalLengthHostSamples;
+    roundTripLengthHostSamplesOut = pingPong ? (2.0 * naturalLengthHostSamples)
+                                    : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
+                                    : scratch ? currentPickScratchCycleLengthHostSamples
+                                              : naturalLengthHostSamples;
+}
+
 //==============================================================================
 // The real-time render call. The processor computes position/hasPlayHead/
 // hostTransportPlaying/hostSampleRate ahead of the lock and hands them in;
@@ -545,102 +679,24 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                 if (clockCurrentSliceIndex >= 0 && clockCurrentSliceIndex < (int) model.slices.size())
                 {
                     const auto& slice = model.slices[(size_t) clockCurrentSliceIndex];
-                    const bool pingPong = (clockCurrentPlaybackStyle == PlaybackStyle::pingPong);
                     const bool tapeStop = (clockCurrentPlaybackStyle == PlaybackStyle::tapeStop);
                     const bool stretch = (clockCurrentPlaybackStyle == PlaybackStyle::stretch);
-                    const bool scratch = (clockCurrentPlaybackStyle == PlaybackStyle::scratch);
 
-                    // Stretch grain settings (Step 46) -- Clock mode always
-                    // uses the global values; per-step overrides are
-                    // Sequenced-mode-only. Captured here, before
-                    // currentEndSample below, since Grain Speed feeds
-                    // directly into that calculation.
-                    currentPickStretchGrainSizeMs = model.stretchGrainSizeMsValue.load();
-                    currentPickStretchSpeedMultiplier = model.stretchSpeedMultiplierValue.load();
+                    // Shared pick-start state (1.2): Clock mode always uses
+                    // the global values; per-step overrides are Sequenced-
+                    // mode-only. The shared helper also sets the style's
+                    // own currentEndSample, midpoint, and natural/round-trip
+                    // lengths.
+                    double naturalLengthHostSamples = 0.0;
+                    double roundTripLengthHostSamples = 0.0;
+                    applyPickState (
+                        capturePickStyleValues (PickValueSource::global, 0, 0),
+                        slice.startSample, slice.endSample,
+                        clockCurrentPlaybackStyle, clockCurrentSliceIndex, true,
+                        playbackRate, hostBpm, hostSampleRate,
+                        naturalLengthHostSamples, roundTripLengthHostSamples);
 
-                    currentPlaybackStyle = clockCurrentPlaybackStyle;
-                    currentSliceStartSample = slice.startSample;
-                    currentSliceLength = slice.endSample - slice.startSample;
-                    currentPosition = (double) slice.startSample;
-
-                    // Scratch (v1) -- Clock mode always uses the global
-                    // Rate value; per-step overrides are Sequenced-mode-
-                    // only, same pattern as Bitcrush above. Captured here,
-                    // before currentEndSample below, since it feeds
-                    // directly into that calculation, same as Grain Speed
-                    // does for Stretch.
-                    currentPickScratchCycleLengthHostSamples = scratch
-                        ? computeScratchCycleLengthHostSamples (model.scratchRateGlobalValue.load(), currentSliceLength,
-                                                                 hostBpm, hostSampleRate, playbackRate)
-                        : 0.0;
-
-                    // Forward/Backward Curve (Scratch v2) -- Clock mode
-                    // always uses the global values; per-step overrides
-                    // are Sequenced-mode-only, same pattern as Rate just
-                    // above.
-                    currentPickScratchForwardCurve = easingCurveFromIndex (model.scratchForwardCurveGlobalValue.load());
-                    currentPickScratchBackwardCurve = easingCurveFromIndex (model.scratchBackwardCurveGlobalValue.load());
-
-                    currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
-                                     : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
-                                     : scratch ? (int) (slice.startSample + currentPickScratchCycleLengthHostSamples * playbackRate)
-                                               : slice.endSample;
-                    hasCurrentPick = true;
                     pickJustStarted = true;
-                    model.currentlyPlayingSliceIndexForUI.store (clockCurrentSliceIndex);
-
-                    // Beat-quantized slice length (either pitch mode's
-                    // toggle, Step 24/26) never applies in Clock mode -- its
-                    // own tick system already enforces beat-alignment.
-                    currentPickBeatQuantized = false;
-                    currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
-
-                    // Filter Sweep resonance/filter type + Curve Shape
-                    // (Step 45/46) -- Clock mode always uses the global
-                    // values; per-step overrides are Sequenced-mode-only.
-                    currentPickFilterSweepResonance = model.filterSweepResonanceValue.load();
-                    currentPickFilterSweepType = model.filterSweepFilterTypeValue.load();
-                    currentPickCurveShape = model.curveShapeValue.load();
-
-                    // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
-                    // Clock mode always uses the global values; per-step
-                    // value/mode overrides are Sequenced-mode-only, same
-                    // pattern as Filter Sweep just above.
-                    currentPickBitcrushRateValue = model.bitcrushRateReductionGlobalValue.load();
-                    currentPickBitcrushRateMode = model.bitcrushRateReductionModeGlobalValue.load();
-                    currentPickBitcrushBitDepthValue = model.bitcrushBitDepthGlobalValue.load();
-                    currentPickBitcrushBitDepthMode = model.bitcrushBitDepthModeGlobalValue.load();
-
-                    // Flanger Delay Time/Mix/Feedback -- Clock mode always
-                    // uses the global values; per-step value/mode overrides
-                    // are Sequenced-mode-only, same pattern as Bitcrush
-                    // just above.
-                    currentPickFlangerDelayValue = model.flangerDelayTimeGlobalValue.load();
-                    currentPickFlangerDelayMode = model.flangerDelayTimeModeGlobalValue.load();
-                    currentPickFlangerMixValue = model.flangerMixGlobalValue.load();
-                    currentPickFlangerMixMode = model.flangerMixModeGlobalValue.load();
-                    currentPickFlangerFeedbackValue = model.flangerFeedbackGlobalValue.load();
-                    currentPickFlangerFeedbackMode = model.flangerFeedbackModeGlobalValue.load();
-
-                    samplesSincePickStart = 0.0;
-                    const double naturalLengthHostSamples =
-                        (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-
-                    // Where a Ping-Pong round trip reverses direction —
-                    // always one slice's worth of natural playback time,
-                    // regardless of whether the tick below ends up cutting
-                    // the pick off before ever reaching it. Unused for
-                    // Forward. Scratch (v1) overrides this to half its OWN
-                    // cycle length instead -- see currentPickScratchCycle-
-                    // LengthHostSamples above -- since its bounce has
-                    // nothing to do with the slice's natural length.
-                    currentPickMidpointHostSamples = scratch
-                        ? (currentPickScratchCycleLengthHostSamples * 0.5)
-                        : naturalLengthHostSamples;
-
-                    const double roundTripLengthHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
-                                                             : scratch ? currentPickScratchCycleLengthHostSamples
-                                                                       : naturalLengthHostSamples;
 
                     const double tickBeats = SlicerModel::getNoteValueBeats (clockCurrentSubdivisionIndex);
                     const double tickLengthHostSamples = tickBeats * (60.0 / hostBpm) * hostSampleRate;
@@ -853,144 +909,34 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                         // the whole point of this mode is that everything
                         // is explicitly placed by the user.
                         const auto& slice = model.slices[(size_t) activeRow];
-                        currentPlaybackStyle = indexToPlaybackStyle (activeStyle);
-                        const bool tapeStop = (currentPlaybackStyle == PlaybackStyle::tapeStop);
-                        const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
-                        const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
+                        const PlaybackStyle style = indexToPlaybackStyle (activeStyle);
+                        const bool tapeStop = (style == PlaybackStyle::tapeStop);
 
-                        // Stretch grain settings (Step 46) -- this step's
-                        // own overrides if it has them, else the global
-                        // values, same per-step-override pattern as Filter
-                        // Sweep resonance below. Captured here (before
-                        // currentEndSample below), since Grain Speed feeds
-                        // directly into that calculation, unlike Resonance/
-                        // Filter Type/Curve Shape which are render-only and
-                        // can be captured later.
-                        currentPickStretchGrainSizeMs = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Grain Size", model.stretchGrainSizeMsValue.load());
-                        currentPickStretchSpeedMultiplier = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Grain Speed", model.stretchSpeedMultiplierValue.load());
+                        // Shared pick-start state (1.2): this step's own
+                        // overrides where it has them, else the global
+                        // values -- the same per-step-override-else-global
+                        // lookup every parameter below used to run
+                        // individually (looked up unconditionally, harmless
+                        // for styles that don't use a given parameter, since
+                        // an override is only ever populated for cells whose
+                        // style actually offers it). The shared helper also
+                        // sets the style's own currentEndSample -- Sequenced
+                        // mode deliberately keeps the plain slice end (Ping-
+                        // Pong's half-content window and Stretch's duration-
+                        // based gate make the doubled/extended endSample
+                        // unnecessary here, same reasoning as the original
+                        // code) -- plus the midpoint and the natural/round-
+                        // trip lengths.
+                        double roundTripLengthHostSamples = 0.0;
+                        double naturalLengthHostSamples = 0.0;
+                        applyPickState (
+                            capturePickStyleValues (PickValueSource::stepOverride, activeRow, currentStepIndex),
+                            slice.startSample, slice.endSample,
+                            style, activeRow, false,
+                            playbackRate, hostBpm, hostSampleRate,
+                            naturalLengthHostSamples, roundTripLengthHostSamples);
 
-                        currentSliceStartSample = slice.startSample;
-                        currentSliceLength = slice.endSample - slice.startSample;
-                        currentPosition = (double) slice.startSample;
-
-                        // Ping-Pong here (Step 44) deliberately does NOT
-                        // double currentEndSample the way Slice Length/
-                        // Clock modes' round trip does -- it plays a
-                        // half-content window instead (see the halved
-                        // fold-length in the shared render code below), so
-                        // the full there-and-back cycle only needs to span
-                        // the slice's original raw length once, exactly
-                        // like every other style here. Stretch (Step-
-                        // extension fix) no longer gets its own extended
-                        // value here either -- its render-continue gate is
-                        // now duration-based (currentPickLengthInHostSamples,
-                        // set below), the same reasoning Tape Stop's own
-                        // gate switch used, so currentEndSample no longer
-                        // needs to (and, since Grain Speed isn't a duration
-                        // multiplier anymore, no longer sensibly CAN)
-                        // encode Stretch's play length -- just the slice's
-                        // own natural end, like every other style here.
-                        currentEndSample = slice.endSample;
-                        hasCurrentPick = true;
                         pickJustStarted = true;
-                        model.currentlyPlayingSliceIndexForUI.store (activeRow);
-
-                        // Filter Sweep resonance/filter type + Curve Shape
-                        // (Step 45/46) -- this step's own override if it
-                        // has one, else the global value. Looked up
-                        // unconditionally, harmless for styles that don't
-                        // use a given parameter (an override is only ever
-                        // populated for cells whose style actually offers
-                        // it, so the lookup naturally falls through to the
-                        // global default there anyway).
-                        currentPickFilterSweepResonance = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Resonance", model.filterSweepResonanceValue.load());
-                        currentPickFilterSweepType = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Filter Type", (float) model.filterSweepFilterTypeValue.load()));
-                        currentPickCurveShape = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Curve Shape", (float) model.curveShapeValue.load()));
-
-                        // Bitcrush Sample Rate Reduction/Bit Depth VALUE +
-                        // MODE (Step 49) -- same per-step-override-else-
-                        // global pattern as Filter Sweep just above. Mode
-                        // overrides are stored under "<name> Mode" (see
-                        // SequencerGrid::showParameterMenuForCell()'s swept
-                        // branch), separately from the value itself.
-                        currentPickBitcrushRateValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Sample Rate Reduction", model.bitcrushRateReductionGlobalValue.load());
-                        currentPickBitcrushRateMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Sample Rate Reduction Mode", (float) model.bitcrushRateReductionModeGlobalValue.load()));
-                        currentPickBitcrushBitDepthValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Bit Depth", model.bitcrushBitDepthGlobalValue.load());
-                        currentPickBitcrushBitDepthMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Bit Depth Mode", (float) model.bitcrushBitDepthModeGlobalValue.load()));
-
-                        // Flanger Delay Time/Mix/Feedback VALUE + MODE --
-                        // same per-step-override-else-global pattern as
-                        // Bitcrush just above.
-                        currentPickFlangerDelayValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Delay Time", model.flangerDelayTimeGlobalValue.load());
-                        currentPickFlangerDelayMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Delay Time Mode", (float) model.flangerDelayTimeModeGlobalValue.load()));
-                        currentPickFlangerMixValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Mix", model.flangerMixGlobalValue.load());
-                        currentPickFlangerMixMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Mix Mode", (float) model.flangerMixModeGlobalValue.load()));
-                        currentPickFlangerFeedbackValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Feedback", model.flangerFeedbackGlobalValue.load());
-                        currentPickFlangerFeedbackMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Feedback Mode", (float) model.flangerFeedbackModeGlobalValue.load()));
-
-                        // Volume ramp VALUE + MODE -- style-independent, so
-                        // unlike Bitcrush/Flanger above there's no global
-                        // dial to fall back to (same as Subdivide); an
-                        // absent override falls back straight to 1.0/Static
-                        // (full volume, unchanged), matching
-                        // getSequencerCellParameterGlobalValue()'s own
-                        // fallback for indices 19/20.
-                        currentPickVolumeValue = model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Volume", 1.0f);
-                        currentPickVolumeMode = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Volume Mode", 0.0f));
-
-                        // Scratch Rate (v1) -- this step's own override if
-                        // it has one, else the global value, same per-
-                        // step-override-else-global pattern as Filter
-                        // Sweep/Bitcrush above.
-                        const int scratchRateIndex = juce::roundToInt (model.getSequencerCellParameterOverride (
-                            activeRow, currentStepIndex, "Rate", (float) model.scratchRateGlobalValue.load()));
-                        currentPickScratchCycleLengthHostSamples = scratch
-                            ? computeScratchCycleLengthHostSamples (scratchRateIndex, currentSliceLength,
-                                                                     hostBpm, hostSampleRate, playbackRate)
-                            : 0.0;
-
-                        // Forward/Backward Curve (Scratch v2) -- this
-                        // step's own override if it has one, else the
-                        // global value, same per-step-override-else-global
-                        // pattern as Rate just above.
-                        currentPickScratchForwardCurve = easingCurveFromIndex (juce::roundToInt (
-                            model.getSequencerCellParameterOverride (activeRow, currentStepIndex, "Forward Curve", (float) model.scratchForwardCurveGlobalValue.load())));
-                        currentPickScratchBackwardCurve = easingCurveFromIndex (juce::roundToInt (
-                            model.getSequencerCellParameterOverride (activeRow, currentStepIndex, "Backward Curve", (float) model.scratchBackwardCurveGlobalValue.load())));
-
-                        // Sequenced mode's own step grid already enforces
-                        // beat-alignment for SCHEDULING (every note starts
-                        // exactly on a step boundary already) -- same
-                        // reasoning Clock mode already uses to exclude
-                        // Beat-Quantize (Step 24/26), which is about
-                        // DURATION, not start time, and would be redundant
-                        // here rather than serve any purpose.
-                        currentPickBeatQuantized = false;
-                        currentPickNativeRateActive = false; // Performance mode's Sync-off override never applies outside Performance mode's own picks
-
-                        samplesSincePickStart = 0.0;
-                        const double naturalLengthHostSamples =
-                            (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                        currentPickMidpointHostSamples = scratch
-                            ? (currentPickScratchCycleLengthHostSamples * 0.5)
-                            : naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused otherwise -- same natural-length-based timing as every other trigger mode (Step 44), unchanged by the half-content window below. Scratch (v1) uses half its OWN cycle length instead, same override reasoning as Clock mode's own pick-start.
 
                         // Anticipatory fade (Step 37): cap this note's
                         // length to whichever comes first -- its own
@@ -1045,43 +991,43 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                         // below) means its total duration is just a normal
                         // single pick's length, same as Forward/Filter
                         // Sweep share in the universal clamp below.
+                        //
+                        // Step-extension fix: every style's duration is
+                        // capped by THIS step's own declared length --
+                        // natural (Step-resolution-quantized) slice length,
+                        // or its Step-extension override if Shift+drag set
+                        // one -- the identical value SequencerGrid's
+                        // piano-roll bar renders (see
+                        // getSequencerCellDeclaredLengthSteps()),
+                        // converted from steps to host samples via the
+                        // same stepBeats/hostBpm/hostSampleRate used
+                        // for samplesUntilNextActiveStep above. Still
+                        // clamped against samplesUntilNextActiveStep,
+                        // same "whichever comes first" precedence the
+                        // bar's own computeBarLengthInSteps() already
+                        // applies (its next-active-step clamp, run
+                        // AFTER settling on desiredSteps) -- a step's
+                        // own length is the ceiling, but a genuinely
+                        // upcoming step still cuts it off early, same
+                        // as what's actually drawn.
+                        const int declaredLengthSteps = model.getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
+                        const double declaredLengthHostSamples =
+                            (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
+
                         if (tapeStop)
                         {
-                            // Step-extension fix: Tape Stop's decel is
-                            // capped by THIS step's own declared length --
-                            // natural (Step-resolution-quantized) slice
-                            // length, or its Step-extension override if
-                            // Shift+drag set one -- the identical value
-                            // SequencerGrid's piano-roll bar renders (see
-                            // getSequencerCellDeclaredLengthSteps()),
-                            // converted from steps to host samples via the
-                            // same stepBeats/hostBpm/hostSampleRate used
-                            // for samplesUntilNextActiveStep above. Still
-                            // clamped against samplesUntilNextActiveStep,
-                            // same "whichever comes first" precedence the
-                            // bar's own computeBarLengthInSteps() already
-                            // applies (its next-active-step clamp, run
-                            // AFTER settling on desiredSteps) -- a step's
-                            // own length is the ceiling, but a genuinely
-                            // upcoming step still cuts it off early, same
-                            // as what's actually drawn.
-                            const int declaredLengthSteps = model.getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
-                            const double declaredLengthHostSamples =
-                                (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
+                            // Tape Stop's decel is capped by the declared
+                            // length, and its duration IS that cap (see the
+                            // fadeIn clamping below) -- unlike every other
+                            // style, Tape Stop's read position may never
+                            // reach the slice's actual end.
                             currentPickTapeStopDurationHostSamples = juce::jmin (declaredLengthHostSamples, samplesUntilNextActiveStep);
                             currentPickLengthInHostSamples = currentPickTapeStopDurationHostSamples; // only used for fadeIn clamping
                         }
-                        else if (stretch)
+                        else
                         {
-                            // Step-extension fix: Stretch's duration is now
-                            // authoritative from the step's own declared
-                            // length -- natural (Step-resolution-quantized)
-                            // slice length, or its Step-extension override
-                            // if Shift+drag set one -- exactly the same
-                            // mechanism/precedence Tape Stop already uses
-                            // (see its own branch above): the declared
-                            // length is the ceiling, a genuinely upcoming
-                            // step still cuts it off early. Grain Speed
+                            // Stretch/Forward/Ping-Pong/Filter Down/Up share
+                            // one duration path. Stretch: Grain Speed
                             // (currentPickStretchSpeedMultiplier) plays NO
                             // part in this -- it stays a fixed character
                             // constant (how fast ONE pass sweeps the
@@ -1089,38 +1035,18 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                             // declared length outlasts one pass, the SAME
                             // pass repeats to fill the remainder instead
                             // (see grainPlaybackStyle's loop mode in the
-                            // granular render section below).
-                            const int stretchDeclaredLengthSteps = model.getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
-                            const double stretchDeclaredLengthHostSamples =
-                                (double) stretchDeclaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
-                            currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
-                            currentPickLengthInHostSamples = juce::jmin (stretchDeclaredLengthHostSamples, samplesUntilNextActiveStep);
-                        }
-                        else
-                        {
-                            // Step-extension fix: Forward/Ping-Pong/Filter
-                            // Down/Up's duration is now authoritative from
-                            // the step's own declared length, same
-                            // mechanism/precedence Tape Stop and Stretch
-                            // above already use -- the declared length is
-                            // the ceiling, a genuinely upcoming step still
-                            // cuts it off early (samplesUntilNextActiveStep,
-                            // same "whichever comes first" pattern as
-                            // Step 43's original schedule-clamping, which
-                            // this supersedes).
-                            //
-                            // When the declared length exceeds the natural
-                            // unit -- one raw slice playthrough for Forward
-                            // and Filter Down/Up, one round trip for
-                            // Ping-Pong (its half-content window, see
+                            // granular render section below). Forward/
+                            // Ping-Pong/Filter Down/Up: when the declared
+                            // length exceeds the natural unit -- one raw
+                            // slice playthrough for Forward and Filter
+                            // Down/Up, one round trip for Ping-Pong (its
+                            // half-content window, see
                             // pingPongFoldLengthSamples below, makes one
                             // round trip exactly naturalLengthHostSamples
                             // long here) -- that unit LOOPS to fill the
                             // remainder, the same "repeat the natural unit"
-                            // principle already built for Stretch, just
-                            // with the raw slice/round-trip as the
-                            // repeating unit instead of a stretched pass.
-                            // No extra code needed for the loop itself:
+                            // principle just described for Stretch. No
+                            // extra code needed for the loop itself:
                             // grainPlaybackStyle (loop for Forward/Filter
                             // Down/Up, the existing pingPong fold for
                             // Ping-Pong -- see below) already wraps
@@ -1130,16 +1056,13 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                             // sweep timeline (currentWindowLengthHostSamples,
                             // set below from this same value, before
                             // Subdivide splits it into individual ticks)
-                            // rides along for free
-                            // too -- one continuous glide across the whole
-                            // declared length regardless of how many times
-                            // the underlying audio loops underneath it, or
-                            // how many Subdivide retriggers happen, exactly
-                            // the same Whole Window principle Clock mode's
-                            // own scope setting already proved.
-                            const int declaredLengthSteps = model.getSequencerCellDeclaredLengthSteps (activeRow, currentStepIndex);
-                            const double declaredLengthHostSamples =
-                                (double) declaredLengthSteps * stepBeats * (60.0 / hostBpm) * hostSampleRate;
+                            // rides along for free too -- one continuous
+                            // glide across the whole declared length
+                            // regardless of how many times the underlying
+                            // audio loops underneath it, or how many
+                            // Subdivide retriggers happen, exactly the same
+                            // Whole Window principle Clock mode's own scope
+                            // setting already proved.
                             currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // unused, harmless
                             currentPickLengthInHostSamples = juce::jmin (declaredLengthHostSamples, samplesUntilNextActiveStep);
                         }
@@ -1491,85 +1414,27 @@ void SlicerEngine::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuf
                     break;
                 }
 
-                currentPlaybackStyle = indexToPlaybackStyle (pickWeightedIndex (model.playbackStyleProbabilities));
-                const bool pingPong = (currentPlaybackStyle == PlaybackStyle::pingPong);
-                const bool stretch = (currentPlaybackStyle == PlaybackStyle::stretch);
-                const bool scratch = (currentPlaybackStyle == PlaybackStyle::scratch);
+                const PlaybackStyle style = indexToPlaybackStyle (pickWeightedIndex (model.playbackStyleProbabilities));
+                const bool pingPong = (style == PlaybackStyle::pingPong);
 
-                // Stretch grain settings (Step 46) -- Slice Length mode
-                // always uses the global values; per-step overrides are
-                // Sequenced-mode-only. Captured here, before currentEndSample
-                // below, since Grain Speed feeds directly into that
-                // calculation.
-                currentPickStretchGrainSizeMs = model.stretchGrainSizeMsValue.load();
-                currentPickStretchSpeedMultiplier = model.stretchSpeedMultiplierValue.load();
-
+                // Shared pick-start state (1.2): Slice Length mode always
+                // uses the global values; per-step overrides are Sequenced-
+                // mode-only. The shared helper also sets the style's own
+                // currentEndSample, the midpoint, and the natural/round-trip
+                // lengths -- the round-trip value IS this mode's duration
+                // (2x for Ping-Pong, speed-multiplied for Stretch, the
+                // scratch cycle, else the natural length), so it's passed
+                // straight through as currentPickLengthInHostSamples.
                 const auto& slice = model.slices[(size_t) currentSliceIndex];
-                currentSliceStartSample = slice.startSample;
-                currentSliceLength = slice.endSample - slice.startSample;
-                currentPosition = (double) slice.startSample;
-
-                // Scratch (v1) -- Slice Length mode always uses the global
-                // Rate value; per-step overrides are Sequenced-mode-only,
-                // same pattern as Bitcrush above. Captured here, before
-                // currentEndSample below, since it feeds directly into that
-                // calculation, same as Grain Speed does for Stretch.
-                currentPickScratchCycleLengthHostSamples = scratch
-                    ? computeScratchCycleLengthHostSamples (model.scratchRateGlobalValue.load(), currentSliceLength,
-                                                             hostBpm, hostSampleRate, playbackRate)
-                    : 0.0;
-
-                // Forward/Backward Curve (Scratch v2) -- Slice Length mode
-                // always uses the global values; per-step overrides are
-                // Sequenced-mode-only, same pattern as Rate just above.
-                currentPickScratchForwardCurve = easingCurveFromIndex (model.scratchForwardCurveGlobalValue.load());
-                currentPickScratchBackwardCurve = easingCurveFromIndex (model.scratchBackwardCurveGlobalValue.load());
-
-                currentEndSample = pingPong ? (2 * slice.endSample - slice.startSample)
-                                 : stretch ? (int) (slice.startSample + (double) currentPickStretchSpeedMultiplier * currentSliceLength)
-                                 : scratch ? (int) (slice.startSample + currentPickScratchCycleLengthHostSamples * playbackRate)
-                                           : slice.endSample;
-                hasCurrentPick = true;
+                double naturalLengthHostSamples = 0.0;
+                applyPickState (
+                    capturePickStyleValues (PickValueSource::global, 0, 0),
+                    slice.startSample, slice.endSample,
+                    style, currentSliceIndex, true,
+                    playbackRate, hostBpm, hostSampleRate,
+                    naturalLengthHostSamples, currentPickLengthInHostSamples);
                 pickJustStarted = true;
-                model.currentlyPlayingSliceIndexForUI.store (currentSliceIndex);
-
-                // Filter Sweep resonance/filter type + Curve Shape (Step
-                // 45/46) -- Slice Length mode always uses the global
-                // values; per-step overrides are Sequenced-mode-only.
-                currentPickFilterSweepResonance = model.filterSweepResonanceValue.load();
-                currentPickFilterSweepType = model.filterSweepFilterTypeValue.load();
-                currentPickCurveShape = model.curveShapeValue.load();
-
-                // Bitcrush Sample Rate Reduction/Bit Depth (Step 49) --
-                // Slice Length mode always uses the global values;
-                // per-step value/mode overrides are Sequenced-mode-only,
-                // same pattern as Filter Sweep above.
-                currentPickBitcrushRateValue = model.bitcrushRateReductionGlobalValue.load();
-                currentPickBitcrushRateMode = model.bitcrushRateReductionModeGlobalValue.load();
-                currentPickBitcrushBitDepthValue = model.bitcrushBitDepthGlobalValue.load();
-                currentPickBitcrushBitDepthMode = model.bitcrushBitDepthModeGlobalValue.load();
-
-                // Flanger Delay Time/Mix/Feedback -- Slice Length mode
-                // always uses the global values; per-step value/mode
-                // overrides are Sequenced-mode-only, same pattern as
-                // Bitcrush just above.
-                currentPickFlangerDelayValue = model.flangerDelayTimeGlobalValue.load();
-                currentPickFlangerDelayMode = model.flangerDelayTimeModeGlobalValue.load();
-                currentPickFlangerMixValue = model.flangerMixGlobalValue.load();
-                currentPickFlangerMixMode = model.flangerMixModeGlobalValue.load();
-                currentPickFlangerFeedbackValue = model.flangerFeedbackGlobalValue.load();
-                currentPickFlangerFeedbackMode = model.flangerFeedbackModeGlobalValue.load();
-
-                samplesSincePickStart = 0.0;
-                const double naturalLengthHostSamples = (playbackRate > 0.0) ? ((double) currentSliceLength / playbackRate) : 0.0;
-                currentPickMidpointHostSamples = scratch
-                    ? (currentPickScratchCycleLengthHostSamples * 0.5)
-                    : naturalLengthHostSamples; // where a Ping-Pong round trip reverses; unused for Forward. Scratch (v1) uses half its OWN cycle length instead.
                 currentPickTapeStopDurationHostSamples = naturalLengthHostSamples; // the pick's own natural length; unused for Forward/Ping-Pong/Stretch/Scratch
-                currentPickLengthInHostSamples = pingPong ? (2.0 * naturalLengthHostSamples)
-                                                : stretch ? ((double) currentPickStretchSpeedMultiplier * naturalLengthHostSamples)
-                                                : scratch ? currentPickScratchCycleLengthHostSamples
-                                                          : naturalLengthHostSamples;
 
                 // Beat-quantized slice length (Step 24 for Time-Stretch,
                 // Step 26 for Repitch) — Slice Length mode only,

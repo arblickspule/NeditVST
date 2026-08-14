@@ -314,6 +314,67 @@ private:
     // model wrapper) take the same lock.
     void renderAudition (juce::AudioBuffer<float>& buffer, double hostSampleRate);
 
+    // Pick-start factoring (nextsteps 1.2) -- the three near-identical
+    // pick-start paths (Clock / Sequenced / Slice Length) each captured the
+    // same ~20 per-style parameter values and set the same slice geometry,
+    // so the shared capture + state assignment lives here instead:
+    //
+    // capturePickStyleValues() reads the per-style parameter set once, from
+    // either the global values (Slice Length/Clock always use these) or a
+    // Sequenced step's own per-cell overrides (falling back to the global
+    // value where a cell has none). Row/step are ignored for the global
+    // source. Audio-thread-only; caller holds model.sampleLock.
+    enum class PickValueSource { global, stepOverride };
+
+    struct PickStyleValues
+    {
+        float stretchGrainSizeMs = 0.0f;
+        float stretchSpeedMultiplier = 1.0f;
+        int scratchRateIndex = 0;
+        int scratchForwardCurveIndex = 0;
+        int scratchBackwardCurveIndex = 0;
+        float filterSweepResonance = 0.0f;
+        int filterSweepType = 0;
+        int curveShape = 0;
+        float bitcrushRateValue = 0.0f;
+        int bitcrushRateMode = 0;
+        float bitcrushBitDepthValue = 0.0f;
+        int bitcrushBitDepthMode = 0;
+        float flangerDelayValue = 0.0f;
+        int flangerDelayMode = 0;
+        float flangerMixValue = 0.0f;
+        int flangerMixMode = 0;
+        float flangerFeedbackValue = 0.0f;
+        int flangerFeedbackMode = 0;
+        float volumeValue = 1.0f; // Sequenced-only (no global dial); 1.0/Static fallback for the other modes, harmless
+        int volumeMode = 0;
+    };
+
+    PickStyleValues capturePickStyleValues (PickValueSource source, int row, int step) const;
+
+    // Applies one captured pick's shared state: slice geometry
+    // (currentSliceStartSample/currentSliceLength/currentPosition), the
+    // style's own currentEndSample (styleEndSampleFormula true gives the
+    // Ping-Pong-doubled / Stretch-lengthened / Scratch-cycle formula Clock
+    // and Slice Length use; false gives Sequenced mode's plain slice end),
+    // the currentPick* style parameters, currentPickBeatQuantized/
+    // currentPickNativeRateActive (both always false here -- the mode-
+    // specific blocks decide afterwards whether to override), scratch
+    // cycle/curves, samplesSincePickStart, and the midpoint. Fills
+    // naturalLengthHostSamplesOut (the un-doubled length) and
+    // roundTripLengthHostSamplesOut (Ping-Pong's 2x, Stretch's speed-
+    // multiplied, Scratch's cycle, else the natural length) -- the two
+    // values every mode's own duration logic derives its caps from.
+    // Mode-specific duration (tick/window/step/reset caps, beat-quantize,
+    // Subdivide) stays in the callers.
+    void applyPickState (const PickStyleValues& values,
+                           int sliceStartSample, int sliceEndSample,
+                           PlaybackStyle style, int uiSliceIndex,
+                           bool styleEndSampleFormula,
+                           double rate, double hostBpm, double hostSampleRate,
+                           double& naturalLengthHostSamplesOut,
+                           double& roundTripLengthHostSamplesOut);
+
     juce::Random random;
 
     std::vector<bool> randomizeParametersForStyle = std::vector<bool> ((size_t) SlicerModel::numPlaybackStyleOptions, false); // see getRandomizeParametersForStyle()'s own doc comment
