@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "GranularStretcher.h"
+#include "model/GranularStretcher.h"
 
 using Style = GranularStretcher::PlaybackStyle;
 

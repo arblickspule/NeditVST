@@ -46,8 +46,8 @@
 #include "contract.h"
 #include "pages/PlaceholderPage.h"
 #include "components/WaveBasicsPanel.h"
-#include "../SegmentedButtonRow.h"
-#include "../NeditPalette.h"
+#include "widgets/SegmentedButtonRow.h"
+#include "NeditPalette.h"
 
 #include <array>
 

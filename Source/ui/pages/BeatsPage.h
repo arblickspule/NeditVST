@@ -2,7 +2,7 @@
 
 #include "../layout/Layout.h"
 #include "../components/UiPanel.h"
-#include "../../SlicerModel.h"
+#include "../../model/SlicerModel.h"
 
 class SlicerEngine;
 class WaveformDisplay;

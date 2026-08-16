@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 //==============================================================================
 /** Slice Length/Clock mode global-default parameter panel. A style selector

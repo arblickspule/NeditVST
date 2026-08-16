@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 namespace
 {

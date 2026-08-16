@@ -8,14 +8,14 @@
 // their public members.
 
 #include "BeatsPage.h"
-#include "../../SlicerEngine.h"
-#include "../../WaveformDisplay.h"
-#include "../../PlaybackStyleGrid.h"
-#include "../../PlaybackStyleParameterPanel.h"
-#include "../../PlaybackStylePalette.h"
-#include "../../SubdivisionProbabilityGrid.h"
-#include "../../SegmentedButtonRow.h"
-#include "../../NeditPalette.h"
+#include "../../model/SlicerEngine.h"
+#include "../../ui/widgets/WaveformDisplay.h"
+#include "../../ui/widgets/PlaybackStyleGrid.h"
+#include "../../ui/widgets/PlaybackStyleParameterPanel.h"
+#include "../../ui/widgets/PlaybackStylePalette.h"
+#include "../../ui/widgets/SubdivisionProbabilityGrid.h"
+#include "../../ui/widgets/SegmentedButtonRow.h"
+#include "../NeditPalette.h"
 
 namespace ui
 {

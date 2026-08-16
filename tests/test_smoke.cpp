@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 // Harness smoke test: construct the model and exercise a couple of simple
 // get/set round-trips, proving the test target compiles and links the real

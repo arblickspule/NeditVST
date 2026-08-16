@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
-#include "SlicerModel.h"
-#include "SlicerEngine.h"
+#include "model/SlicerModel.h"
+#include "model/SlicerEngine.h"
 
 #include <cmath>
 

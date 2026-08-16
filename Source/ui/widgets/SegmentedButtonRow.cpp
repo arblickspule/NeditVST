@@ -1,5 +1,5 @@
 #include "SegmentedButtonRow.h"
-#include "NeditPalette.h"
+#include "../NeditPalette.h"
 
 void SegmentedButtonRow::setOptions (std::vector<Option> newOptions)
 {

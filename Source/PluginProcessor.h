@@ -1,8 +1,8 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SlicerModel.h"
-#include "SlicerEngine.h"
+#include "model/SlicerModel.h"
+#include "model/SlicerEngine.h"
 
 //==============================================================================
 // SlicerAudioProcessor -- the thin JUCE plugin shell (Phase 3).

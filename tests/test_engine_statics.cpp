@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "SlicerEngine.h"
+#include "model/SlicerEngine.h"
 
 using PlaybackStyle = SlicerModel::PlaybackStyle;
 

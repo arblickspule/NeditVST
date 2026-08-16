@@ -64,39 +64,47 @@ target_sources(NeditVST
     PRIVATE
         Source/PluginProcessor.cpp
         Source/PluginProcessor.h
-        Source/SlicerModel.cpp
-        Source/SlicerModel.h
-        Source/SlicerEngine.cpp
-        Source/SlicerEngine.h
+        Source/model/SlicerModel.cpp
+        Source/model/SlicerModel.h
+        Source/model/SlicerEngine.cpp
+        Source/model/SlicerEngine.h
+        Source/model/TransientDetector.cpp
+        Source/model/TransientDetector.h
+        Source/model/GranularStretcher.cpp
+        Source/model/GranularStretcher.h
+        Source/model/EasingCurve.h
         Source/ui/gui.cpp
         Source/ui/contract.h
+        Source/ui/NeditPalette.h
         Source/ui/layout/Layout.h
         Source/ui/components/UiPanel.h
         Source/ui/components/WaveBasicsPanel.h
         Source/ui/pages/BeatsPage.cpp
         Source/ui/pages/BeatsPage.h
         Source/ui/pages/PlaceholderPage.h
-        Source/SegmentedButtonRow.cpp
-        Source/SegmentedButtonRow.h
-        Source/WaveformDisplay.cpp
-        Source/WaveformDisplay.h
-        Source/PlaybackStyleGrid.cpp
-        Source/PlaybackStyleGrid.h
-        Source/PlaybackStyleParameterPanel.cpp
-        Source/PlaybackStyleParameterPanel.h
-        Source/PlaybackStylePalette.cpp
-        Source/PlaybackStylePalette.h
-        Source/SubdivisionProbabilityGrid.cpp
-        Source/SubdivisionProbabilityGrid.h
-        Source/TransientDetector.cpp
-        Source/TransientDetector.h
-        Source/GranularStretcher.cpp
-        Source/GranularStretcher.h
-        Source/EasingCurve.h
-        Source/NeditPalette.h
+        Source/ui/widgets/SegmentedButtonRow.cpp
+        Source/ui/widgets/SegmentedButtonRow.h
+        Source/ui/widgets/WaveformDisplay.cpp
+        Source/ui/widgets/WaveformDisplay.h
+        Source/ui/widgets/PlaybackStyleGrid.cpp
+        Source/ui/widgets/PlaybackStyleGrid.h
+        Source/ui/widgets/PlaybackStyleParameterPanel.cpp
+        Source/ui/widgets/PlaybackStyleParameterPanel.h
+        Source/ui/widgets/PlaybackStylePalette.cpp
+        Source/ui/widgets/PlaybackStylePalette.h
+        Source/ui/widgets/SubdivisionProbabilityGrid.cpp
+        Source/ui/widgets/SubdivisionProbabilityGrid.h
 )
 
 juce_generate_juce_header(NeditVST)
+
+# Model/engine files include each other by bare filename and widgets use
+# "model/...", so the source root has to be on the plugin target's include
+# path too (same convention as NeditVST_tests).
+target_include_directories(NeditVST
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source
+)
 
 target_compile_definitions(NeditVST
     PUBLIC
@@ -162,30 +170,30 @@ target_sources(NeditVST_tests
     tests/test_engine_process.cpp
     tests/test_layout.cpp
     tests/test_ui_pages.cpp
-    Source/SlicerModel.cpp
-    Source/SlicerModel.h
-    Source/SlicerEngine.cpp
-    Source/SlicerEngine.h
-    Source/TransientDetector.cpp
-    Source/TransientDetector.h
-    Source/GranularStretcher.cpp
-    Source/GranularStretcher.h
-    Source/EasingCurve.h
+    Source/model/SlicerModel.cpp
+    Source/model/SlicerModel.h
+    Source/model/SlicerEngine.cpp
+    Source/model/SlicerEngine.h
+    Source/model/TransientDetector.cpp
+    Source/model/TransientDetector.h
+    Source/model/GranularStretcher.cpp
+    Source/model/GranularStretcher.h
+    Source/model/EasingCurve.h
     Source/ui/pages/BeatsPage.cpp
     Source/ui/pages/BeatsPage.h
     Source/ui/pages/PlaceholderPage.h
-    Source/SegmentedButtonRow.cpp
-    Source/SegmentedButtonRow.h
-    Source/WaveformDisplay.cpp
-    Source/WaveformDisplay.h
-    Source/PlaybackStyleGrid.cpp
-    Source/PlaybackStyleGrid.h
-    Source/PlaybackStyleParameterPanel.cpp
-    Source/PlaybackStyleParameterPanel.h
-    Source/PlaybackStylePalette.cpp
-    Source/PlaybackStylePalette.h
-    Source/SubdivisionProbabilityGrid.cpp
-    Source/SubdivisionProbabilityGrid.h
+    Source/ui/widgets/SegmentedButtonRow.cpp
+    Source/ui/widgets/SegmentedButtonRow.h
+    Source/ui/widgets/WaveformDisplay.cpp
+    Source/ui/widgets/WaveformDisplay.h
+    Source/ui/widgets/PlaybackStyleGrid.cpp
+    Source/ui/widgets/PlaybackStyleGrid.h
+    Source/ui/widgets/PlaybackStyleParameterPanel.cpp
+    Source/ui/widgets/PlaybackStyleParameterPanel.h
+    Source/ui/widgets/PlaybackStylePalette.cpp
+    Source/ui/widgets/PlaybackStylePalette.h
+    Source/ui/widgets/SubdivisionProbabilityGrid.cpp
+    Source/ui/widgets/SubdivisionProbabilityGrid.h
 )
 
 # SlicerModel/SlicerEngine/TransientDetector reference no GUI or plugin-client

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 //==============================================================================
 /** Step-16: subdivision probability, drawn as a horizontal multislider —

@@ -4,73 +4,70 @@
               addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" pluginCharacteristicsValue="pluginIsSynth,pluginWantsMidiIn">
   <MAINGROUP id="sgvVxZ" name="NeditVST">
     <GROUP id="{3CC86A09-BFA9-C1C7-F154-3FBFAAA37A60}" name="Source">
-      <FILE id="IeJt7W" name="PluginEditor.cpp" compile="1" resource="0"
-            file="../Source/PluginEditor.cpp"/>
-      <FILE id="eivD6B" name="PluginEditor.h" compile="0" resource="0" file="../Source/PluginEditor.h"/>
       <FILE id="ZExjEk" name="PluginProcessor.cpp" compile="1" resource="0"
             file="../Source/PluginProcessor.cpp"/>
       <FILE id="XWFLTk" name="PluginProcessor.h" compile="0" resource="0"
             file="../Source/PluginProcessor.h"/>
       <FILE id="hNv5Zx" name="SlicerModel.cpp" compile="1" resource="0"
-            file="../Source/SlicerModel.cpp"/>
+            file="../Source/model/SlicerModel.cpp"/>
       <FILE id="jQr6Wm" name="SlicerModel.h" compile="0" resource="0"
-            file="../Source/SlicerModel.h"/>
+            file="../Source/model/SlicerModel.h"/>
       <FILE id="Vx7aQb" name="SlicerEngine.cpp" compile="1" resource="0"
-            file="../Source/SlicerEngine.cpp"/>
+            file="../Source/model/SlicerEngine.cpp"/>
       <FILE id="Yz8nRc" name="SlicerEngine.h" compile="0" resource="0"
-            file="../Source/SlicerEngine.h"/>
+            file="../Source/model/SlicerEngine.h"/>
       <FILE id="CeHUNY" name="TransientDetector.cpp" compile="1" resource="0"
-            file="../Source/TransientDetector.cpp"/>
+            file="../Source/model/TransientDetector.cpp"/>
       <FILE id="DCkotD" name="TransientDetector.h" compile="0" resource="0"
-            file="../Source/TransientDetector.h"/>
-      <FILE id="k3vzan" name="WaveformDisplay.cpp" compile="1" resource="0"
-            file="../Source/WaveformDisplay.cpp"/>
-      <FILE id="QZJyuR" name="WaveformDisplay.h" compile="0" resource="0"
-            file="../Source/WaveformDisplay.h"/>
+            file="../Source/model/TransientDetector.h"/>
       <FILE id="p9Xk2M" name="SubdivisionProbabilityGrid.cpp" compile="1" resource="0"
-            file="../Source/SubdivisionProbabilityGrid.cpp"/>
+            file="../Source/ui/widgets/SubdivisionProbabilityGrid.cpp"/>
       <FILE id="rT4wLb" name="SubdivisionProbabilityGrid.h" compile="0" resource="0"
-            file="../Source/SubdivisionProbabilityGrid.h"/>
+            file="../Source/ui/widgets/SubdivisionProbabilityGrid.h"/>
+      <FILE id="k3vzan" name="WaveformDisplay.cpp" compile="1" resource="0"
+            file="../Source/ui/widgets/WaveformDisplay.cpp"/>
+      <FILE id="QZJyuR" name="WaveformDisplay.h" compile="0" resource="0"
+            file="../Source/ui/widgets/WaveformDisplay.h"/>
       <FILE id="h7Ym3Q" name="GranularStretcher.cpp" compile="1" resource="0"
-            file="../Source/GranularStretcher.cpp"/>
+            file="../Source/model/GranularStretcher.cpp"/>
       <FILE id="j2Fp8N" name="GranularStretcher.h" compile="0" resource="0"
-            file="../Source/GranularStretcher.h"/>
+            file="../Source/model/GranularStretcher.h"/>
       <FILE id="q4Wb7K" name="PlaybackStyleGrid.cpp" compile="1" resource="0"
-            file="../Source/PlaybackStyleGrid.cpp"/>
+            file="../Source/ui/widgets/PlaybackStyleGrid.cpp"/>
       <FILE id="s6Hn2Y" name="PlaybackStyleGrid.h" compile="0" resource="0"
-            file="../Source/PlaybackStyleGrid.h"/>
+            file="../Source/ui/widgets/PlaybackStyleGrid.h"/>
       <FILE id="w8Tc4R" name="SequencerGrid.cpp" compile="1" resource="0"
-            file="../Source/SequencerGrid.cpp"/>
+            file="../Source/ui/widgets/SequencerGrid.cpp"/>
       <FILE id="y1Nb9F" name="SequencerGrid.h" compile="0" resource="0"
-            file="../Source/SequencerGrid.h"/>
+            file="../Source/ui/widgets/SequencerGrid.h"/>
       <FILE id="AUa00Z" name="PlaybackStylePalette.cpp" compile="1" resource="0"
-            file="../Source/PlaybackStylePalette.cpp"/>
+            file="../Source/ui/widgets/PlaybackStylePalette.cpp"/>
       <FILE id="t2x7mr" name="PlaybackStylePalette.h" compile="0" resource="0"
-            file="../Source/PlaybackStylePalette.h"/>
+            file="../Source/ui/widgets/PlaybackStylePalette.h"/>
       <FILE id="e5Vn8Q" name="EasingCurve.h" compile="0" resource="0"
-            file="../Source/EasingCurve.h"/>
+            file="../Source/model/EasingCurve.h"/>
       <FILE id="f3Kp9L" name="PlaybackStyleParameterPanel.cpp" compile="1" resource="0"
-            file="../Source/PlaybackStyleParameterPanel.cpp"/>
+            file="../Source/ui/widgets/PlaybackStyleParameterPanel.cpp"/>
       <FILE id="g7Mq2X" name="PlaybackStyleParameterPanel.h" compile="0" resource="0"
-            file="../Source/PlaybackStyleParameterPanel.h"/>
+            file="../Source/ui/widgets/PlaybackStyleParameterPanel.h"/>
       <FILE id="h9Rk3P" name="PatternBankPanel.cpp" compile="1" resource="0"
-            file="../Source/PatternBankPanel.cpp"/>
+            file="../Source/ui/widgets/PatternBankPanel.cpp"/>
       <FILE id="m4Vd7T" name="PatternBankPanel.h" compile="0" resource="0"
-            file="../Source/PatternBankPanel.h"/>
+            file="../Source/ui/widgets/PatternBankPanel.h"/>
       <FILE id="n5Wq8H" name="PerformanceKeyboardPanel.cpp" compile="1" resource="0"
-            file="../Source/PerformanceKeyboardPanel.cpp"/>
+            file="../Source/ui/widgets/PerformanceKeyboardPanel.cpp"/>
       <FILE id="p2Xr6D" name="PerformanceKeyboardPanel.h" compile="0" resource="0"
-            file="../Source/PerformanceKeyboardPanel.h"/>
+            file="../Source/ui/widgets/PerformanceKeyboardPanel.h"/>
       <FILE id="q7Zm4T" name="NeditPalette.h" compile="0" resource="0"
-            file="../Source/NeditPalette.h"/>
+            file="../Source/ui/NeditPalette.h"/>
       <FILE id="r8An5U" name="SegmentedButtonRow.cpp" compile="1" resource="0"
-            file="../Source/SegmentedButtonRow.cpp"/>
+            file="../Source/ui/widgets/SegmentedButtonRow.cpp"/>
       <FILE id="s9Bo6V" name="SegmentedButtonRow.h" compile="0" resource="0"
-            file="../Source/SegmentedButtonRow.h"/>
+            file="../Source/ui/widgets/SegmentedButtonRow.h"/>
       <FILE id="v3Er9Y" name="SectionPanel.cpp" compile="1" resource="0"
-            file="../Source/SectionPanel.cpp"/>
+            file="../Source/ui/widgets/SectionPanel.cpp"/>
       <FILE id="w4Fs1Z" name="SectionPanel.h" compile="0" resource="0"
-            file="../Source/SectionPanel.h"/>
+            file="../Source/ui/widgets/SectionPanel.h"/>
     </GROUP>
   </MAINGROUP>
   <MODULES>

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 //==============================================================================
 /** Draws the loaded sample's waveform, a vertical line at each slice

@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "TransientDetector.h"
+#include "model/TransientDetector.h"
 
 namespace
 {

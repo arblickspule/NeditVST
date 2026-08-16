@@ -1,5 +1,5 @@
 #include <doctest/doctest.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 // State persistence (nextsteps 1.4) round-trips. Every test that exercises
 // restoreState() binds onPickStateInvalidated first -- restore ends with the

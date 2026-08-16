@@ -1,5 +1,5 @@
 #include "PluginProcessor.h"
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 #include "ui/contract.h"
 
 SlicerAudioProcessor::SlicerAudioProcessor()

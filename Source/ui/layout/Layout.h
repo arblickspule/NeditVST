@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "../../NeditPalette.h"
+#include "../NeditPalette.h"
 #include <algorithm>
 #include <memory>
 #include <vector>

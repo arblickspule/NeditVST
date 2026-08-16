@@ -10,8 +10,8 @@
 #include "ui/pages/BeatsPage.h"
 #include "ui/pages/PlaceholderPage.h"
 #include "ui/components/WaveBasicsPanel.h"
-#include "SlicerModel.h"
-#include "SlicerEngine.h"
+#include "model/SlicerModel.h"
+#include "model/SlicerEngine.h"
 
 #include <doctest/doctest.h>
 

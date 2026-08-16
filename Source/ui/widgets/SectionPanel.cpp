@@ -1,5 +1,5 @@
 #include "SectionPanel.h"
-#include "NeditPalette.h"
+#include "../NeditPalette.h"
 
 SectionPanel::SectionPanel (juce::String titleText)
     : title (std::move (titleText))

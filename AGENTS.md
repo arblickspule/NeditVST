@@ -75,8 +75,12 @@ The UI talks to the model/engine directly; the processor is just a shell.
 - Helpers owned by the model/engine: `TransientDetector` (one-off
   `analyze()` + cheap `detectSlices()` re-runs), `GranularStretcher`
   (time-stretch grains + `foldPosition`), `EasingCurve` (linear/ease-in/
-  ease-out/ease-in-ease-out). UI code lives in `Source/*Panel.*`,
-  `SequencerGrid.*`, `WaveformDisplay.*`, etc.
+  ease-out/ease-in-ease-out). Model/engine/detector/stretcher live in
+  `Source/model/`; UI code lives under `Source/ui/` — pages in
+  `Source/ui/pages/`, layout DSL in `Source/ui/layout/`, composable leaf
+  widgets (`Source/*Panel.*`, `SequencerGrid.*`, `WaveformDisplay.*`, ...)
+  in `Source/ui/widgets/`, and the shared palette in `Source/ui/NeditPalette.h`.
+  `SlicerAudioProcessor.*` stays at `Source/` root.
 
 ## Test suite conventions
 

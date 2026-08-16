@@ -1,7 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
-#include "SlicerModel.h"
+#include "model/SlicerModel.h"
 
 //==============================================================================
 /** Playback style probability (Forward / Ping-Pong / Tape Stop / Stretch /
