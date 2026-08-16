@@ -44,8 +44,8 @@ juce::AudioProcessorEditor* SlicerAudioProcessor::createEditor()
 {
     // The whole UI lives behind the ui::contract seam (gui.cpp); swapping
     // the GUI means swapping that implementation, never this line (docs/
-    // ui-layout-decision.md). The old PluginEditor stays in the build until
-    // the new Generate/Sequence/Perform pages replace it.
+    // ui-layout-decision.md). The old PluginEditor was archived to
+    // docs/archive/ when the UI was restarted from a bare seam.
     return ui::makeEditor (*this, model, engine, {}).release();
 }
 

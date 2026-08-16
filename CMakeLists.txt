@@ -68,37 +68,32 @@ target_sources(NeditVST
         Source/SlicerModel.h
         Source/SlicerEngine.cpp
         Source/SlicerEngine.h
-        Source/PluginEditor.cpp
-        Source/PluginEditor.h
         Source/ui/gui.cpp
         Source/ui/contract.h
         Source/ui/layout/Layout.h
-        Source/TransientDetector.cpp
-        Source/TransientDetector.h
-        Source/WaveformDisplay.cpp
-        Source/WaveformDisplay.h
-        Source/SubdivisionProbabilityGrid.cpp
-        Source/SubdivisionProbabilityGrid.h
-        Source/GranularStretcher.cpp
-        Source/GranularStretcher.h
-        Source/PlaybackStyleGrid.cpp
-        Source/PlaybackStyleGrid.h
-        Source/SequencerGrid.cpp
-        Source/SequencerGrid.h
-        Source/PlaybackStylePalette.cpp
-        Source/PlaybackStylePalette.h
-        Source/PlaybackStyleParameterPanel.cpp
-        Source/PlaybackStyleParameterPanel.h
-        Source/PatternBankPanel.cpp
-        Source/PatternBankPanel.h
-        Source/PerformanceKeyboardPanel.cpp
-        Source/PerformanceKeyboardPanel.h
-        Source/EasingCurve.h
-        Source/NeditPalette.h
+        Source/ui/components/UiPanel.h
+        Source/ui/components/WaveBasicsPanel.h
+        Source/ui/pages/BeatsPage.cpp
+        Source/ui/pages/BeatsPage.h
+        Source/ui/pages/PlaceholderPage.h
         Source/SegmentedButtonRow.cpp
         Source/SegmentedButtonRow.h
-        Source/SectionPanel.cpp
-        Source/SectionPanel.h
+        Source/WaveformDisplay.cpp
+        Source/WaveformDisplay.h
+        Source/PlaybackStyleGrid.cpp
+        Source/PlaybackStyleGrid.h
+        Source/PlaybackStyleParameterPanel.cpp
+        Source/PlaybackStyleParameterPanel.h
+        Source/PlaybackStylePalette.cpp
+        Source/PlaybackStylePalette.h
+        Source/SubdivisionProbabilityGrid.cpp
+        Source/SubdivisionProbabilityGrid.h
+        Source/TransientDetector.cpp
+        Source/TransientDetector.h
+        Source/GranularStretcher.cpp
+        Source/GranularStretcher.h
+        Source/EasingCurve.h
+        Source/NeditPalette.h
 )
 
 juce_generate_juce_header(NeditVST)
@@ -165,6 +160,8 @@ target_sources(NeditVST_tests
     tests/test_granular_stretcher.cpp
     tests/test_model_slices.cpp
     tests/test_engine_process.cpp
+    tests/test_layout.cpp
+    tests/test_ui_pages.cpp
     Source/SlicerModel.cpp
     Source/SlicerModel.h
     Source/SlicerEngine.cpp
@@ -174,6 +171,21 @@ target_sources(NeditVST_tests
     Source/GranularStretcher.cpp
     Source/GranularStretcher.h
     Source/EasingCurve.h
+    Source/ui/pages/BeatsPage.cpp
+    Source/ui/pages/BeatsPage.h
+    Source/ui/pages/PlaceholderPage.h
+    Source/SegmentedButtonRow.cpp
+    Source/SegmentedButtonRow.h
+    Source/WaveformDisplay.cpp
+    Source/WaveformDisplay.h
+    Source/PlaybackStyleGrid.cpp
+    Source/PlaybackStyleGrid.h
+    Source/PlaybackStyleParameterPanel.cpp
+    Source/PlaybackStyleParameterPanel.h
+    Source/PlaybackStylePalette.cpp
+    Source/PlaybackStylePalette.h
+    Source/SubdivisionProbabilityGrid.cpp
+    Source/SubdivisionProbabilityGrid.h
 )
 
 # SlicerModel/SlicerEngine/TransientDetector reference no GUI or plugin-client
@@ -188,6 +200,7 @@ target_link_libraries(NeditVST_tests
         juce::juce_data_structures
         juce::juce_dsp
         juce::juce_events
+        juce::juce_gui_basics
         doctest::doctest
 )
 

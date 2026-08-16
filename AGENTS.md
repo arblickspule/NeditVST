@@ -36,10 +36,13 @@ cmake --build build --target NeditVST_tests -j
 ctest --test-dir build --output-on-failure
 ```
 
-Plugin build (run after any `Source/` change that could affect it):
+Plugin build (run after any `Source/` change that could affect it). Note
+that `NeditVST` only compiles the shared-code library — the loadable VST3
+is a separate target (`NeditVST_VST3`), so building the default target does
+NOT refresh the `.so` the host loads:
 
 ```sh
-cmake --build build --target NeditVST -j
+cmake --build build --target NeditVST_VST3 -j
 # VST3 lands in build/NeditVST_artefacts/Release/VST3/
 ```
 

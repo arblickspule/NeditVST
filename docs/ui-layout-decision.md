@@ -5,6 +5,15 @@ architecture `Engine <- Model <-> UI` and `nextsteps.md` 1.4's serialization
 work. Rationale and options below are what the review committee asked for;
 the four numbered decisions at the bottom are the calls.
 
+**Update (2026-08-15):** the old editor was archived rather than retired
+in-place — `docs/archive/` now holds `PluginEditor.cpp/.h` plus the first
+Generate-page attempt (`GeneratePage.cpp/.h`), and the build was restarted
+from the bare seam (empty editor behind `ui::makeEditor`). Pages are rebuilt
+from scratch on the layout DSL; the shared painted widgets that survived
+(`WaveformDisplay`, `PlaybackStyleGrid`, `SegmentedButtonRow`, ...) stay in
+`Source/` (unbuilt) as the component palette to reuse. Migration step 3
+below no longer applies as written.
+
 ---
 
 ## 1. Why
