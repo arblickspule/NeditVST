@@ -79,9 +79,18 @@ target_sources(NeditVST
         Source/ui/layout/Layout.h
         Source/ui/components/UiPanel.h
         Source/ui/components/WaveBasicsPanel.h
+        Source/ui/drawable/svg_assets.h
+        Source/ui/drawable/DrawableKnob.cpp
+        Source/ui/drawable/DrawableKnob.h
+        Source/ui/drawable/DrawableSlider.cpp
+        Source/ui/drawable/DrawableSlider.h
+        Source/ui/drawable/DrawablePanelFrame.cpp
+        Source/ui/drawable/DrawablePanelFrame.h
         Source/ui/pages/BeatsPage.cpp
         Source/ui/pages/BeatsPage.h
         Source/ui/pages/PlaceholderPage.h
+        Source/ui/pages/DrawableDemoPage.cpp
+        Source/ui/pages/DrawableDemoPage.h
         Source/ui/widgets/SegmentedButtonRow.cpp
         Source/ui/widgets/SegmentedButtonRow.h
         Source/ui/widgets/WaveformDisplay.cpp
@@ -170,6 +179,7 @@ target_sources(NeditVST_tests
     tests/test_engine_process.cpp
     tests/test_layout.cpp
     tests/test_ui_pages.cpp
+    tests/test_drawable_demo.cpp
     Source/model/SlicerModel.cpp
     Source/model/SlicerModel.h
     Source/model/SlicerEngine.cpp
@@ -182,6 +192,15 @@ target_sources(NeditVST_tests
     Source/ui/pages/BeatsPage.cpp
     Source/ui/pages/BeatsPage.h
     Source/ui/pages/PlaceholderPage.h
+    Source/ui/pages/DrawableDemoPage.cpp
+    Source/ui/pages/DrawableDemoPage.h
+    Source/ui/drawable/svg_assets.h
+    Source/ui/drawable/DrawableKnob.cpp
+    Source/ui/drawable/DrawableKnob.h
+    Source/ui/drawable/DrawableSlider.cpp
+    Source/ui/drawable/DrawableSlider.h
+    Source/ui/drawable/DrawablePanelFrame.cpp
+    Source/ui/drawable/DrawablePanelFrame.h
     Source/ui/widgets/SegmentedButtonRow.cpp
     Source/ui/widgets/SegmentedButtonRow.h
     Source/ui/widgets/WaveformDisplay.cpp

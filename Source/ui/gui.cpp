@@ -45,6 +45,7 @@
 
 #include "contract.h"
 #include "pages/PlaceholderPage.h"
+#include "pages/DrawableDemoPage.h"
 #include "components/WaveBasicsPanel.h"
 #include "widgets/SegmentedButtonRow.h"
 #include "NeditPalette.h"
@@ -113,8 +114,10 @@ public:
         updateSizeLimitsForDisplay();
 
         // Top-level tab row -- always visible; the tab changes the sub-mode
-        // block below the wave-basics section.
-        topLevelTabs.setOptions ({ { "Beats", std::nullopt }, { "Textures", std::nullopt } });
+        // block below the wave-basics section. The third "Demo" tab is the
+        // SVG/Drawable showcase from the drawable-demo branch.
+        topLevelTabs.setOptions ({ { "Beats", std::nullopt }, { "Textures", std::nullopt },
+                                   { "Demo", std::nullopt } });
         topLevelTabs.setSelectedIndex (0, juce::dontSendNotification);
         topLevelTabs.onSelectionChanged = [this] (int index) { showTopLevelTab (index); };
         addAndMakeVisible (topLevelTabs);
@@ -143,6 +146,7 @@ public:
         subPages[2] = std::make_unique<PlaceholderPage> ("Control", "Control/automation lands here.");
         subPages[3] = std::make_unique<PlaceholderPage> ("Perform", "Performance keyboard and style parameters land here.");
         texturesPage = std::make_unique<PlaceholderPage> ("Textures", "Texture engine and UI not realised yet.");
+        demoPage = std::make_unique<DrawableDemoPage>();
 
         viewport.setScrollBarsShown (true, false);
         addAndMakeVisible (viewport);
@@ -220,8 +224,12 @@ private:
         beatsActive = (index == 0);
         subModeTabs.setVisible (beatsActive);
 
-        activeContent = beatsActive ? static_cast<Flex*> (subPages[subModeIndex].get())
-                                    : static_cast<Flex*> (texturesPage.get());
+        if (index == 2)
+            activeContent = demoPage.get();
+        else if (beatsActive)
+            activeContent = subPages[subModeIndex].get();
+        else
+            activeContent = texturesPage.get();
 
         viewport.setViewedComponent (activeContent, false); // we own the pages; don't let the viewport delete them
         viewport.setViewPosition (0, 0);
@@ -304,6 +312,7 @@ private:
     juce::Viewport viewport;
     std::array<std::unique_ptr<PlaceholderPage>, 4> subPages; // Generate / Sequence / Control / Perform
     std::unique_ptr<PlaceholderPage> texturesPage;
+    std::unique_ptr<DrawableDemoPage> demoPage; // the SVG/Drawable showcase (drawable-demo branch)
     Flex* activeContent = nullptr; // the page currently inside the viewport
 
     bool beatsActive = true;
