@@ -26,6 +26,8 @@ add_executable(nedit_engine_tests
     engine/test_tempo.cpp
     engine/test_easing_fold.cpp
     engine/test_granular_stretcher.cpp
+    engine/test_dsp_primitives.cpp
+    engine/test_pick_renderer.cpp
 )
 target_link_libraries(nedit_engine_tests
     PRIVATE nedit_engine nedit_debug nedit_warnings

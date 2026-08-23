@@ -4,6 +4,7 @@ add_library(nedit_engine STATIC
     TransientDetector.cpp
     SliceBuilder.cpp
     GranularStretcher.cpp
+    PickRenderer.cpp
 )
 target_include_directories(nedit_engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(nedit_engine

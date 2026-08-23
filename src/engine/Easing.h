@@ -45,4 +45,19 @@ namespace nedit::engine {
     return progress;
 }
 
+// The older, simpler two-shape progress remap used by Tape Stop's decel
+// and Ping-Pong's turnaround fade (deliberately independent of the
+// four-curve Scratch system above, same as the original): Linear is the
+// identity; Exponential eases in (t*t -- slow start, fast finish), which
+// reads as a surge-before-stopping for Tape Stop and a snappier
+// turnaround for Ping-Pong.
+[[nodiscard]] inline double applyCurveShape (double progress,
+                                             state::CurveShape shape) noexcept
+{
+    if (shape == state::CurveShape::exponential)
+        return progress * progress;
+
+    return progress;
+}
+
 } // namespace nedit::engine
