@@ -168,17 +168,46 @@ included/excluded.
     current block's bank into a scheduler-owned working-pattern override
     (`releaseWorkingPatternOverride()` lets the future shell drop it when
     fresh state snapshots arrive). `playingStepIndex()` is the UI
-    playhead signal. Unimplemented modes (performance/control) still
-    render silence.
+    playhead signal.
+  - Chunk 4c — Performance + Control schedulers + MIDI dispatch:
+    Performance (`requestPerformanceRecall(state, note, transportPlaying)`):
+    focused slot = live `workingState` over the SHARED trim; any other
+    populated slot freezes ITS snapshot+trim into a scheduler-owned copy at
+    recall time (later bank edits can't disturb a sounding pick);
+    Quantize Recall defers to the next interval grid point while playing
+    (boundary armed per-sample from the block-start ppq; a newer note-on
+    overwrites the pending note) and falls straight through when stopped;
+    loop on rechains the SAME segment via the finished-check, loop off goes
+    silent; Sync off → `nativeRate` flag + srConversion as effective rate;
+    durations per style (pingPong 2×natural, stretch grainSpeed×natural,
+    scratch cycle, else natural); NO beat-quantize/reset-cap/window clock in
+    this mode. Control (`controlNoteOn(note, vel, baseNote, numSlices)` /
+    `controlNoteOff(note, gateMode)`): keyswitches at base−1−style select
+    silently (scheduler-owned `controlActiveStyleOrdinal_`, seeded from
+    state on mode entry since keyswitches can't mutate immutable snapshots;
+    `controlActiveStyleOrdinal()` lets the shell fold it back); slice notes
+    at base+k trigger with clamped velocity gain and control.styleParams;
+    monophonic retrigger; one-shot; gate release force-stops after the fade,
+    trigger mode ignores note-offs. Both runners: bounce/fold styles
+    (pingPong/stretch/scratch) get `useDurationGate` on their declared
+    window (they'd never exhaust position-wise) — same effect as the
+    original's finite schedule end. `process()` now lets performance/control
+    run with the transport STOPPED (MIDI-driven modes; quantize-recall falls
+    through when there is no beat grid).
 - Test-fixture lessons baked into `tests/engine/test_scheduler.cpp`: the
   caller must advance `ppqStart` across blocks like a host does (the
   scheduler derives each sample's beat position from the BLOCK START ppq
   -- feeding constant 0 stalls every boundary forever); exact ppq
   boundaries carry ±1-sample double-rounding jitter, absorbed by the
-  `playQuiet`/`advanceToPicks` assertion pair.
-- Next engine work (in order): Performance + Control schedulers, MIDI
-  dispatch entry points (note routing per mode), then the audio-thread
-  snapshot/message-passing mechanism.
+  `playQuiet`/`advanceToPicks` assertion pair. Test-authoring gotchas hit
+  in chunk 4c: pick AGE starts when the pick starts (pre-recall blocks
+  don't count); default grainSpeed is 4× so a default Stretch window is
+  4 × natural samples; palette ordinals: forward0/pingPong1/tapeStop2/
+  stretch3/filterDown4/filterUp5/bitcrush6/scratch7/flanger8.
+- Next engine work (in order): audio-thread state-snapshot /
+  message-passing mechanism (immutable per-block snapshots + UI→engine
+  queue + MIDI dispatch wiring into it), then Phase 3 VST3 shell.
+- Test totals: 161/161 green (51 state + 110 engine), zero warnings.
 
 ## Rules of engagement
 

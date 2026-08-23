@@ -159,14 +159,14 @@ void VoiceScheduler::commitPick (const Slice& slice, const state::StyleParameter
     pick.scratchCycleLengthHostSamples = prepared.scratchCycleHostSamples;
     pick.beatQuantized = beatQuantized;
     pick.quantizedStretchRatio = quantizedStretchRatio;
-    pick.nativeRate = false;
+    pick.nativeRate = extras.nativeRate;
     pick.halfSliceFold = extras.halfSliceFold;
     pick.useDurationGate = extras.useDurationGate;
     pick.filterWholeWindow = filterWholeWindow;
     pick.flangerWholeWindow = flangerWholeWindow;
     pick.volumeWholeWindow = extras.volumeWholeWindow;
     pick.volumeRampActive = extras.volumeRampActive;
-    pick.velocityGain = 1.0;
+    pick.velocityGain = extras.velocityGain;
     pick.params = params;
 
     renderer_.startPick (pick);
@@ -239,10 +239,14 @@ void VoiceScheduler::process (const state::PluginState& state,
             numOutChannels,
             numSamples };
 
-    // Slice Length/Clock are genuinely meaningless without host transport
-    // (their triggers ARE its beat/bar position). Stopping disarms the
-    // current mode so the next start re-snaps fresh.
-    if (! transport.playing || slices.empty())
+    // Slice Length/Clock/Sequenced are meaningless without host transport
+    // (their triggers ARE its beat/bar position). Performance and Control
+    // are MIDI-driven: they must keep working while the transport is
+    // stopped (auditioning notes, quantize-recall falls straight through).
+    const bool needsTransport = state.triggerMode != state::TriggerMode::performance
+                             && state.triggerMode != state::TriggerMode::control;
+
+    if ((needsTransport && ! transport.playing) || slices.empty())
     {
         stopAndDisarm();
         return;
@@ -264,9 +268,15 @@ void VoiceScheduler::process (const state::PluginState& state,
             runSequenced (r);
             break;
 
+        case state::TriggerMode::performance:
+            runPerformance (r);
+            break;
+
+        case state::TriggerMode::control:
+            runControl (r);
+            break;
+
         default:
-            // Performance / Control arrive in their own chunks; until then
-            // these modes render silence.
             stopAndDisarm();
             return;
     }
@@ -901,6 +911,293 @@ void VoiceScheduler::runSequenced (Run& r)
         // modes (it doubles as the Subdivide retrigger clock), then the
         // voice renders.
         renderer_.tickWindowClock();
+        renderSampleInto (r, i);
+    }
+}
+
+void VoiceScheduler::requestPerformanceRecall (const state::PluginState& state,
+                                               int midiNote, bool hostTransportPlaying)
+{
+    if (midiNote < 0 || midiNote >= state::kNumMidiNotes)
+        return;
+
+    const auto& perf = state.performance;
+
+    if (midiNote == perf.focusedSlot)
+    {
+        // The focused slot's key always plays the live working state
+        // immediately (Quantize Recall never defers it).
+        performancePlaybackIsFocused_ = true;
+        performanceRecallPending_ = true;
+        return;
+    }
+
+    const auto& slot = perf.bank[static_cast<std::size_t> (midiNote)];
+
+    if (! slot.populated)
+        return;  // empty, unfocused slot -- no-op
+
+    if (perf.quantizeRecallEnabled && hostTransportPlaying)
+    {
+        // Defer to the next interval grid point; a newer note-on before
+        // the boundary overwrites this pending note.
+        pendingPerformanceNote_ = midiNote;
+        performanceBoundaryArmed_ = false;
+        return;
+    }
+
+    applyPerformanceRecallFromState (state, midiNote);
+}
+
+void VoiceScheduler::applyPerformanceRecallFromState (const state::PluginState& state,
+                                                      int note)
+{
+    const auto& perf = state.performance;
+
+    if (note == perf.focusedSlot)
+    {
+        performancePlaybackIsFocused_ = true;
+        performanceRecallPending_ = true;
+        return;
+    }
+
+    const auto& slot = perf.bank[static_cast<std::size_t> (note)];
+
+    if (! slot.populated)
+        return;  // emptied between arming and the boundary -- no-op
+
+    // Freeze THIS block's snapshot: later bank edits can never disturb a
+    // pick already sounding.
+    performanceFrozenSnapshot_ = slot;
+    performancePlaybackIsFocused_ = false;
+    performanceRecallPending_ = true;
+}
+
+void VoiceScheduler::runPerformance (Run& r)
+{
+    if (armedMode_ != ArmedMode::performance)
+    {
+        // Just entered the mode or transport just started: silent until
+        // the first note-on this session.
+        renderer_.clearPick();
+        armedMode_ = ArmedMode::performance;
+    }
+
+    for (int i = 0; i < r.numSamples && ! bailUntilBlockEnd_; ++i)
+    {
+        const double samplePpq = r.transport.ppqStart + static_cast<double> (i) * r.ppqPerSample;
+
+        // --- Quantize Recall boundary, checked every SAMPLE -----------
+        if (pendingPerformanceNote_ >= 0)
+        {
+            bool boundaryCrossed = ! r.transport.playing;   // no beat position to quantize against
+
+            if (r.transport.playing)
+            {
+                if (! performanceBoundaryArmed_)
+                {
+                    const double intervalBeats =
+                        std::max (noteValueBeats (
+                                      r.state.performance.quantizeRecallIntervalIndex),
+                                  1.0e-6);
+                    const auto intervalIndex = static_cast<std::int64_t> (
+                        std::floor (samplePpq / intervalBeats));
+                    performanceBoundaryPpq_ =
+                        static_cast<double> (intervalIndex + 1) * intervalBeats;
+                    performanceBoundaryArmed_ = true;
+                }
+
+                boundaryCrossed = samplePpq >= performanceBoundaryPpq_;
+            }
+
+            if (boundaryCrossed)
+            {
+                applyPerformanceRecallFromState (r.state, pendingPerformanceNote_);
+                pendingPerformanceNote_ = -1;
+                performanceBoundaryArmed_ = false;
+            }
+        }
+
+        bool needsFreshPick = performanceRecallPending_;
+        performanceRecallPending_ = false;
+
+        // Loop on rechains the SAME segment+style once it runs its course;
+        // loop off goes silent until the next note-on.
+        if (! needsFreshPick && renderer_.hasPick() && renderer_.finished (r.ctx))
+        {
+            const auto& activeState = performancePlaybackIsFocused_
+                ? r.state.performance.workingState
+                : performanceFrozenSnapshot_;
+
+            if (activeState.loop)
+                needsFreshPick = true;
+            else
+                renderer_.clearPick();
+        }
+
+        if (needsFreshPick)
+        {
+            const auto& activeState = performancePlaybackIsFocused_
+                ? r.state.performance.workingState
+                : performanceFrozenSnapshot_;
+
+            if (activeState.populated)
+            {
+                // The focused segment IS the shared trim; any other slot
+                // plays its own frozen trim.
+                const Slice segment {
+                    performancePlaybackIsFocused_ ? r.state.sample.trimStartFrame
+                                                  : activeState.trimStartFrame,
+                    performancePlaybackIsFocused_ ? r.state.sample.trimEndFrame
+                                                  : activeState.trimEndFrame
+                };
+
+                const auto style = styleFromOrdinal (activeState.style);
+                const bool nativeRate = ! activeState.sync;
+                const double effectiveRate = nativeRate
+                    ? r.ctx.srConversionRatio
+                    : r.ctx.playbackRate;
+
+                auto prepared = preparePick (style, segment, activeState.params,
+                                             r.ctx.hostSampleRate, effectiveRate,
+                                             r.transport.bpm);
+
+                double pickLength;
+
+                if (style == state::PlaybackStyle::pingPong)
+                    pickLength = 2.0 * prepared.naturalLengthHostSamples;
+                else if (style == state::PlaybackStyle::stretch)
+                    pickLength = prepared.naturalLengthHostSamples
+                               * static_cast<double> (activeState.params.grainSpeed);
+                else if (style == state::PlaybackStyle::scratch)
+                    pickLength = prepared.scratchCycleHostSamples;
+                else
+                    pickLength = prepared.naturalLengthHostSamples;
+
+                // Bounce/fold styles never exhaust their slice by position
+                // -- they end when their DECLARED window runs out (the
+                // original gave them a finite schedule end the same way).
+                const bool foldingStyle =
+                    style == state::PlaybackStyle::pingPong
+                 || style == state::PlaybackStyle::stretch
+                 || style == state::PlaybackStyle::scratch;
+
+                PickExtras extras;
+                extras.nativeRate = nativeRate;
+                extras.useDurationGate = foldingStyle;
+
+                commitPick (segment, activeState.params, prepared, style,
+                            pickLength, prepared.naturalLengthHostSamples,
+                            /*filterWholeWindow*/ false, /*flangerWholeWindow*/ false,
+                            /*beatQuantized*/ false, /*quantizedStretchRatio*/ 1.0,
+                            extras);
+            }
+        }
+
+        renderSampleInto (r, i);
+    }
+}
+
+void VoiceScheduler::controlNoteOn (int noteNumber, float velocity01, int baseNote,
+                                    int numAvailableSlices)
+{
+    // Keyswitches sit below base, slices at or above it; the ranges never
+    // overlap by construction.
+    const int keyswitchStyle = baseNote - 1 - noteNumber;
+
+    if (keyswitchStyle >= 0 && keyswitchStyle < state::kNumPlaybackStyles)
+    {
+        controlActiveStyleOrdinal_ = keyswitchStyle;
+        return;  // keyswitches never make sound
+    }
+
+    const int sliceIndex = noteNumber - baseNote;
+
+    if (sliceIndex < 0 || sliceIndex >= numAvailableSlices)
+        return;  // outside both ranges -- no-op
+
+    controlNoteOnPending_ = true;
+    controlPendingSliceIndex_ = sliceIndex;
+    controlPendingStyleOrdinal_ = controlActiveStyleOrdinal_;
+    controlPendingVelocityGain_ = std::clamp (velocity01, 0.0f, 1.0f);
+    controlPendingNoteNumber_ = noteNumber;
+}
+
+void VoiceScheduler::controlNoteOff (int noteNumber, bool gateModeActive) noexcept
+{
+    if (! gateModeActive)
+        return;  // Trigger mode ignores note-off entirely
+
+    if (noteNumber != controlSoundingNote_ || ! renderer_.hasPick())
+        return;  // not the note that's actually still sounding
+
+    renderer_.beginGateRelease();
+}
+
+void VoiceScheduler::runControl (Run& r)
+{
+    if (armedMode_ != ArmedMode::control)
+    {
+        // Just entered the mode or transport just started: silent until a
+        // note-on. The owned keyswitch style re-seeds from state here --
+        // afterwards only keyswitches move it.
+        renderer_.clearPick();
+        controlSoundingNote_ = -1;
+        controlActiveStyleOrdinal_ = r.state.control.activeStyle;
+        armedMode_ = ArmedMode::control;
+    }
+
+    for (int i = 0; i < r.numSamples && ! bailUntilBlockEnd_; ++i)
+    {
+        bool needsFreshPick = controlNoteOnPending_;
+        controlNoteOnPending_ = false;
+
+        // One-shot: when a pick runs its course it goes silent and stays
+        // silent until the next note-on (no loop concept in Control mode).
+        if (! needsFreshPick && renderer_.hasPick() && renderer_.finished (r.ctx))
+            renderer_.clearPick();
+
+        if (needsFreshPick && controlPendingSliceIndex_ >= 0
+            && controlPendingSliceIndex_ < static_cast<int> (r.slices.size()))
+        {
+            controlSoundingNote_ = controlPendingNoteNumber_;
+
+            const auto& slice = r.slices[static_cast<std::size_t> (controlPendingSliceIndex_)];
+            const auto style = styleFromOrdinal (controlPendingStyleOrdinal_);
+
+            auto prepared = preparePick (style, slice, r.state.control.styleParams,
+                                         r.ctx.hostSampleRate, r.ctx.playbackRate,
+                                         r.transport.bpm);
+
+            double pickLength;
+
+            if (style == state::PlaybackStyle::pingPong)
+                pickLength = 2.0 * prepared.naturalLengthHostSamples;
+            else if (style == state::PlaybackStyle::stretch)
+                pickLength = prepared.naturalLengthHostSamples
+                           * static_cast<double> (r.state.control.styleParams.grainSpeed);
+            else if (style == state::PlaybackStyle::scratch)
+                pickLength = prepared.scratchCycleHostSamples;
+            else
+                pickLength = prepared.naturalLengthHostSamples;
+
+            // Same folding-style duration gate as Performance mode.
+            const bool foldingStyle =
+                style == state::PlaybackStyle::pingPong
+             || style == state::PlaybackStyle::stretch
+             || style == state::PlaybackStyle::scratch;
+
+            PickExtras extras;
+            extras.velocityGain = controlPendingVelocityGain_;
+            extras.useDurationGate = foldingStyle;
+
+            commitPick (slice, r.state.control.styleParams, prepared, style,
+                        pickLength, prepared.naturalLengthHostSamples,
+                        /*filterWholeWindow*/ false, /*flangerWholeWindow*/ false,
+                        /*beatQuantized*/ false, /*quantizedStretchRatio*/ 1.0,
+                        extras);
+        }
+
         renderSampleInto (r, i);
     }
 }

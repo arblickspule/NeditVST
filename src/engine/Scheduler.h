@@ -42,8 +42,19 @@
 //     (MIDI recall) defers to Set Interval / End of Pattern boundaries,
 //     evaluated against the CURRENTLY playing pattern's own dimensions.
 //
-// Performance / Control arrive in their own chunks; until then selecting
-// them renders silence.
+//   Performance: MIDI-recalled snapshots (segment trim + style + own
+//     parameters + loop/sync). The focused slot's key plays the live
+//     working state over the SHARED trim; any other populated slot plays a
+//     frozen copy of ITS saved snapshot and trim. Sync off = native-rate
+//     playback. Loop on rechains the same segment; loop off goes silent.
+//     Quantize Recall defers to the next interval grid point (immediately
+//     when the transport is stopped).
+//
+//   Control: chromatic slice triggering -- note baseNote+k plays slice k
+//     with the last keyswitch-selected style at velocity-derived gain;
+//     notes below base are style KEYSWITCHES (base-1-styleIndex) and never
+//     sound. Gate mode adds a release fade that force-stops the pick when
+//     complete; Trigger mode ignores note-offs.
 //
 // Runtime state here is NEVER serialized.
 
@@ -118,6 +129,39 @@ public:
     // immutable snapshots, an applied recall must not shadow them).
     void releaseWorkingPatternOverride() noexcept { recalledPattern_.reset(); }
 
+    // MIDI dispatch entry point (Performance mode). Mirrors the original's
+    // note-on routing: the focused slot's key flags a fresh pick of the
+    // live working state; any other populated slot freezes ITS snapshot
+    // for playback; Quantize Recall defers non-focused recalls while the
+    // transport plays. Empty unfocused slots are no-ops.
+    void requestPerformanceRecall (const state::PluginState& state, int midiNote,
+                                   bool hostTransportPlaying);
+
+    [[nodiscard]] bool performanceRecallPending() const noexcept
+    {
+        return performanceRecallPending_ || pendingPerformanceNote_ >= 0;
+    }
+
+    // MIDI dispatch entry points (Control mode). baseNote and
+    // numAvailableSlices come from the caller's CURRENT state snapshot;
+    // the keyswitch-selected style is scheduler-owned runtime state
+    // (keyswitches cannot mutate an immutable snapshot) seeded from
+    // state.control.activeStyle on mode entry -- `controlActiveStyle()`
+    // lets the shell fold it back into future snapshots.
+    void controlNoteOn (int noteNumber, float velocity01, int baseNote,
+                        int numAvailableSlices);
+    void controlNoteOff (int noteNumber, bool gateModeActive) noexcept;
+
+    [[nodiscard]] int controlActiveStyleOrdinal() const noexcept
+    {
+        return controlActiveStyleOrdinal_;
+    }
+
+    [[nodiscard]] int controlSoundingNote() const noexcept
+    {
+        return controlSoundingNote_;
+    }
+
     [[nodiscard]] const PickRenderer& renderer() const noexcept { return renderer_; }
 
 private:
@@ -152,6 +196,13 @@ private:
     void runSliceLength (Run& r);
     void runClock (Run& r);
     void runSequenced (Run& r);
+    void runPerformance (Run& r);
+    void runControl (Run& r);
+
+    // Apply a performance recall against the CURRENT block's state: the
+    // focused slot flags a fresh pick of the working state, anything else
+    // freezes its bank snapshot. Caller clears the pending note.
+    void applyPerformanceRecallFromState (const state::PluginState& state, int note);
 
     [[nodiscard]] SequencerView effectiveSequencer (const state::PluginState& state) const noexcept;
 
@@ -201,6 +252,8 @@ private:
         bool useDurationGate = false;    // Sequenced: gate on declared length
         bool volumeRampActive = false;   // Sequenced only
         bool volumeWholeWindow = false;  // Sequenced when Subdivide is on
+        bool nativeRate = false;         // Performance Sync-off
+        double velocityGain = 1.0;       // Control mode
     };
 
     void commitPick (const Slice& slice, const state::StyleParameters& params,
@@ -213,7 +266,8 @@ private:
                      PickExtras extras);
 
     // Slice Length runtime.
-    enum class ArmedMode : std::uint8_t { none, sliceLength, clock, sequenced };
+    enum class ArmedMode : std::uint8_t { none, sliceLength, clock, sequenced,
+                                          performance, control };
     ArmedMode armedMode_ = ArmedMode::none;
     double resetWindowEndPpq_ = 0.0;
 
@@ -237,6 +291,24 @@ private:
     double subdivisionTickLengthSamples_ = 0.0;
     double nextSubdivisionOffsetSamples_ = 0.0;
     std::optional<state::SequencerPattern> recalledPattern_;
+
+    // Performance runtime.
+    int pendingPerformanceNote_ = -1;
+    bool performanceBoundaryArmed_ = false;
+    double performanceBoundaryPpq_ = 0.0;
+    bool performanceRecallPending_ = false;
+    bool performancePlaybackIsFocused_ = false;
+    state::PerformanceSnapshot performanceFrozenSnapshot_ {};
+
+    // Control runtime (keyswitch style is scheduler-owned; see
+    // controlNoteOn()).
+    int controlActiveStyleOrdinal_ = 0;
+    bool controlNoteOnPending_ = false;
+    int controlPendingSliceIndex_ = -1;
+    int controlPendingStyleOrdinal_ = 0;
+    double controlPendingVelocityGain_ = 1.0;
+    int controlPendingNoteNumber_ = -1;
+    int controlSoundingNote_ = -1;
 
     // Safety bail (the original's 1000-attempt guard): after tripping,
     // the rest of THIS block renders silence.

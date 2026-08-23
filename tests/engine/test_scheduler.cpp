@@ -676,3 +676,267 @@ TEST_CASE ("sequenced: switching to an empty bank slot is a no-op", "[scheduler]
     fx.playQuiet (88130);
     fx.advanceToPicks (2, 10);
 }
+
+// ===========================================================================
+// Performance mode: MIDI-recalled snapshots over their own segments.
+// ===========================================================================
+
+namespace
+{
+
+[[nodiscard]] PerformanceSnapshot makeSnapshot (std::int64_t trimStart,
+                                                std::int64_t trimEnd)
+{
+    PerformanceSnapshot snapshot;
+    snapshot.populated = true;
+    snapshot.trimStartFrame = trimStart;
+    snapshot.trimEndFrame = trimEnd;
+    snapshot.style = 0;     // Forward
+    snapshot.loop = false;
+    snapshot.sync = true;
+    return snapshot;
+}
+
+} // namespace
+
+TEST_CASE ("performance: silent until a recall, one-shot by default", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+    fx.state.performance.bank[60] = makeSnapshot (0, 44100);
+
+    fx.play (1000);
+    CHECK (fx.picks() == 0);
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+
+    fx.scheduler.requestPerformanceRecall (fx.state, 60, true);
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.sliceStartFrame == 0);
+    CHECK (pick.sliceLengthFrames == 44100);
+    CHECK_FALSE (pick.nativeRate);
+
+    // Loop off: when the segment runs its course the voice goes silent
+    // and stays silent until the next note-on. (The pick only started
+    // one block ago -- its age is 1 + this stretch, so play well past
+    // its ~44099-sample exhaustion point.)
+    fx.playQuiet (44200);
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+    CHECK (fx.picks() == 1);
+
+    // An empty unfocused slot is a no-op.
+    fx.scheduler.requestPerformanceRecall (fx.state, 61, true);
+    fx.play (64);
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+    CHECK (fx.picks() == 1);
+}
+
+TEST_CASE ("performance: loop on rechains the same segment", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+
+    auto snap = makeSnapshot (22050, 66150);
+    snap.loop = true;
+    fx.state.performance.bank[42] = snap;
+
+    fx.scheduler.requestPerformanceRecall (fx.state, 42, true);
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    fx.playQuiet (44093);          // quiet until just before the natural end
+    fx.advanceToPicks (2, 8);      // rechain near sample 44099
+
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.sliceStartFrame == 22050);   // SAME segment again
+    CHECK (pick.sliceLengthFrames == 44100);
+}
+
+TEST_CASE ("performance: focused slot plays the shared trim live", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+    fx.state.sample.trimStartFrame = 11025;
+    fx.state.sample.trimEndFrame = 77175;
+
+    auto& working = fx.state.performance.workingState;
+    working.populated = true;
+    working.style = 0;
+    fx.state.performance.focusedSlot = 5;
+
+    fx.scheduler.requestPerformanceRecall (fx.state, 5, true);
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    // The focused segment IS the shared SampleState trim -- not the
+    // working snapshot's own fields, and never the other way round.
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.sliceStartFrame == 11025);
+    CHECK (pick.sliceLengthFrames == 66150);
+}
+
+TEST_CASE ("performance: quantized recall waits for the interval grid", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+    fx.state.performance.bank[61] = makeSnapshot (44100, 88200);
+    fx.state.performance.quantizeRecallEnabled = true;
+    fx.state.performance.quantizeRecallIntervalIndex = kNoteValue4n;   // 1-beat grid
+
+    // Armed while "playing": lands on the very next whole beat (~22050),
+    // not before -- even though the transport only starts afterwards here.
+    fx.scheduler.requestPerformanceRecall (fx.state, 61, true);
+    CHECK (fx.scheduler.performanceRecallPending());
+
+    fx.playQuiet (22046);
+    fx.advanceToPicks (1, 8);
+
+    CHECK (fx.scheduler.renderer().currentPick().sliceStartFrame == 44100);
+}
+
+TEST_CASE ("performance: quantized recall applies at once when stopped", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+    fx.state.performance.bank[62] = makeSnapshot (11025, 55125);
+    fx.state.performance.quantizeRecallEnabled = true;
+
+    // Transport not playing: no meaningful beat position exists, so the
+    // recall falls straight through (auditionable without pressing play).
+    fx.scheduler.requestPerformanceRecall (fx.state, 62, false);
+
+    fx.run ({ false, 120.0, 0.0 }, 1);
+    CHECK (fx.picks() == 1);
+    CHECK (fx.scheduler.renderer().currentPick().sliceStartFrame == 11025);
+}
+
+TEST_CASE ("performance: sync off plays at native rate", "[scheduler][perf]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::performance;
+
+    auto snap = makeSnapshot (0, 44100);
+    snap.sync = false;
+    fx.state.performance.bank[63] = snap;
+
+    fx.scheduler.requestPerformanceRecall (fx.state, 63, true);
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+    CHECK (fx.scheduler.renderer().currentPick().nativeRate);
+}
+
+// ===========================================================================
+// Control mode: chromatic slice triggering with keyswitch style selection
+// (baseNote 36: keyswitches at notes 27..35, slices at 36 and up).
+// ===========================================================================
+
+TEST_CASE ("control: silent without notes, keyswitches select style silently",
+           "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 }, Slice { 44100, 88200 } });
+    fx.state.triggerMode = TriggerMode::control;
+
+    fx.play (64);
+    CHECK (fx.picks() == 0);
+
+    fx.scheduler.controlNoteOn (36 - 1 - 3, 1.0f, 36, 2);   // style ordinal 3
+    CHECK (fx.scheduler.controlActiveStyleOrdinal() == 3);
+
+    fx.play (64);
+    CHECK (fx.picks() == 0);   // keyswitches never make sound
+}
+
+TEST_CASE ("control: slice notes trigger with velocity gain", "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 }, Slice { 44100, 88200 } });
+    fx.state.triggerMode = TriggerMode::control;
+    fx.state.control.styleParams.grainSpeed = 2.0f;   // stretch window: 2 x natural
+
+    fx.scheduler.controlNoteOn (36 - 1 - 3, 0.8f, 36, 2);   // select Stretch...
+    REQUIRE (fx.scheduler.controlActiveStyleOrdinal() == 3);
+    fx.scheduler.controlNoteOn (36 + 1, 0.25f, 36, 2);      // ...then play slice 1
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.sliceStartFrame == 44100);
+    CHECK (pick.sliceLengthFrames == 44100);
+    CHECK (pick.style == PlaybackStyle::stretch);
+    CHECK_THAT (pick.velocityGain, WithinAbs (0.25, 1e-9));
+
+    // One-shot: the DECLARED window (natural x grain speed) runs out and
+    // the voice stays silent until the next note-on -- even though the
+    // folded position never exhausts the slice by itself.
+    fx.playQuiet (44000);
+    CHECK (fx.scheduler.renderer().hasPick());   // still inside the 2x window
+
+    fx.playQuiet (45000);                        // now past 88200 total
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+}
+
+TEST_CASE ("control: notes outside both ranges are no-ops", "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 }, Slice { 44100, 88200 } });
+    fx.state.triggerMode = TriggerMode::control;
+
+    fx.scheduler.controlNoteOn (20, 1.0f, 36, 2);       // below every range
+    fx.scheduler.controlNoteOn (38, 1.0f, 36, 2);       // beyond the slice cap
+
+    fx.play (64);
+    CHECK (fx.picks() == 0);
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+}
+
+TEST_CASE ("control: monophonic retrigger replaces the sounding note", "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 }, Slice { 44100, 88200 } });
+    fx.state.triggerMode = TriggerMode::control;
+
+    fx.scheduler.controlNoteOn (36, 1.0f, 36, 2);
+    fx.play (10);
+    REQUIRE (fx.picks() == 1);
+    CHECK (fx.scheduler.controlSoundingNote() == 36);
+
+    fx.scheduler.controlNoteOn (37, 1.0f, 36, 2);
+    fx.play (1);
+    REQUIRE (fx.picks() == 2);
+    CHECK (fx.scheduler.controlSoundingNote() == 37);
+    CHECK (fx.scheduler.renderer().currentPick().sliceStartFrame == 44100);
+}
+
+TEST_CASE ("control: gate release fades and force-stops the pick", "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::control;
+    fx.state.control.gateMode = true;
+    fx.state.render.fadeOutMs = 20;   // ~882 samples of release ramp
+
+    fx.scheduler.controlNoteOn (36, 1.0f, 36, 1);
+    fx.play (10);
+    REQUIRE (fx.picks() == 1);
+
+    fx.scheduler.controlNoteOff (36, true);
+    fx.play (400);
+    CHECK (fx.scheduler.renderer().hasPick());   // still inside the ramp
+
+    fx.play (1200);                              // ramp long since complete
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+}
+
+TEST_CASE ("control: trigger mode ignores note-offs entirely", "[scheduler][ctl]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::control;
+    fx.state.control.gateMode = false;
+
+    fx.scheduler.controlNoteOn (36, 1.0f, 36, 1);
+    fx.play (10);
+    REQUIRE (fx.picks() == 1);
+
+    fx.scheduler.controlNoteOff (36, false);
+    fx.play (2000);
+    CHECK (fx.scheduler.renderer().hasPick());   // untouched by the note-off
+}
