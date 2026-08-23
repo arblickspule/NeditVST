@@ -166,8 +166,13 @@ add_custom_command(TARGET nedit_vst3 POST_BUILD
             ${NEDIT_VST3_BUNDLE_DIR}/Contents/Resources
     # VST3 spec: the Linux binary MUST be named <bundle>.so -- hosts match
     # it against the .vst3 folder name ("Not a plug-in file" otherwise).
+    # Stripped: VSTGUI's own build forces debug info regardless of our
+    # CMAKE_BUILD_TYPE, which otherwise ships a 20+MB unstripped binary
+    # (large enough to trip some hosts' fast-metadata-scan timeouts).
     COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE:nedit_vst3>
+            ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
+    COMMAND ${CMAKE_STRIP} --strip-unneeded
             ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
     # Some hosts (Bitwig) require Contents/Resources/moduleinfo.json;
     # generate it from the real factory of the just-built module.
