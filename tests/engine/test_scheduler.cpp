@@ -1,0 +1,678 @@
+// VoiceScheduler: Slice Length + Clock scheduling behaviour (timing tests
+// with deterministic seeds), plus the Tempo.h helpers they rely on.
+//
+// Timing constants used throughout: host 44.1 kHz @ 120 bpm ->
+// 1 beat = 22050 samples, 8n = 11025, a 1-bar reset window = 88200.
+//
+// Exact ppq boundaries carry a +-1-sample double-rounding jitter (the
+// engine computes each sample's beat position as blockPpq + i*ppqPerSample,
+// exactly like the original), so event assertions use the playQuiet /
+// advanceToPicks pair: a proven-quiet stretch up to just before the
+// boundary, then a small budget in which the event MUST fire.
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
+
+#include <engine/Scheduler.h>
+#include <engine/Tempo.h>
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+using namespace nedit::engine;
+using namespace nedit::state;
+using Catch::Matchers::WithinAbs;
+
+namespace {
+
+constexpr double kRate = 44100.0;
+
+// Source of numBars bars (2 s per bar at 44.1 kHz), trimmed to its full
+// length with loopLengthBars matching -- repitchRatio and playbackRate
+// come out exactly 1.0 at any host tempo.
+struct Fixture
+{
+    PluginState state;
+    std::vector<Slice> slices;
+    std::vector<float> source;
+    BlockContext ctx;
+    VoiceScheduler scheduler;
+
+    explicit Fixture (std::vector<Slice> sliceList, int numBars = 1)
+        : slices (std::move (sliceList)), source (static_cast<std::size_t> (88200 * numBars))
+    {
+        for (std::size_t i = 0; i < source.size(); ++i)
+            source[i] = static_cast<float> (i) / static_cast<float> (source.size());
+
+        state.sample.samplePath = "test.wav";
+        state.sample.sampleSampleRate = kRate;
+        state.sample.sampleLengthFrames = static_cast<std::int64_t> (source.size());
+        state.sample.trimStartFrame = 0;
+        state.sample.trimEndFrame = static_cast<std::int64_t> (source.size());
+        state.sample.loopLengthBars = numBars;
+
+        state.generate.sliceWeights.assign (slices.size(), 1.0f);
+        // Default styleWeights draw Forward only; default reset = 4 bars.
+
+        ctx.hostSampleRate = kRate;
+        ctx.sourceSampleRate = kRate;
+
+        scheduler.prepare (kRate);
+        scheduler.setSeed (7u);
+    }
+
+    void run (const TransportFrame& transport, int numSamples)
+    {
+        const float* channels[] = { source.data() };
+        ctx.source = channels;
+        ctx.sourceChannels = 1;
+        ctx.sourceFrames = static_cast<std::int64_t> (source.size());
+
+        std::vector<float> sink (static_cast<std::size_t> (numSamples), 0.0f);
+        float* outs[] = { sink.data() };
+        scheduler.process (state, slices, ctx, transport, outs, 1, numSamples);
+    }
+
+    // Play while the transport runs, advancing the ppq cursor exactly
+    // like a host would across blocks (the scheduler derives each
+    // sample's beat position from the block's START ppq).
+    void play (int numSamples)
+    {
+        run ({ true, 120.0, ppqCursor }, numSamples);
+        ppqCursor += static_cast<double> (numSamples) * ((120.0 / 60.0) / kRate);
+        totalProcessed += numSamples;
+    }
+
+    [[nodiscard]] std::uint64_t picks() const { return scheduler.picksStarted(); }
+
+    // Play `numSamples` during which NO new pick may start.
+    void playQuiet (int numSamples)
+    {
+        const auto before = picks();
+        play (numSamples);
+        INFO ("expected quiet stretch of " << numSamples << " samples");
+        REQUIRE (picks() == before);
+    }
+
+    // Play up to `budget` samples until the pick counter reaches
+    // `target`. Absorbs the +-1-sample floating-point jitter of exact
+    // ppq boundaries without loosening what the tests pin down.
+    void advanceToPicks (std::uint64_t target, int budget)
+    {
+        const int startTotal = totalProcessed;
+
+        while (picks() < target)
+        {
+            INFO ("waiting for pick #" << target << " (budget " << budget << ")");
+            REQUIRE (totalProcessed - startTotal <= budget);
+            play (1);
+        }
+    }
+
+    double ppqCursor = 0.0;
+    int totalProcessed = 0;
+
+    // --- sequencer helpers ---------------------------------------------------
+    // Size the working grid like the UI mutators do: rows = slice count,
+    // columns = one bar of 16n steps (16 at any tempo).
+    void initSequencerGrid()
+    {
+        auto& seq = state.sequencer;
+        seq.stepResolutionIndex = kNoteValue16n;
+        seq.patternLengthBarsIndex = kDefaultPatternLengthBarsIndex;
+        seq.rows = static_cast<int> (slices.size());
+        seq.columns = 16;
+        seq.grid.assign (static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns),
+                         static_cast<std::int8_t> (-1));
+    }
+
+    void fillCell (int row, int column, std::int8_t style)
+    {
+        auto& seq = state.sequencer;
+        seq.grid[static_cast<std::size_t> (row) * static_cast<std::size_t> (seq.columns)
+                 + static_cast<std::size_t> (column)] = style;
+    }
+
+    void setCellOverride (int row, int column, StyleParamId id, float value)
+    {
+        const auto cell = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (state.sequencer.columns)
+                        + static_cast<std::uint32_t> (column);
+        state.sequencer.overrides[cell][id] = value;
+    }
+
+    [[nodiscard]] SequencerPattern makeBankPattern (
+        int slot, std::vector<std::pair<int, int>> cells) const
+    {
+        SequencerPattern pattern;
+        pattern.populated = true;
+        pattern.stepResolutionIndex = kNoteValue16n;
+        pattern.patternLengthBarsIndex = kDefaultPatternLengthBarsIndex;
+        pattern.rows = static_cast<int> (slices.size());
+        pattern.columns = 16;
+        pattern.grid.assign (static_cast<std::size_t> (pattern.rows) * static_cast<std::size_t> (pattern.columns),
+                             static_cast<std::int8_t> (-1));
+
+        for (const auto& [row, column] : cells)
+            pattern.grid[static_cast<std::size_t> (row) * static_cast<std::size_t> (pattern.columns)
+                         + static_cast<std::size_t> (column)] = 0;   // Forward
+
+        (void) slot;
+        return pattern;
+    }
+};
+
+} // namespace
+
+TEST_CASE ("tempo: nearest note value", "[scheduler][tempo]")
+{
+    CHECK (tempo::nearestNoteValueIndex (1.0) == kNoteValue4n);
+    CHECK (tempo::nearestNoteValueIndex (0.249) == 7);   // just under 16n
+    CHECK (tempo::nearestNoteValueIndex (2.6) == 17);    // 1nt = 8/3 beats
+
+    // Exact tie -> earliest (shortest) entry: 0.4375 sits halfway between
+    // 16nd (0.375) and 8n (0.5).
+    CHECK (tempo::nearestNoteValueIndex (0.4375) == 9);
+}
+
+TEST_CASE ("tempo: beat quantize target", "[scheduler][tempo]")
+{
+    CHECK_FALSE (tempo::computeBeatQuantizeTarget (0, false, kRate, 120.0, 120.0).quantized);
+    CHECK_FALSE (tempo::computeBeatQuantizeTarget (44100, false, kRate, 0.0, 120.0).quantized);
+
+    // 3 s slice @ 120 original bpm = 6 beats: decomposes to 1 bar + 2n.
+    const auto multiBar = tempo::computeBeatQuantizeTarget (3 * 44100, false, kRate, 120.0, 120.0);
+    REQUIRE (multiBar.quantized);
+    CHECK_THAT (multiBar.targetHostSeconds, WithinAbs (3.0, 1e-12));
+    CHECK_THAT (multiBar.stretchRatio, WithinAbs (1.0, 1e-12));
+
+    // Ping-Pong quantizes the FULL ROUND TRIP: a 1 s slice spans 2 s.
+    const auto roundTrip = tempo::computeBeatQuantizeTarget (44100, true, kRate, 120.0, 120.0);
+    REQUIRE (roundTrip.quantized);
+    CHECK_THAT (roundTrip.targetHostSeconds, WithinAbs (2.0, 1e-12));
+
+    // Host tempo mismatch produces a compensating ratio: 2 beats of audio
+    // against a 60 bpm host lands on 2 x 1 s.
+    const auto halfTime = tempo::computeBeatQuantizeTarget (44100, false, kRate, 120.0, 60.0);
+    REQUIRE (halfTime.quantized);
+    CHECK_THAT (halfTime.targetHostSeconds, WithinAbs (2.0, 1e-12));
+    CHECK_THAT (halfTime.stretchRatio, WithinAbs (0.5, 1e-12));
+}
+
+TEST_CASE ("tempo: scratch cycle length", "[scheduler][tempo]")
+{
+    // Rate 4n @ 120 bpm wants a 22050-sample cycle; the leg clamps to the
+    // 1000-frame slice, so both legs pin to the content length.
+    const double clamped =
+        tempo::scratchCycleLengthHostSamples (kNoteValue4n, 1000, 120.0, kRate, 1.0);
+    CHECK_THAT (clamped, WithinAbs (2000.0, 1e-9));
+
+    // Roomy slice: the full desired cycle survives (1 beat round trip).
+    const double roomy =
+        tempo::scratchCycleLengthHostSamples (kNoteValue4n, 44100, 120.0, kRate, 1.0);
+    CHECK_THAT (roomy, WithinAbs (22050.0, 1e-9));
+
+    CHECK (tempo::scratchCycleLengthHostSamples (kNoteValue4n, 1000, 120.0, kRate, 0.0) == 0.0);
+}
+
+TEST_CASE ("slice length: immediate pick on transport start", "[scheduler][sl]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.play (10);
+
+    CHECK (fx.picks() == 1);
+    CHECK (fx.scheduler.renderer().hasPick());
+}
+
+TEST_CASE ("slice length: chains picks back to back", "[scheduler][sl]")
+{
+    // One natural pass = 44100 samples at rate 1; the chain fires on the
+    // sample where position reaches end-1, so consecutive picks are
+    // spaced len-1 apart (the original's own completion convention).
+    Fixture fx ({ Slice { 0, 44100 } });
+
+    fx.play (1);
+    CHECK (fx.picks() == 1);
+
+    fx.playQuiet (44096);          // through sample 44097
+    fx.advanceToPicks (2, 5);      // chain near sample 44099
+
+    fx.playQuiet (44095);          // nothing before ~88198
+    fx.advanceToPicks (3, 6);
+}
+
+TEST_CASE ("slice length: reset boundary cuts with anticipated fade", "[scheduler][sl]")
+{
+    // Reset every 1 bar (88200 samples); a 3 s slice outlives the window,
+    // so its pick is capped up front and cut exactly on the boundary.
+    Fixture fx ({ Slice { 0, 132300 } }, /*numBars*/ 2);
+    fx.state.generate.resetBarsIndex = 0;
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (88200.0, 1.0));
+
+    fx.playQuiet (88196);          // quiet through ~88198
+    fx.advanceToPicks (2, 6);      // boundary cut + rechain by 88201
+}
+
+TEST_CASE ("slice length: reset bars change takes effect at next boundary", "[scheduler][sl]")
+{
+    Fixture fx ({ Slice { 0, 132300 } }, /*numBars*/ 2);
+    fx.state.generate.resetBarsIndex = 0;   // 1-bar windows
+
+    fx.play (1000);
+    REQUIRE (fx.picks() == 1);
+
+    // Widen to 2 bars mid-stream. The ALREADY-ARMED boundary near 88200
+    // still cuts (live-read affects the NEXT advance), but the following
+    // window now spans 8 beats instead of two further 1-bar cuts.
+    fx.state.generate.resetBarsIndex = 1;
+
+    fx.playQuiet (87196);          // quiet through ~88197
+    fx.advanceToPicks (2, 6);      // armed boundary fires ~88200
+
+    fx.playQuiet (88190);          // no second 1-bar cut anywhere in between
+    fx.advanceToPicks (3, 15);     // widened boundary ~176400
+}
+
+TEST_CASE ("slice length: beat quantize substitutes palette duration", "[scheduler][sl]")
+{
+    // 57330 frames = 1.3 s = 2.6 beats @ 120 bpm original -> quantizes to
+    // 1nt (8/3 beats) -> 4/3 s = 58800 samples, ratio 0.975.
+    Fixture fx ({ Slice { 0, 57330 } });
+    fx.state.render.beatQuantizeRepitch = true;
+
+    fx.play (10);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.beatQuantized);
+    CHECK_THAT (pick.pickLengthHostSamples, WithinAbs (58800.0, 0.5));
+    CHECK_THAT (pick.quantizedStretchRatio, WithinAbs (0.975, 1e-9));
+}
+
+TEST_CASE ("slice length: all-zero weights still plays via uniform fallback", "[scheduler][sl]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    std::fill (fx.state.generate.sliceWeights.begin(),
+               fx.state.generate.sliceWeights.end(), 0.0f);
+
+    fx.play (10);
+    CHECK (fx.picks() == 1);
+}
+
+TEST_CASE ("slice length: transport stop silences and rearms", "[scheduler][sl]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+
+    fx.play (100);
+    CHECK (fx.scheduler.renderer().hasPick());
+
+    fx.run ({ false, 120.0, fx.ppqCursor }, 50);   // transport stops: ppq freezes
+    CHECK_FALSE (fx.scheduler.renderer().hasPick());
+
+    const auto before = fx.picks();
+    fx.play (10);   // fresh snap + immediate pick on restart
+    CHECK (fx.picks() == before + 1);
+}
+
+TEST_CASE ("slice length: unimplemented modes stay silent", "[scheduler]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+
+    for (const auto mode : { TriggerMode::sequenced, TriggerMode::performance,
+                             TriggerMode::control })
+    {
+        fx.state.triggerMode = mode;
+        fx.play (64);
+        CHECK_FALSE (fx.scheduler.renderer().hasPick());
+        CHECK (fx.picks() == 0);
+    }
+}
+
+TEST_CASE ("clock: immediate pick then per-tick retriggers", "[scheduler][clock]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::clock;
+
+    // Reference 4n (default): 1-beat windows = 22050 samples. Force an
+    // 8n subdivision (11025 samples): events land every half-window --
+    // ticks inside, and the window boundary itself redraws.
+    std::fill (fx.state.generate.subdivisionWeights.begin(),
+               fx.state.generate.subdivisionWeights.end(), 0.0f);
+    fx.state.generate.subdivisionWeights[10] = 1.0f;
+
+    fx.play (1);
+    CHECK (fx.picks() == 1);   // forced first tick at once
+
+    // Every tick retriggers from the slice start, capped to one tick.
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (11025.0, 1.0));
+
+    fx.playQuiet (11022);
+    fx.advanceToPicks (2, 5);      // tick ~11025
+
+    fx.playQuiet (11021);
+    fx.advanceToPicks (3, 5);      // boundary + tick together ~22050
+
+    fx.playQuiet (11021);
+    fx.advanceToPicks (4, 5);      // tick ~33075
+
+    fx.advanceToPicks (5, 11032);  // next window boundary ~44100
+}
+
+TEST_CASE ("clock: whole-window tape stop renders once per window", "[scheduler][clock]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::clock;
+
+    std::fill (fx.state.generate.styleWeights.begin(),
+               fx.state.generate.styleWeights.end(), 0.0f);
+    fx.state.generate.styleWeights[2] = 1.0f;       // Tape Stop only
+    std::fill (fx.state.generate.subdivisionWeights.begin(),
+               fx.state.generate.subdivisionWeights.end(), 0.0f);
+    fx.state.generate.subdivisionWeights[10] = 1.0f;  // 8n ticks (ignored)
+
+    fx.play (1);
+    CHECK (fx.picks() == 1);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().tapeStopDurationHostSamples,
+                WithinAbs (22050.0, 1.0));          // the whole 1-beat window
+
+    fx.playQuiet (22046);
+    fx.advanceToPicks (2, 6);      // only the window boundary itself
+
+    fx.playQuiet (22045);
+    fx.advanceToPicks (3, 7);
+}
+
+TEST_CASE ("clock: per-tick tape stop retriggers every tick", "[scheduler][clock]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::clock;
+    fx.state.generate.tapeStopScope = WindowScope::perTick;
+
+    std::fill (fx.state.generate.styleWeights.begin(),
+               fx.state.generate.styleWeights.end(), 0.0f);
+    fx.state.generate.styleWeights[2] = 1.0f;       // Tape Stop only
+    std::fill (fx.state.generate.subdivisionWeights.begin(),
+               fx.state.generate.subdivisionWeights.end(), 0.0f);
+    fx.state.generate.subdivisionWeights[10] = 1.0f;  // 8n
+
+    fx.play (1);
+    CHECK (fx.picks() == 1);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().tapeStopDurationHostSamples,
+                WithinAbs (11025.0, 1.0));          // one TICK, not the window
+
+    fx.playQuiet (11022);
+    fx.advanceToPicks (2, 5);
+}
+
+TEST_CASE ("clock: stretch spans the window ignoring subdivisions", "[scheduler][clock]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::clock;
+
+    std::fill (fx.state.generate.styleWeights.begin(),
+               fx.state.generate.styleWeights.end(), 0.0f);
+    fx.state.generate.styleWeights[3] = 1.0f;       // Stretch only
+    std::fill (fx.state.generate.subdivisionWeights.begin(),
+               fx.state.generate.subdivisionWeights.end(), 0.0f);
+    fx.state.generate.subdivisionWeights[10] = 1.0f;  // 8n ticks (ignored)
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    // Duration = min(Grain Speed x natural, window) = min(4 x 44100, 22050).
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (22050.0, 1.0));
+
+    fx.playQuiet (22046);
+    fx.advanceToPicks (2, 6);      // one continuous render per window
+}
+
+TEST_CASE ("clock: ticks clamp to the window end", "[scheduler][clock]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::clock;
+    fx.state.generate.clockReferenceIndex = kNoteValue1n;   // 4-beat windows
+
+    std::fill (fx.state.generate.subdivisionWeights.begin(),
+               fx.state.generate.subdivisionWeights.end(), 0.0f);
+    fx.state.generate.subdivisionWeights[kNoteValue4n] = 1.0f;  // 1-beat ticks
+
+    fx.play (1);
+    CHECK (fx.picks() == 1);
+
+    fx.playQuiet (22047);          // tick ~22050
+    fx.advanceToPicks (2, 5);
+
+    fx.playQuiet (22047);          // tick ~44100
+    fx.advanceToPicks (3, 5);
+
+    fx.playQuiet (22047);          // tick ~66150
+    fx.advanceToPicks (4, 5);
+
+    fx.advanceToPicks (5, 22062);  // then ONLY the window boundary ~88200:
+                                   // the clamped nextTick IS that boundary
+}
+
+// ===========================================================================
+// Sequenced mode. Timing constants @ 120 bpm / 44.1 kHz with a 16n step
+// grid: one step = 5512.5 samples, one bar pattern = 16 steps = 88200.
+// ===========================================================================
+
+TEST_CASE ("sequenced: filled column triggers immediately and loops", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward on the very first column
+
+    // Entering the mode re-syncs to whichever step is current: step 0 is
+    // filled, so the note fires at once.
+    fx.play (1);
+    CHECK (fx.picks() == 1);
+    CHECK (fx.scheduler.playingStepIndex() == 0);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (44100.0, 2.0));   // natural slice length in steps
+
+    // Empty columns never retrigger; the next event is the PATTERN wrap
+    // back onto column 0 after a full bar (~88200).
+    fx.playQuiet (88194);
+    fx.advanceToPicks (2, 10);
+}
+
+TEST_CASE ("sequenced: empty columns leave silence after the note fades", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 3, 0);   // only column 3 filled
+
+    // Entering inside step 0: nothing triggers (column 0 is empty), and
+    // no boundary ever produces a pick until the wrap onto column 3.
+    fx.play (5512);
+    CHECK (fx.picks() == 0);
+
+    // Crossing into column 3 starts the note...
+    fx.advanceToPicks (1, 11040);
+    CHECK (fx.scheduler.playingStepIndex() == 3);
+
+    // ...and after its natural length the voice runs out silently; no
+    // further retriggers for the rest of the pattern.
+    fx.playQuiet (44100 + 30000);
+    CHECK (fx.scheduler.renderer().finished (fx.ctx));
+}
+
+TEST_CASE ("sequenced: next active column caps the note", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward
+    fx.fillCell (0, 4, 1);   // Ping-Pong four steps later
+
+    // The first note anticipates the cut at column 4: four 16n steps =
+    // 1 beat = 22050 samples, well short of its natural 44100.
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (22050.0, 2.0));
+
+    fx.playQuiet (22046);
+    fx.advanceToPicks (2, 8);
+
+    // The second note carries the cell's own style.
+    CHECK (fx.scheduler.renderer().currentPick().style == PlaybackStyle::pingPong);
+    CHECK (fx.scheduler.renderer().currentPick().halfSliceFold);   // sequenced half-window
+}
+
+TEST_CASE ("sequenced: cell overrides beat the fallback parameters", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 3);   // Stretch
+    fx.setCellOverride (0, 0, StyleParamId::grainSizeMs, 25.0f);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& params = fx.scheduler.renderer().currentPick().params;
+    CHECK_THAT (params.grainSizeMs, WithinAbs (25.0f, 1e-6f));   // override wins
+    CHECK_THAT (params.grainSpeed, WithinAbs (fx.state.sequencer.fallbackParams.grainSpeed, 1e-6f));
+}
+
+TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-step",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward
+    fx.setCellOverride (0, 0, StyleParamId::subdivide,
+                        static_cast<float> (kNoteValue4n) + 1.0f);   // 1-beat ticks
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    // Declared length = 8 natural steps = 44100; the window spans THAT,
+    // while each subdivision slot (this trigger included) lasts one tick.
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK_THAT (pick.pickLengthHostSamples, WithinAbs (22050.0, 2.0));
+
+    // Whole-step progress for every swept parameter while Subdivide is on.
+    CHECK (pick.volumeRampActive);
+    CHECK (pick.volumeWholeWindow);
+    CHECK (pick.flangerWholeWindow);
+    CHECK (pick.filterWholeWindow);
+
+    // One retrigger at the tick boundary ~22050, then quiet until the
+    // pattern wraps back onto column 0 at ~88200.
+    fx.playQuiet (22045);
+    fx.advanceToPicks (2, 8);
+    CHECK_THAT (fx.scheduler.renderer().currentPick().pickLengthHostSamples,
+                WithinAbs (22050.0, 2.0));   // min(tick, remaining window)
+
+    fx.playQuiet (66140);
+    fx.advanceToPicks (3, 15);
+}
+
+TEST_CASE ("sequenced: immediate pattern switch applies on the next check",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);
+    fx.state.sequencer.patternBank[60] = fx.makeBankPattern (60, { { 0, 7 } });
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    fx.scheduler.requestPatternSwitch (60);
+    CHECK (fx.scheduler.patternSwitchPending());
+
+    // Immediate timing never defers: the recall lands on the very next
+    // per-sample check. The step tracker re-syncs against the NEW grid
+    // (whose column 0 is empty), so the playhead moves but nothing fires.
+    fx.play (2);
+    CHECK_FALSE (fx.scheduler.patternSwitchPending());
+    CHECK (fx.scheduler.playingStepIndex() == 0);
+
+    // The audible proof of the swap: the recalled pattern's column 7
+    // triggers at absolute step 7 (~7 x 5512.5 = 38587.5).
+    fx.playQuiet (38580);
+    fx.advanceToPicks (2, 10);
+}
+
+TEST_CASE ("sequenced: set-interval switch defers to the next interval boundary",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);
+    fx.state.sequencer.patternBank[61] = fx.makeBankPattern (61, { { 0, 5 } });
+    fx.state.sequencer.patternSwitchTiming = PatternSwitchTiming::setInterval;
+    fx.state.sequencer.patternSwitchIntervalIndex = kNoteValue4n;   // 1-beat intervals
+
+    fx.play (1);      // column 0 fires
+    fx.play (1000);   // mid-step request
+    REQUIRE (fx.picks() == 1);
+    fx.scheduler.requestPatternSwitch (61);
+
+    // The recall boundary is the next whole beat (~22050 absolute), but
+    // the RECALLED pattern only fills column 5 (~27562.5): nothing may
+    // fire anywhere in between -- not at the boundary itself.
+    fx.playQuiet (26548);
+    fx.advanceToPicks (2, 16);
+    CHECK (fx.scheduler.playingStepIndex() == 5);
+}
+
+TEST_CASE ("sequenced: end-of-pattern switch waits for the genuine wrap",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 15, 0);   // last column filled
+    fx.state.sequencer.patternBank[62] = fx.makeBankPattern (62, { { 0, 0 } });
+    fx.state.sequencer.patternSwitchTiming = PatternSwitchTiming::endOfPattern;
+
+    // Entering mid-pattern (step 0 empty here) stays silent until 15...
+    fx.play (15 * 5512);
+    CHECK (fx.picks() == 0);
+
+    fx.advanceToPicks (1, 8);
+    CHECK (fx.scheduler.playingStepIndex() == 15);
+
+    // Request DURING the final step; the wrap (15 -> 0) is the earliest
+    // legal boundary -- a full step later -- where the recalled pattern's
+    // own column 0 fires.
+    fx.scheduler.requestPatternSwitch (62);
+    fx.advanceToPicks (2, 5525);
+    CHECK (fx.scheduler.playingStepIndex() == 0);
+}
+
+TEST_CASE ("sequenced: switching to an empty bank slot is a no-op", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    fx.scheduler.requestPatternSwitch (99);   // never populated
+    fx.play (64);
+    CHECK_FALSE (fx.scheduler.patternSwitchPending());   // dropped at the check
+    CHECK (fx.picks() == 1);                             // nothing disturbed
+
+    // And the working pattern keeps looping as if nothing happened.
+    fx.playQuiet (88130);
+    fx.advanceToPicks (2, 10);
+}

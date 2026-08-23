@@ -130,4 +130,122 @@ inline constexpr float kDefaultHoldoffMs = 30.0f;
                std::llround (quantizedSeconds * sampleRate));
 }
 
+// Beat-quantized slice length: the palette entry closest to targetBeats.
+// Strict less-than comparison, so the earliest (shortest) palette entry
+// wins ties -- matching the original.
+[[nodiscard]] inline int nearestNoteValueIndex (double targetBeats) noexcept
+{
+    int bestIndex = 0;
+    double bestDistance = 1e300;
+
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+    {
+        const double distance = std::abs (state::kNoteValues[static_cast<std::size_t> (i)].beats
+                                          - targetBeats);
+
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    return bestIndex;
+}
+
+// Result of the shared beat-quantize target calculation (Slice Length
+// mode's per-pick length substitution).
+struct BeatQuantizeTarget
+{
+    bool quantized = false;
+    double stretchRatio = 1.0;      // replaces repitchRatio for this pick
+    double targetHostSeconds = 0.0; // this pick's target duration
+};
+
+// The shared target-duration calculation both pitch modes' beat-quantize
+// toggles feed into:
+//   1. naturalBeats from the slice's source-domain duration at originalBpm
+//      (Ping-Pong quantizes the FULL ROUND TRIP as one unit)
+//   2. snap to the nearest note-value palette entry -- spans longer than a
+//      bar decompose into whole bars plus a palette-quantized remainder
+//      (the palette tops out at 1n, so searching it directly would crush
+//      every multi-bar slice down to one bar)
+//   3. targetHostSeconds = quantizedBeats at hostBpm
+//   4. stretchRatio = naturalSourceSeconds / targetHostSeconds
+// quantized stays false for degenerate inputs.
+[[nodiscard]] inline BeatQuantizeTarget computeBeatQuantizeTarget (
+    std::int64_t sliceLengthFrames, bool pingPong,
+    double sampleSampleRate, double originalBpm, double hostBpm) noexcept
+{
+    BeatQuantizeTarget result;
+
+    if (sliceLengthFrames <= 0 || originalBpm <= 0.0 || hostBpm <= 0.0
+        || sampleSampleRate <= 0.0)
+        return result;
+
+    const auto lengthFrames = static_cast<double> (
+        pingPong ? 2 * sliceLengthFrames : sliceLengthFrames);
+    const double sliceNaturalSourceSeconds = lengthFrames / sampleSampleRate;
+    const double naturalBeats = sliceNaturalSourceSeconds * originalBpm / 60.0;
+
+    double quantizedBeats;
+
+    if (naturalBeats > 4.0)
+    {
+        const double wholeBars = std::floor (naturalBeats / 4.0);
+        const double remainderBeats = naturalBeats - (wholeBars * 4.0);
+        const double smallestPaletteBeats =
+            state::kNoteValues[0].beats;  // 128n
+
+        // Below half the smallest palette entry, treat as no remainder --
+        // an almost-exactly-N-bars slice gets no spurious addition.
+        const double quantizedRemainder =
+            (remainderBeats > smallestPaletteBeats * 0.5)
+                ? state::kNoteValues[static_cast<std::size_t> (
+                      nearestNoteValueIndex (remainderBeats))].beats
+                : 0.0;
+
+        quantizedBeats = (wholeBars * 4.0) + quantizedRemainder;
+    }
+    else
+    {
+        quantizedBeats =
+            state::kNoteValues[static_cast<std::size_t> (
+                nearestNoteValueIndex (naturalBeats))].beats;
+    }
+
+    const double targetHostSeconds = quantizedBeats * (60.0 / hostBpm);
+
+    if (targetHostSeconds <= 0.0)
+        return result;
+
+    result.quantized = true;
+    result.stretchRatio = sliceNaturalSourceSeconds / targetHostSeconds;
+    result.targetHostSeconds = targetHostSeconds;
+    return result;
+}
+
+// Scratch bounce-cycle length (one full forward-backward cycle at the
+// Rate note value), in HOST samples. One LEG of the cycle is clamped to
+// the slice's own content length -- the rate is tempo-synced and
+// independent of slice size, so an unclamped cycle could otherwise ask
+// the fold to bounce past the slice into whatever audio follows it.
+// Degenerate inputs return 0.0 (callers treat that as a harmless no-op).
+[[nodiscard]] inline double scratchCycleLengthHostSamples (
+    int rateIndex, std::int64_t sliceLengthFrames,
+    double hostBpm, double hostSampleRate, double playbackRate) noexcept
+{
+    if (sliceLengthFrames <= 0 || hostBpm <= 0.0 || hostSampleRate <= 0.0
+        || playbackRate <= 0.0 || ! state::isValidNoteValueIndex (rateIndex))
+        return 0.0;
+
+    const double rateBeats = state::kNoteValues[static_cast<std::size_t> (rateIndex)].beats;
+    const double desiredCycleHostSamples = rateBeats * (60.0 / hostBpm) * hostSampleRate;
+    const double desiredCycleSourceSamples = desiredCycleHostSamples * playbackRate;
+    const double clampedLegSourceSamples = std::min (desiredCycleSourceSamples * 0.5,
+                                                     static_cast<double> (sliceLengthFrames));
+
+    return 2.0 * clampedLegSourceSamples / playbackRate;
+}
+
 } // namespace nedit::engine::tempo

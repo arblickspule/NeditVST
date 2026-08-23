@@ -5,6 +5,8 @@ add_library(nedit_engine STATIC
     SliceBuilder.cpp
     GranularStretcher.cpp
     PickRenderer.cpp
+    Scheduler.cpp
+    PickRenderer.cpp
 )
 target_include_directories(nedit_engine PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(nedit_engine

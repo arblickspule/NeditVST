@@ -66,11 +66,17 @@ included/excluded.
 - `SequencerState` monophony (one style per column) is enforced by
   mutators/engine, not by the data structure.
 
-## Session handoff (2026-08-23, afternoon)
+## Session handoff (2026-08-23, evening)
 
-- Working tree: Phase 1 committed (`467349b`), engine chunk 1 committed
-  (`f28be3b`); engine chunk 2 (stretcher/fold/easing) done but NOT yet
-  committed. `ctest` 96/96 green (51 state + 45 engine), zero warnings.
+- Working tree: Phase 1 committed (`467349b`), engine chunks 1+2
+  committed (`f28be3b`, `3e83512`); engine chunks 3 (style renderers +
+  dsp primitives), 4a (VoiceScheduler: Slice Length + Clock) and 4b
+  (Sequenced scheduler) done but NOT yet committed. `ctest` 149/149
+  green (51 state + 98 engine), zero warnings.
+- Architecture decision (2026-08-23): DSP primitives live in
+  `src/engine/dsp/` one-file-per-primitive, used directly by
+  `PickRenderer` — the fancier "DspConfig.h alias swap seam" idea was
+  considered and REJECTED as complexity without payoff.
 - **Phase 2 progress** — `src/engine/` (pure C++, framework-free, links
   only `nedit_state`):
   - `Slice.h` — derived `[startFrame, endFrame)` slice type (int64).
@@ -115,11 +121,64 @@ included/excluded.
     leaves the stretch trajectory unchanged, loop fold keeps spawning
     inside the slice, degenerate-input safety (null source, zero grain,
     pool exhaustion).
-- Next engine work (in order): the 9 playback-style renderers (voice/
-  pick render path: repitch + time-stretch, fades, per-style DSP —
-  filter sweep, bitcrush, flanger, tape stop, scratch, volume ramps),
-  then per-mode schedulers (per-sample ppq boundaries!), then the
-  audio-thread snapshot/message-passing mechanism.
+  - `dsp/SweepFilter.h` — TPT (Zavalishin) state-variable filter,
+    equivalent to the original's juce::dsp::StateVariableTPTFilter;
+    LP/HP/BP, per-sample-sweepable cutoff, Q resonance, 2-channel state.
+  - `dsp/Bitcrusher.h` — sample-and-hold + bit quantize, classic
+    stair-step structure (quantize once per hold period). tick() once
+    per output sample keeps stereo in lockstep; hold length re-read
+    every grab so swept rates need no separate path.
+  - `dsp/Flanger.h` — per-channel feedback comb; write = dry + fb·delayed
+    (resonance), output = dry/wet crossfade independent of feedback;
+    tick()/advance() once per output sample.
+  - `PickRenderer.h/.cpp` — the shared voice path, faithful port of the
+    original's ~900-line render section: BlockContext (per-block
+    constants) + PickParams (captured at pick start, incl. a full
+    StyleParameters copy) + per-sample `renderSample`. Covers: fades
+    clamped to half pick length; bounce-midpoint fades (curve-shaped);
+    Tape Stop decel with gain riding the curve (replacing fade-out),
+    position-exhaustion freeze loop (25 ms "stuck tape"); Stretch always
+    granular (own grain size, hardEdge, Grain Speed as character
+    constant, loop fold fills extensions); Filter Down/Up log-sweep
+    9k↔250 Hz per-tick/whole-window; Bitcrush/Flanger/Volume sweeps
+    (per-pick vs whole-window progress via the renderer-owned window
+    clock); beat-quantize ratio substitution; Performance Sync-off
+    native rate; Control velocity gain + gate-release force-stop.
+    Scheduler decides WHEN picks start; renderer decides what they
+    sound like. `finished()` mirrors the original's pickWithinSchedule.
+    Renderer additions for Sequenced: `retrigger()` (restarts the SAME
+    pick with new durations WITHOUT resetting per-pick DSP or the window
+    clock -- subdivided steps keep one continuous sweep underneath) and
+    public window-clock accessors (`windowElapsedSamples()/
+    windowLengthSamples()`).
+  - `Scheduler.h/.cpp` — VoiceScheduler: Slice Length (reset windows,
+    beat-quantize, weighted draws + uniform fallback), Clock (per-window
+    slice/subdivision/style draw, tick retriggers, tape-stop/stretch
+    whole-window override), AND Sequenced (4b): per-sample step grid on
+    ppq boundaries; a filled column triggers its cell's style directly;
+    params = fallbackParams + cell overrides merged; declared length =
+    natural-steps vs Shift+drag extension, capped by the next active
+    column anywhere in the grid (anticipatory fade); Subdivide slices a
+    step into retrigger slots (first trigger IS slot 1); pattern recall
+    via `requestPatternSwitch(note)` with immediate/setInterval/
+    endOfPattern timing — immediate applies on the next per-sample pass
+    (≤1 sample after the original's synchronous apply, documented);
+    deferred timings evaluated against the CURRENTLY playing pattern's
+    own dimensions; empty bank slot = no-op; recalls are applied from the
+    current block's bank into a scheduler-owned working-pattern override
+    (`releaseWorkingPatternOverride()` lets the future shell drop it when
+    fresh state snapshots arrive). `playingStepIndex()` is the UI
+    playhead signal. Unimplemented modes (performance/control) still
+    render silence.
+- Test-fixture lessons baked into `tests/engine/test_scheduler.cpp`: the
+  caller must advance `ppqStart` across blocks like a host does (the
+  scheduler derives each sample's beat position from the BLOCK START ppq
+  -- feeding constant 0 stalls every boundary forever); exact ppq
+  boundaries carry ±1-sample double-rounding jitter, absorbed by the
+  `playQuiet`/`advanceToPicks` assertion pair.
+- Next engine work (in order): Performance + Control schedulers, MIDI
+  dispatch entry points (note routing per mode), then the audio-thread
+  snapshot/message-passing mechanism.
 
 ## Rules of engagement
 
