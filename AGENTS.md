@@ -204,10 +204,26 @@ included/excluded.
   don't count); default grainSpeed is 4× so a default Stretch window is
   4 × natural samples; palette ordinals: forward0/pingPong1/tapeStop2/
   stretch3/filterDown4/filterUp5/bitcrush6/scratch7/flanger8.
-- Next engine work (in order): audio-thread state-snapshot /
-  message-passing mechanism (immutable per-block snapshots + UI→engine
-  queue + MIDI dispatch wiring into it), then Phase 3 VST3 shell.
-- Test totals: 161/161 green (51 state + 110 engine), zero warnings.
+- Audio-thread state-snapshot / message-passing mechanism DONE
+  (header-only, `src/engine/`): `SnapshotProvider.h` — immutable
+  per-block state views via `std::atomic<std::shared_ptr<const
+  PluginState>>`; UI publishes clones (allocation stays off the audio
+  thread), audio acquires a shared_ptr per block so mid-block publishes
+  can't mutate the rendering view; successive reads never regress
+  (modification order, stress-tested). `CommandQueue.h` — lock-free SPSC
+  ring of trivially-copyable `EngineCommand`s (power-of-two capacity,
+  free-running cursors, drop-on-full by caller's choice; advisory pokes
+  only — sampleSlotReplaced / invalidateAnalysis / quit). `MidiDispatch.h`
+  — pure `routeMidiNote()` mapping host notes onto the scheduler's
+  per-mode entry points (performance recalls / control trigger+gate /
+  sequenced pattern recall; SL+Clock have no MIDI semantics) +
+  `velocityFromMidiByte`.
+- Next work: Phase 3 VST3 shell (`src/plugin/`): IComponent/
+  IEditController glue, getState/setState → serialize/deserialize,
+  parameter surface decisions, bus/MIDI setup, wiring process() to
+  SnapshotProvider + MidiDispatch + VoiceScheduler. VST3 SDK via
+  FetchContent (`NEDIT_BUILD_PLUGIN=ON`).
+- Test totals: 173/173 green (51 state + 122 engine), zero warnings.
 
 ## Rules of engagement
 
