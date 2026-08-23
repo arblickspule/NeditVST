@@ -218,12 +218,47 @@ included/excluded.
   per-mode entry points (performance recalls / control trigger+gate /
   sequenced pattern recall; SL+Clock have no MIDI semantics) +
   `velocityFromMidiByte`.
-- Next work: Phase 3 VST3 shell (`src/plugin/`): IComponent/
-  IEditController glue, getState/setState → serialize/deserialize,
-  parameter surface decisions, bus/MIDI setup, wiring process() to
-  SnapshotProvider + MidiDispatch + VoiceScheduler. VST3 SDK via
-  FetchContent (`NEDIT_BUILD_PLUGIN=ON`).
-- Test totals: 173/173 green (51 state + 122 engine), zero warnings.
+- Phase 3 VST3 shell DONE (`src/plugin/`, `NEDIT_BUILD_PLUGIN=ON`):
+  - `ParameterSurface.h` — PURE (state-only, unit-tested without SDK):
+    the automation contract. IDs 0..20 = generate.styleParams via the
+    generic get/set; specials 100..107 (trigger mode, manual tempo
+    +enable, loop length bars, control base note/gate, quantize recall
+    +interval). IDs are a persisted-session contract: never renumber.
+    Deliberate v1 decision: only Generate's styleParams are automatable
+    (automating four parallel copies of the vocabulary would invite the
+    silent-sharing bug back); other scopes stay UI-edited state.
+  - `NeditProcessor.{h,cpp}` — SingleComponentEffect glue. Stereo out +
+    MIDI event in, no audio input. Transport needs flags:
+    TransportState|Tempo|ProjectTimeMusic; ppqStart = projectTimeMusic,
+    frozen at last position when stopped (fixture semantics).
+    Automation folds into a reusable `automationScratch_` copy per block
+    (capacity pre-reserved ⇒ steady-state alloc-free); last-point-wins
+    per param queue. getState/setState → serialize/deserialize; setState
+    rejects garbage (kResultFalse, state untouched) and RESYNCS parameter
+    objects afterwards (hosts read display values via getParamNormalized).
+  - `factory.cpp` — BEGIN_FACTORY_DEF/DEF_CLASS2 with pinned FUID;
+    subcategory "Instrument|Sampler".
+  - CMake: SDK fetched (pinned commit) but NOT configured via its own
+    cmake — minimal static lib compiles exactly the needed sources.
+    GOTCHAS baked in: fdebug.h requires RELEASE=1 defined; STR16() only
+    pastes literals (runtime titles need Steinberg::UString);
+    vstsinglecomponenteffect.cpp #includes vsteditcontroller.cpp so NEVER
+    compile both; module target links nedit_plugin via --whole-archive
+    (static-initializer factory must survive archive resolution);
+    factory.cpp belongs to the MODULE only (GetPluginFactory dup else);
+    AudioBusBuffers.channelBuffers32 is float** (array of channel
+    pointers); CMAKE_POSITION_INDEPENDENT_CODE ON globally.
+  - Bundle assembled to build/nedit.vst3/Contents/x86_64-linux/
+    libnedit.vst.so via POST_BUILD copy.
+- Known Phase-3 boundary: the shell renders SILENCE until Phase 4 wires
+  sample decode + transient analysis (slices list is empty ⇒ scheduler
+  disarms; all plumbing verified by tests). No file IO exists yet by
+  design — UI owns loading next phase.
+- Next work: Phase 4 UI (VSTGUI): views as stateless renderers of
+  PluginState + engine mailboxes; sample load/decode → analysis → slices
+  into the processor; view state lives in UiState.
+- Test totals: default build 173/173 (51 state + 122 engine);
+  plugin build adds 13 shell tests = 186/186, zero warnings.
 
 ## Rules of engagement
 

@@ -40,3 +40,14 @@ include(CTest)
 include(Catch)
 catch_discover_tests(nedit_state_tests)
 catch_discover_tests(nedit_engine_tests)
+
+# Plugin shell tests (need the VST3 SDK, so only with NEDIT_BUILD_PLUGIN).
+if(NEDIT_BUILD_PLUGIN)
+    add_executable(nedit_plugin_tests
+        plugin/test_parameter_surface.cpp
+        plugin/test_nedit_processor.cpp
+    )
+    target_link_libraries(nedit_plugin_tests
+        PRIVATE nedit_plugin nedit_warnings Catch2::Catch2WithMain)
+    catch_discover_tests(nedit_plugin_tests)
+endif()
