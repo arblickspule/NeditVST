@@ -11,6 +11,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivstcomponent.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
+#include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/vsttypes.h"
 
@@ -23,6 +24,9 @@
 
 #include <poll.h>
 #include <xcb/xcb.h>
+
+#include <X11/Xlib.h>
+#include <X11/extensions/XTest.h>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -176,11 +180,15 @@ int main (int argc, char** argv)
                 const xcb_setup_t* s = xcb_get_setup (conn);
                 xcb_screen_t* screen = xcb_setup_roots_iterator (s).data;
                 xcb_window_t win = xcb_generate_id (conn);
+                uint32_t vals[1] = { 1 };   // override_redirect: keep at 0,0
                 xcb_create_window (conn, XCB_COPY_FROM_PARENT, win, screen->root,
                                    0,0, (uint16_t)(vr.right-vr.left>0?vr.right-vr.left:600),
                                    (uint16_t)(vr.bottom-vr.top>0?vr.bottom-vr.top:400),
-                                   0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+                                   0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
+                                   XCB_CW_OVERRIDE_REDIRECT, vals);
                 xcb_map_window (conn, win);
+                uint32_t stack[1] = { XCB_STACK_MODE_ABOVE };
+                xcb_configure_window (conn, win, XCB_CONFIG_WINDOW_STACK_MODE, stack);
                 xcb_flush (conn);
                 view->setFrame (static_cast<IPlugFrame*> (&host));   // IRunLoop via QI
                 STEP("attach editor to X11 window");
@@ -189,11 +197,63 @@ int main (int argc, char** argv)
                 std::printf("[harness] attached -> %d\n", r);
 
                 STEP("pump + process with editor open");
-                for (int i = 0; i < 50; ++i)
+                for (int i = 0; i < 20; ++i)
                 {
                     processor->process (data);
                     host.pump (20);
                 }
+
+                // Inject a REAL click on the Load button via XTEST (synthetic
+                // SendEvent clicks are ignored by X). Drives the async file-
+                // dialog path; with NEDIT_TEST_FILE set it returns at once.
+                STEP("click Load button (XTEST)");
+                if (Display* dpy = XOpenDisplay (nullptr))
+                {
+                    // Translate the button's window coords to root coords.
+                    int rx = 0, ry = 0; xcb_window_t childRet;
+                    const int bx = (vr.right - vr.left) - 90;
+                    const int by = 20;
+                    xcb_translate_coordinates_cookie_t tc =
+                        xcb_translate_coordinates (conn, win, screen->root, (int16_t) bx, (int16_t) by);
+                    if (auto* tr = xcb_translate_coordinates_reply (conn, tc, nullptr))
+                    { rx = tr->dst_x; ry = tr->dst_y; childRet = tr->child; (void) childRet; free (tr); }
+                    XTestFakeMotionEvent (dpy, -1, rx, ry, CurrentTime); XFlush (dpy);
+                    host.pump (30);
+                    XTestFakeButtonEvent (dpy, 1, True, CurrentTime); XFlush (dpy);
+                    host.pump (30);
+                    XTestFakeButtonEvent (dpy, 1, False, CurrentTime); XFlush (dpy);
+                    XFlush (dpy);
+                    for (int i = 0; i < 10; ++i) host.pump (20);
+                    XCloseDisplay (dpy);
+                }
+
+                STEP("pump + process after click (dialog + idle load)");
+                for (int i = 0; i < 40; ++i)
+                {
+                    processor->process (data);
+                    host.pump (20);
+                }
+
+                // Prove the click path actually loaded audio: play transport
+                // (Slice Length is the default mode) and measure output.
+                STEP("play transport, measure output energy");
+                float peak = 0.f; double ppq = 0.0;
+                for (int blk = 0; blk < 60; ++blk)
+                {
+                    ProcessContext pc {};
+                    pc.state = ProcessContext::kPlaying | ProcessContext::kTempoValid
+                             | ProcessContext::kProjectTimeMusicValid;
+                    pc.tempo = 120.0; pc.projectTimeMusic = ppq;
+                    data.processContext = &pc;
+                    std::memset (left, 0, sizeof (left)); std::memset (right, 0, sizeof (right));
+                    processor->process (data);
+                    for (int s = 0; s < 512; ++s) peak = std::max (peak, std::abs (left[s]));
+                    ppq += 512.0 * (120.0/60.0) / 48000.0;
+                    host.pump (2);
+                }
+                data.processContext = nullptr;
+                std::printf ("[harness] post-load output peak = %.4f (%s)\n",
+                             peak, peak > 0.001f ? "AUDIBLE" : "silent");
                 STEP("removed editor");
                 view->removed();
                 xcb_destroy_window (conn, win); xcb_flush (conn);

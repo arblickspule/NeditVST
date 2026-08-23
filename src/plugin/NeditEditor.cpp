@@ -9,13 +9,17 @@
 
 #include "vstgui/lib/ccolor.h"
 #include "vstgui/lib/cdrawcontext.h"
-#include "vstgui/lib/cfileselector.h"
 #include "vstgui/lib/cframe.h"
 #include "vstgui/lib/controls/cbuttons.h"
 #include "vstgui/lib/controls/coptionmenu.h"
 #include "vstgui/lib/controls/ctextlabel.h"
 #include "vstgui/lib/cvstguitimer.h"
 #include "vstgui/lib/events.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <thread>
+#include <unistd.h>
 
 #if SMTG_OS_LINUX
 #include "public.sdk/source/vst/vstgui_linux_runloop_support.h"
@@ -311,24 +315,83 @@ void NeditEditor::applyParamFromControl (CControl& control)
 }
 
 //------------------------------------------------------------------------
+void NeditEditor::beginEdit (VSTGUI_INT32 index)
+{
+    if (index >= 0 && isValidParamId (static_cast<std::uint32_t> (index)))
+        VSTGUIEditor::beginEdit (index);
+}
+
+//------------------------------------------------------------------------
+void NeditEditor::endEdit (VSTGUI_INT32 index)
+{
+    if (index >= 0 && isValidParamId (static_cast<std::uint32_t> (index)))
+        VSTGUIEditor::endEdit (index);
+}
+
+namespace {
+
+// Runs a native file chooser via zenity/kdialog on a BACKGROUND thread and
+// returns the chosen path (empty if cancelled / unavailable). Never touches
+// VSTGUI or the editor, so it's safe off the UI thread.
+[[nodiscard]] std::string runNativeFileDialog()
+{
+    // Headless/testing override: skip the GUI dialog entirely.
+    if (const char* forced = std::getenv ("NEDIT_TEST_FILE"))
+        return forced;
+
+    const char* cmd = nullptr;
+    if (::access ("/usr/bin/zenity", X_OK) == 0)
+        cmd = "/usr/bin/zenity --file-selection --title='Load Sample' "
+              "--file-filter='Audio | *.wav *.WAV *.aif *.aiff' "
+              "--file-filter='All files | *' 2>/dev/null";
+    else if (::access ("/usr/bin/kdialog", X_OK) == 0)
+        cmd = "/usr/bin/kdialog --getopenfilename . "
+              "'*.wav *.WAV *.aif *.aiff|Audio files' 2>/dev/null";
+    else
+        return {};
+
+    std::FILE* pipe = ::popen (cmd, "r");
+    if (pipe == nullptr)
+        return {};
+
+    std::string out;
+    char buf[4096];
+    std::size_t n = 0;
+    while ((n = std::fread (buf, 1, sizeof (buf), pipe)) > 0)
+        out.append (buf, n);
+    ::pclose (pipe);
+
+    while (! out.empty() && (out.back() == '\n' || out.back() == '\r'))
+        out.pop_back();
+    return out;
+}
+
+} // namespace
+
+//------------------------------------------------------------------------
 void NeditEditor::runFileSelector()
 {
-    auto* selector = CNewFileSelector::create (frame, CNewFileSelector::kSelectFile);
-    if (selector == nullptr)
+    if (! fileDialog_)
+        fileDialog_ = std::make_shared<FileDialogState>();
+
+    // One dialog at a time.
+    if (fileDialog_->running.exchange (true))
         return;
 
-    selector->setTitle ("Load Sample");
-    selector->addFileExtension (CFileExtension ("WAV audio", "wav"));
+    fileDialog_->ready.store (false);
 
-    selector->run ([this] (CNewFileSelector* s) {
-        if (s->getNumSelectedFiles() > 0)
+    // Detached + shared state: the dialog thread never blocks the UI thread
+    // and can safely outlive the editor.
+    auto state = fileDialog_;
+    std::thread ([state]() {
+        std::string path = runNativeFileDialog();
         {
-            owner_->requestSampleLoad (s->getSelectedFile (0));
-            if (waveform_ != nullptr)
-                waveform_->invalid();
+            std::lock_guard<std::mutex> lock (state->mutex);
+            state->path = std::move (path);
         }
-    });
-    selector->forget();
+        state->ready.store (true);
+        state->running.store (false);
+    }).detach();
 }
 
 //------------------------------------------------------------------------
@@ -336,8 +399,28 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
 {
     if (message == CVSTGUITimer::kMsgTimer)
     {
+        // Test hook: exercise the async load path once, headless.
+        if (std::getenv ("NEDIT_TEST_AUTOLOAD") && ! testAutoloadFired_)
+        {
+            testAutoloadFired_ = true;
+            runFileSelector();
+        }
+
+        // Apply a file the background dialog thread selected (marshalled
+        // onto the UI thread here, where touching state is safe).
+        if (fileDialog_ && fileDialog_->ready.exchange (false))
+        {
+            std::string path;
+            {
+                std::lock_guard<std::mutex> lock (fileDialog_->mutex);
+                path = fileDialog_->path;
+            }
+            if (! path.empty())
+                owner_->requestSampleLoad (path);
+        }
+
         // Redraw the waveform when the sample slot changes underneath us
-        // (loads can come from state restore, not just our own button).
+        // (loads come from the dialog above or from state restore).
         const void* identity = owner_->acquireLoadedSample().get();
         if (identity != lastSampleIdentity_)
         {
