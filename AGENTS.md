@@ -300,12 +300,55 @@ included/excluded.
     test passes.
   - src/plugin added BEFORE tests/ in the root CMakeLists (test targets
     reference the entry objects).
+- Live DAW testing (Bitwig) round 1 — findings + fixes, all committed:
+  - Bundle binary must be named <bundle>.so (lib*.so => "Not a plug-in
+    file"); bundle needs Contents/Resources/moduleinfo.json (generated at
+    build time by nedit_moduleinfotool from the real factory); deploy
+    target installs to ~/.vst3 as a REAL dir (symlinked bundles flaky,
+    and ~/.vst3 is scanned VST3-only). Bitwig caches scan verdicts in
+    ~/.BitwigStudio/cache/vst{,3}-metadata-*; its "VST 2.4 metadata"
+    errors about the inner .so are harmless noise from recursing into
+    custom locations that point AT a bundle.
+  - Editor crash on open: two Linux-only requirements — (1)
+    VSTGUI_NEEDS_INIT_LIB=1 must be defined on nedit_plugin (SDK's plugin
+    cmake helpers normally set it; we bypass them) so vstguieditor.cpp
+    calls VSTGUI::init() and registers the runloop host-context callback;
+    (2) CFrame::open() needs an X11::FrameConfig carrying the host run
+    loop (wrap IPlugFrame via Steinberg::Linux::setupVSTGUIRunloop, then
+    pass linuxFactory->getRunLoop()). Without either: null xcb connection
+    -> xcb_generate_id SIGSEGV.
+  - Load-dialog desktop freeze: VSTGUI's Linux CNewFileSelector blocks
+    the UI/run-loop thread on a pipe read while zenity runs -> embedded
+    X11 window stops servicing events -> X server wedges. Fixed by
+    running zenity/kdialog via popen on a DETACHED background thread with
+    shared_ptr state; result marshalled to UI on the idle timer. Also:
+    begin/endEdit overrides filter non-parameter tags (Load button tag
+    1000 was reaching IComponentHandler).
+  - "Loud noise" output: renderer ADDs into host buffers (outAdd +=
+    ...), hosts don't zero them. process() now clears outputs first;
+    harness poisons buffers pre-process to prove it.
+  - Host automation VERIFIED end-to-end (real IParameterChanges double ->
+    fold -> engine): manual-tempo override audibly repitches (240bpm =>
+    half-rate, zcr halves; disable restores). IMPORTANT DESIGN FACTS
+    (faithful to original, see its volume-gain comment): most style
+    params are per-STYLE (filter->FilterDown/Up, grain->Stretch,
+    crush->Bitcrush, flanger->Flanger, scratch->Scratch); static Volume
+    is SEQUENCED-mode-only ("no global dial" for SL/Clock); default
+    weights = Forward x1.0 => in default SL+Forward almost NO knob
+    affects audio except trigger mode / manual tempo / loop bars.
+    PENDING LEAD-DEV UI DECISION: expose styleWeights as automatable
+    params (append-only IDs 108..116), optionally apply static volume in
+    all modes as deviation, grey out non-applicable controls in UI.
+  - Test hooks: NEDIT_TEST_FILE (skip dialog GUI), NEDIT_TEST_AUTOLOAD
+    (one-shot runFileSelector), NEDIT_DBG/NEDIT_DBG2 (test stdout
+    metrics). tools/host_harness.cpp drives full lifecycle incl. editor
+    attach + XTEST clicks + WAV dump (NEDIT_DUMP_WAV).
 - Next work: Phase 4b polish — style-param controls (21 sliders over
   ParameterSurface ids 0..20), playhead/step mailbox → UI, sensitivity/
   trim editing (needs processor UI-edit entry points that re-run
   analysis), sequencer grid view; then live DAW testing (Phase 5).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 200/200, zero warnings.
+  plugin build 201/201, zero warnings.
 
 ## Rules of engagement
 

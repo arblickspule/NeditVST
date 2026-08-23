@@ -7,6 +7,7 @@
 #include <plugin/WavDecoder.h>
 
 #include <pluginterfaces/vst/ivstprocesscontext.h>
+#include <pluginterfaces/vst/ivstparameterchanges.h>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -334,4 +335,209 @@ TEST_CASE ("shell: loaded click track renders audible picks through process()")
     picks = static_cast<int> (processor.debugScheduler().picksStarted());
     CHECK (picks > 0);
     CHECK (peak > 0.01f);
+}
+
+// --- host automation plumbing ---------------------------------------------
+// Mirrors the TestEventList pattern: minimal FUnknown doubles so we can
+// drive process() exactly like a host does when a user twiddles knobs.
+
+class TestParamValueQueue : public Steinberg::Vst::IParamValueQueue
+{
+public:
+    explicit TestParamValueQueue (Steinberg::Vst::ParamID id) : id_ { id }
+    {
+        FUNKNOWN_CTOR
+    }
+    ~TestParamValueQueue() { FUNKNOWN_DTOR }
+
+    Steinberg::Vst::ParamID PLUGIN_API getParameterId() override { return id_; }
+    Steinberg::int32 PLUGIN_API getPointCount() override
+    {
+        return static_cast<Steinberg::int32> (points.size());
+    }
+    Steinberg::tresult PLUGIN_API getPoint (Steinberg::int32 index,
+                                            Steinberg::int32& offsetSamples,
+                                            Steinberg::Vst::ParamValue& value) override
+    {
+        if (index < 0 || index >= static_cast<Steinberg::int32> (points.size()))
+            return Steinberg::kResultFalse;
+        offsetSamples = points[static_cast<std::size_t> (index)].first;
+        value = points[static_cast<std::size_t> (index)].second;
+        return Steinberg::kResultOk;
+    }
+    Steinberg::tresult PLUGIN_API addPoint (Steinberg::int32 offsetSamples,
+                                            Steinberg::Vst::ParamValue value,
+                                            Steinberg::int32& index) override
+    {
+        points.emplace_back (offsetSamples, value);
+        index = static_cast<Steinberg::int32> (points.size()) - 1;
+        return Steinberg::kResultOk;
+    }
+
+    DECLARE_FUNKNOWN_METHODS
+
+private:
+    Steinberg::Vst::ParamID id_;
+    std::vector<std::pair<Steinberg::int32, Steinberg::Vst::ParamValue>> points;
+};
+
+class TestParamChanges : public Steinberg::Vst::IParameterChanges
+{
+public:
+    TestParamChanges() { FUNKNOWN_CTOR }
+    ~TestParamChanges() { FUNKNOWN_DTOR }
+
+    Steinberg::int32 PLUGIN_API getParameterCount() override
+    {
+        return static_cast<Steinberg::int32> (queues.size());
+    }
+    Steinberg::Vst::IParamValueQueue* PLUGIN_API getParameterData (
+        Steinberg::int32 index) override
+    {
+        if (index < 0 || index >= static_cast<Steinberg::int32> (queues.size()))
+            return nullptr;
+        return queues[static_cast<std::size_t> (index)].get();
+    }
+    Steinberg::Vst::IParamValueQueue* PLUGIN_API addParameterData (
+        const Steinberg::Vst::ParamID& id, Steinberg::int32& index) override
+    {
+        queues.push_back (Steinberg::owned (new TestParamValueQueue (id)));
+        index = static_cast<Steinberg::int32> (queues.size()) - 1;
+        return queues.back().get();
+    }
+
+    DECLARE_FUNKNOWN_METHODS
+
+private:
+    std::vector<Steinberg::IPtr<TestParamValueQueue>> queues;
+};
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+IMPLEMENT_FUNKNOWN_METHODS (TestParamValueQueue, Steinberg::Vst::IParamValueQueue,
+                            Steinberg::Vst::IParamValueQueue::iid)
+IMPLEMENT_FUNKNOWN_METHODS (TestParamChanges, Steinberg::Vst::IParameterChanges,
+                            Steinberg::Vst::IParameterChanges::iid)
+#pragma GCC diagnostic pop
+
+TEST_CASE ("shell: host automation reaches the renderer")
+{
+    // NOTE on scope (faithful to the original, see its PluginProcessor.cpp
+    // volume-gain comment): most style params only affect their own styles,
+    // and static Volume is a SEQUENCED-mode-only ramp -- Slice Length/Clock
+    // have no global volume dial. With default weights (Forward x1.0) the
+    // only immediately audible automatable surface is the manual-tempo
+    // override, which feeds Tempo::repitchRatio. So prove the automation
+    // path with THAT: enabling it at 240bpm while the host plays 120 must
+    // double playback rate => double the zero-crossing rate.
+    constexpr Steinberg::Vst::ParamID kManualTempoEnabledId = 101;
+    constexpr Steinberg::Vst::ParamID kManualTempoBpmId = 102;
+
+    auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click_auto.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.setActive (1) == Steinberg::kResultOk);
+    REQUIRE (processor.setProcessing (1) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    std::vector<float> outL (512, 0.0f);
+    float* channels[1] { outL.data() };
+    Steinberg::Vst::AudioBusBuffers bus {};
+    bus.numChannels = 1;
+    bus.channelBuffers32 = channels;
+    Steinberg::Vst::ProcessData data {};
+    data.numSamples = 512;
+    data.numOutputs = 1;
+    data.outputs = &bus;
+
+    const double bpm = 120.0;
+    double ppq = 0.0;
+
+    auto runBlocks = [&] (int blocks, Steinberg::Vst::IParameterChanges* changes,
+                          double& zcrOut) {
+        std::int64_t crossings = 0;
+        float prev = 0.0f;
+        float peak = 0.0f;
+        std::int64_t count = 0;
+        for (int b = 0; b < blocks; ++b)
+        {
+            Steinberg::Vst::ProcessContext ctx {};
+            ctx.state = Steinberg::Vst::ProcessContext::kPlaying
+                      | Steinberg::Vst::ProcessContext::kTempoValid
+                      | Steinberg::Vst::ProcessContext::kProjectTimeMusicValid;
+            ctx.tempo = bpm;
+            ctx.projectTimeMusic = ppq;
+            data.processContext = &ctx;
+            data.inputParameterChanges = changes;
+            std::fill (outL.begin(), outL.end(), 0.0f);
+            REQUIRE (processor.process (data) == Steinberg::kResultOk);
+            for (const float s : outL)
+            {
+                peak = std::max (peak, std::abs (s));
+                if (s > 0.001f || s < -0.001f)
+                {
+                    if ((prev < 0.0f && s > 0.0f) || (prev > 0.0f && s < 0.0f))
+                        ++crossings;
+                    prev = s;
+                    ++count;
+                }
+            }
+            ppq += static_cast<double> (512) * (bpm / 60.0) / 44100.0;
+            if (std::getenv ("NEDIT_DBG2"))
+                std::printf ("[blk %02d] pk=%.4f\n", b, *std::max_element (outL.begin(), outL.end(), [](float a, float b2){ return std::abs(a)<std::abs(b2); }));
+        }
+        data.inputParameterChanges = nullptr;
+        zcrOut = count > 0 ? static_cast<double> (crossings) / static_cast<double> (count)
+                           : 0.0;
+        if (std::getenv ("NEDIT_DBG"))
+            std::printf ("[dbg] blocks=%d peak=%.4f activeCount=%lld crossings=%lld zcr=%.4f\n",
+                         blocks, peak, (long long) count, (long long) crossings, zcrOut);
+        return peak;
+    };
+
+    double baseZcr = 0.0;
+    double scratchZcr = 0.0;
+    const float baselinePeak = runBlocks (30, nullptr, baseZcr);
+    CHECK (baselinePeak > 0.005f);
+
+    // Enable the manual-tempo override at 240 BPM through a REAL host queue.
+    auto bpmNormFor = [&] (double bpmValue) {
+        // Manual tempo range is 30..300 BPM, linear (see ParameterSurface).
+        return (bpmValue - 30.0) / (300.0 - 30.0);
+    };
+
+    TestParamChanges changes;
+    Steinberg::int32 queueIndex = -1;
+    auto* enabledQueue = changes.addParameterData (kManualTempoEnabledId, queueIndex);
+    REQUIRE (enabledQueue != nullptr);
+    Steinberg::int32 pointIndex = -1;
+    REQUIRE (enabledQueue->addPoint (0, 1.0, pointIndex) == Steinberg::kResultOk);
+
+    auto* bpmQueue = changes.addParameterData (kManualTempoBpmId, queueIndex);
+    REQUIRE (bpmQueue != nullptr);
+    REQUIRE (bpmQueue->addPoint (0, bpmNormFor (240.0), pointIndex)
+             == Steinberg::kResultOk);
+
+    // NOTE: a longer manual-tempo value means the trim is INTERPRETED as a
+    // longer loop => playback runs SLOWER (repitchRatio shrinks). Measured
+    // as sign-crossings per active sample inside the rendered blips.
+    runBlocks (15, &changes, scratchZcr);   // settle: rotate picks
+
+    double fastZcr = 0.0;
+    const float fastPeak = runBlocks (20, &changes, fastZcr);
+    CHECK (fastPeak > 0.005f);                       // still audible
+    CHECK (fastZcr > baseZcr * 0.35);                // ~half playback rate
+    CHECK (fastZcr < baseZcr * 0.65);
+
+    // Turning the override back OFF returns to native rate.
+    REQUIRE (enabledQueue->addPoint (0, 0.0, pointIndex) == Steinberg::kResultOk);
+    runBlocks (15, &changes, scratchZcr);
+    double backZcr = 0.0;
+    runBlocks (20, &changes, backZcr);
+    CHECK (backZcr > fastZcr * 1.5);
+    CHECK (backZcr < baseZcr * 1.25);
 }
