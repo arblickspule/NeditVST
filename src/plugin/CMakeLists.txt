@@ -162,11 +162,30 @@ set_target_properties(nedit_vst3 PROPERTIES PREFIX "" OUTPUT_NAME "nedit")
 add_custom_command(TARGET nedit_vst3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${NEDIT_VST3_BUNDLE_DIR}/Contents/Resources
     # VST3 spec: the Linux binary MUST be named <bundle>.so -- hosts match
     # it against the .vst3 folder name ("Not a plug-in file" otherwise).
     COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE:nedit_vst3>
             ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
+    # Some hosts (Bitwig) require Contents/Resources/moduleinfo.json;
+    # generate it from the real factory of the just-built module.
+    COMMAND nedit_moduleinfotool
+            ${NEDIT_VST3_BUNDLE_DIR}
+            ${NEDIT_VST3_BUNDLE_DIR}/Contents/Resources/moduleinfo.json
     COMMENT "Assembling nedit.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
+
+# Host-side generator for moduleinfo.json (runs at build time).
+add_executable(nedit_moduleinfotool
+    moduleinfotool.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/moduleinfo/moduleinfocreator.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_linux.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp
+)
+target_compile_options(nedit_moduleinfotool PRIVATE -w)
+target_link_libraries(nedit_moduleinfotool PRIVATE nedit_vst3_sdk)
+add_dependencies(nedit_vst3 nedit_moduleinfotool)
 
 message(STATUS "Nedit: plugin target enabled (SDK: ${VST3_SDK_DIR})")
