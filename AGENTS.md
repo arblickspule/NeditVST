@@ -276,11 +276,19 @@ included/excluded.
     garbage rejection + truncation-at-every-byte fuzz, manager metadata +
     slot publication, AND first audible end-to-end (click-track WAV →
     transport-driven process() → picksStarted>0 + output energy).
-- Next work: Phase 4b UI (VSTGUI): views as stateless renderers of
-  PluginState + engine mailboxes; file-open dialog → requestSampleLoad;
-  waveform view with slice markers; view state lives in UiState.
-- Test totals: default build 173/173 (51 state + 122 engine);
-  plugin build adds 18 shell/pipeline tests = 191/191, zero warnings.
+- Next work: Phase 4b UI. STATUS: VSTGUI's Linux backend is BLOCKED in
+  this environment (missing xcb-util/cursor/keysyms/xkb + xkbcommon-x11
+  dev headers, no sudo; `sudo apt install libxcb-util-dev libxcb-cursor-dev
+  libxcb-keysyms1-dev libxcb-xkb-dev libxkbcommon-x11-dev` unlocks it).
+  Part 1 landed instead: `src/ui/WaveformGeometry.{h,cpp}` — framework-
+  free view-model (peak columns seeded from real data, slice-marker x
+  with shared-boundary dedupe, frame<->pixel mapping, zoom-anchored/
+  clamped pan math over UiState.visibleStart/EndNorm). VSTGUI views will
+  be thin shells over this; integration path chosen: SDK `VSTGUIEditor`
+  base (vstguieditor.cpp handles Linux runloop via factory host-context
+  callback) + programmatic CFrame, NO uidescription XML.
+- Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
+  plugin build adds pipeline/shell tests = 198/198, zero warnings.
 
 ## Rules of engagement
 

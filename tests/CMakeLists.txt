@@ -36,10 +36,17 @@ target_link_libraries(nedit_engine_tests
     PRIVATE nedit_engine nedit_debug nedit_warnings
             Catch2::Catch2WithMain)
 
+add_executable(nedit_ui_tests
+    ui/test_waveform_geometry.cpp
+)
+target_link_libraries(nedit_ui_tests
+    PRIVATE nedit_ui nedit_warnings Catch2::Catch2WithMain)
+
 include(CTest)
 include(Catch)
 catch_discover_tests(nedit_state_tests)
 catch_discover_tests(nedit_engine_tests)
+catch_discover_tests(nedit_ui_tests)
 
 # Plugin shell tests (need the VST3 SDK, so only with NEDIT_BUILD_PLUGIN).
 if(NEDIT_BUILD_PLUGIN)

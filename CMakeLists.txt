@@ -35,6 +35,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_subdirectory(src/state)
 add_subdirectory(src/engine)
+add_subdirectory(src/ui)
 add_subdirectory(src/debug)
 
 if(NEDIT_BUILD_TESTS)
