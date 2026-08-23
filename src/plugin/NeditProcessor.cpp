@@ -212,11 +212,18 @@ void NeditProcessor::syncParameterObjectsFromState()
 }
 
 //------------------------------------------------------------------------
-int NeditProcessor::numAvailableSlices (const state::PluginState&) const noexcept
+bool NeditProcessor::requestSampleLoad (const std::string& path)
 {
-    // The derived slice list arrives with Phase 4's analysis plumbing;
-    // until then no slice notes exist to trigger.
-    return static_cast<int> (slices_.size());
+    auto result = sampleManager_.loadFile (path, uiState_.sample);
+    if (! result)
+        return false;
+
+    uiState_.sample = result->updated;
+    // Slice weights are parallel to the derived slice list and reset when
+    // slices rebuild -- fresh analysis means equal probability everywhere.
+    uiState_.generate.sliceWeights.assign (result->sample->slices.size(), 1.0f);
+    provider_.publish (uiState_);
+    return true;
 }
 
 //------------------------------------------------------------------------
@@ -286,11 +293,18 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
         // Stopped: freeze at the last position (fixture semantics).
     }
 
+    // --- sample slot --------------------------------------------------------
+    const auto loaded = sampleManager_.acquire();
+    static const std::vector<engine::Slice> kNoSlices;
+    const auto& slices = (loaded != nullptr && ! loaded->slices.empty()) ? loaded->slices
+                                                                        : kNoSlices;
+
     // --- MIDI ---------------------------------------------------------------
     if (data.inputEvents != nullptr)
     {
         auto* events = data.inputEvents;
-        const int slices = numAvailableSlices (*st);
+        // Control mode dispatches at most 32 slice notes.
+        const int availableSlices = std::min (static_cast<int> (slices.size()), 32);
 
         for (int32 i = 0; i < events->getEventCount(); ++i)
         {
@@ -304,12 +318,12 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
                 routeMidiNote (scheduler_, *st, event.noteOn.pitch,
                                engine::velocityFromMidiByte (static_cast<std::uint8_t> (
                                    event.noteOn.velocity * 127.f)),
-                               true, transport.playing, slices);
+                               true, transport.playing, availableSlices);
             }
             else if (event.type == Vst::Event::kNoteOffEvent)
             {
                 routeMidiNote (scheduler_, *st, event.noteOff.pitch, 0.0f,
-                               false, transport.playing, slices);
+                               false, transport.playing, availableSlices);
             }
         }
     }
@@ -317,12 +331,29 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
     // --- render ---------------------------------------------------------------
     ctx_.hostSampleRate = processSetup.sampleRate > 0 ? processSetup.sampleRate : 44100.0;
     ctx_.sourceSampleRate = st->sample.sampleSampleRate;
-    ctx_.source = nullptr;          // decoded sample memory arrives with Phase 4
-    ctx_.sourceChannels = 0;
-    ctx_.sourceFrames = 0;
+
+    if (loaded != nullptr && loaded->audio.channelCount() > 0)
+    {
+        // Refresh the per-channel pointer table. Fixed capacity: no
+        // audio-thread allocation; channels beyond the cap are ignored.
+        const int chans = std::min (loaded->audio.channelCount(), kMaxSourceChannels);
+        for (int c = 0; c < chans; ++c)
+            sourceChannelPointers_[static_cast<std::size_t> (c)] =
+                loaded->audio.channels[static_cast<std::size_t> (c)].data();
+
+        ctx_.source = sourceChannelPointers_.data();
+        ctx_.sourceChannels = chans;
+        ctx_.sourceFrames = loaded->audio.frames;
+    }
+    else
+    {
+        ctx_.source = nullptr;
+        ctx_.sourceChannels = 0;
+        ctx_.sourceFrames = 0;
+    }
 
     // Hosts provide an array of per-channel pointers.
-    scheduler_.process (*st, slices_, ctx_, transport,
+    scheduler_.process (*st, slices, ctx_, transport,
                         data.outputs[0].channelBuffers32,
                         data.outputs[0].numChannels < 1 ? 1
                                                         : data.outputs[0].numChannels,

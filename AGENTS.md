@@ -250,15 +250,37 @@ included/excluded.
     pointers); CMAKE_POSITION_INDEPENDENT_CODE ON globally.
   - Bundle assembled to build/nedit.vst3/Contents/x86_64-linux/
     libnedit.vst.so via POST_BUILD copy.
-- Known Phase-3 boundary: the shell renders SILENCE until Phase 4 wires
-  sample decode + transient analysis (slices list is empty ⇒ scheduler
-  disarms; all plumbing verified by tests). No file IO exists yet by
-  design — UI owns loading next phase.
-- Next work: Phase 4 UI (VSTGUI): views as stateless renderers of
-  PluginState + engine mailboxes; sample load/decode → analysis → slices
-  into the processor; view state lives in UiState.
+- Known Phase-3 boundary RESOLVED in Phase 4a: the shell now renders real
+  audio end-to-end (decode → analysis → slices → scheduler → output).
+- Phase 4a (sample pipeline) DONE:
+  - `WavDecoder.{h,cpp}` — strict RIFF/WAVE parser: PCM16/24/32 + float32/64
+    (incl. WAVE_FORMAT_EXTENSIBLE), mono..16ch, planar float out. Truncated
+    data chunks decode present frames; everything else malformed ⇒ nullopt.
+    GOTCHA: fmt payload offsets are format(0) channels(2) rate(4)
+    byteRate(8) blockAlign(12) bits(14) — byteRate is at 8, easy to misread
+    as blockAlign.
+  - `SampleManager.h` — header-only. Atomic shared_ptr<const LoadedSample>
+    slot ({DecodedAudio audio, vector<Slice> slices}); loadFile/
+    loadFromMemory run decode + TransientDetector.analyze +
+    buildSlices on the CALLER thread and publish immutably. Returns
+    LoadResult{sample, updated SampleState} — caller folds metadata
+    (path/rate/length/full-span trim) into its authoritative state.
+  - `NeditProcessor::requestSampleLoad(path)` (UI thread): manager load +
+    fold sample metadata + REALIGN generate.sliceWeights to slices.size()
+    filled 1.0 (weights are parallel to the derived list; empty weights =
+    zero picks, see pickWeightedSlice) + publish.
+  - process(): acquires the slot per block; fixed-capacity channel-pointer
+    table (kMaxSourceChannels=16) so no audio-thread allocation; slice
+    count for MIDI dispatch = min(actualSlices,32).
+  - Tests (`test_sample_pipeline.cpp`): decoder round-trips per format,
+    garbage rejection + truncation-at-every-byte fuzz, manager metadata +
+    slot publication, AND first audible end-to-end (click-track WAV →
+    transport-driven process() → picksStarted>0 + output energy).
+- Next work: Phase 4b UI (VSTGUI): views as stateless renderers of
+  PluginState + engine mailboxes; file-open dialog → requestSampleLoad;
+  waveform view with slice markers; view state lives in UiState.
 - Test totals: default build 173/173 (51 state + 122 engine);
-  plugin build adds 13 shell tests = 186/186, zero warnings.
+  plugin build adds 18 shell/pipeline tests = 191/191, zero warnings.
 
 ## Rules of engagement
 

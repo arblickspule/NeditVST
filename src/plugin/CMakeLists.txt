@@ -84,6 +84,7 @@ target_link_libraries(nedit_vst3_sdk PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 # owned by the loadable module target below.
 add_library(nedit_plugin STATIC
     NeditProcessor.cpp
+    WavDecoder.cpp
 )
 target_include_directories(nedit_plugin PUBLIC ${CMAKE_SOURCE_DIR}/src)
 set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)

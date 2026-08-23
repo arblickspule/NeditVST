@@ -14,6 +14,7 @@
 // parameter changes folded into a reusable scratch copy (steady-state
 // allocation-free).
 
+#include "SampleManager.h"
 #include "engine/MidiDispatch.h"
 #include "engine/Scheduler.h"
 #include "engine/SnapshotProvider.h"
@@ -22,6 +23,8 @@
 
 #include "public.sdk/source/vst/vstsinglecomponenteffect.h"
 
+#include <array>
+#include <string>
 #include <vector>
 
 namespace nedit::plugin {
@@ -35,6 +38,11 @@ public:
     {
         return static_cast<Steinberg::Vst::IAudioProcessor*> (new NeditProcessor);
     }
+
+    //--- UI-side entry points (called from the editor, UI thread) ----------
+    // Decodes + analyzes the file and swaps it into the audio slot on
+    // success. Returns false (state untouched) on failure.
+    bool requestSampleLoad (const std::string& path);
 
     //--- IPluginBase -------------------------------------------------------
     Steinberg::tresult PLUGIN_API initialize (Steinberg::FUnknown* context) override;
@@ -56,11 +64,15 @@ public:
     // Test/diagnostic hooks -- not part of any VST3 interface.
     [[nodiscard]] const state::PluginState& debugUiState() const noexcept { return uiState_; }
     [[nodiscard]] const engine::VoiceScheduler& debugScheduler() const noexcept { return scheduler_; }
+    [[nodiscard]] int debugSliceCount() const noexcept
+    {
+        const auto loaded = sampleManager_.acquire();
+        return loaded != nullptr ? static_cast<int> (loaded->slices.size()) : 0;
+    }
 
 private:
     void registerParameters();
     void syncParameterObjectsFromState();
-    [[nodiscard]] int numAvailableSlices (const state::PluginState& s) const noexcept;
 
     // Controller-side authoritative live state.
     state::PluginState uiState_;
@@ -69,7 +81,10 @@ private:
     engine::SnapshotProvider provider_;
     engine::VoiceScheduler scheduler_;
     engine::BlockContext ctx_ {};
-    std::vector<engine::Slice> slices_;   // empty until sample analysis exists (Phase 4)
+    SampleManager sampleManager_;
+
+    static constexpr int kMaxSourceChannels = 16;
+    std::array<const float*, kMaxSourceChannels> sourceChannelPointers_ {};
     state::PluginState automationScratch_;
     double lastBlockEndPpq_ = 0.0;
 

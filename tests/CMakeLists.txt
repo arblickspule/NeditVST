@@ -46,6 +46,7 @@ if(NEDIT_BUILD_PLUGIN)
     add_executable(nedit_plugin_tests
         plugin/test_parameter_surface.cpp
         plugin/test_nedit_processor.cpp
+        plugin/test_sample_pipeline.cpp
     )
     target_link_libraries(nedit_plugin_tests
         PRIVATE nedit_plugin nedit_warnings Catch2::Catch2WithMain)
