@@ -193,4 +193,17 @@ target_compile_options(nedit_moduleinfotool PRIVATE -w)
 target_link_libraries(nedit_moduleinfotool PRIVATE nedit_vst3_sdk)
 add_dependencies(nedit_vst3 nedit_moduleinfotool)
 
+# Convenience: install the assembled bundle into the user VST3 directory
+# as a REAL bundle (hosts don't reliably follow symlinked bundles, and a
+# real dir in ~/.vst3 is scanned VST3-only -- no VST2 "Not a plug-in
+# file" noise from probing the inner .so). `cmake --build . --target deploy`
+set(NEDIT_USER_VST3_DIR "$ENV{HOME}/.vst3" CACHE PATH
+    "Where `deploy` installs the .vst3 bundle")
+add_custom_target(deploy
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${NEDIT_USER_VST3_DIR}/nedit.vst3
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${NEDIT_VST3_BUNDLE_DIR} ${NEDIT_USER_VST3_DIR}/nedit.vst3
+    DEPENDS nedit_vst3
+    COMMENT "Deploying nedit.vst3 to ${NEDIT_USER_VST3_DIR}")
+
 message(STATUS "Nedit: plugin target enabled (SDK: ${VST3_SDK_DIR})")
