@@ -17,6 +17,13 @@
 #include "vstgui/lib/cvstguitimer.h"
 #include "vstgui/lib/events.h"
 
+#if SMTG_OS_LINUX
+#include "public.sdk/source/vst/vstgui_linux_runloop_support.h"
+#include "vstgui/lib/platform/linux/linuxfactory.h"
+#include "vstgui/lib/platform/platform_x11.h"
+#include "vstgui/lib/platform/platformfactory.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -192,7 +199,21 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     frame = new CFrame (frameSize, this);
     frame->setBackgroundColor (kColorBackground);
 
+#if SMTG_OS_LINUX
+    // On Linux VSTGUI opens its xcb connection only when a frame config
+    // carrying the host run loop is supplied -- without it X11::Frame
+    // crashes in xcb_generate_id() creating the child window. Wrap the
+    // host's IPlugFrame (which provides Linux::IRunLoop) and pass it in.
+    VSTGUI::X11::FrameConfig x11Config;
+    if (plugFrame)
+        Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
+    if (auto* linuxFactory = VSTGUI::getPlatformFactory().asLinuxFactory())
+        x11Config.runLoop = linuxFactory->getRunLoop();
+
+    if (! frame->open (parent, platformType, &x11Config))
+#else
     if (! frame->open (parent, platformType))
+#endif
     {
         frame->forget();
         frame = nullptr;

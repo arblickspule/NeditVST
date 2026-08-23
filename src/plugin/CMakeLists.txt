@@ -109,6 +109,13 @@ add_library(nedit_plugin STATIC
 target_include_directories(nedit_plugin PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(nedit_plugin SYSTEM PUBLIC ${VST3_SDK_DIR}/vstgui4)
 set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# CRITICAL on Linux: without this, vstguieditor.cpp compiles the branch
+# that never calls VSTGUI::init() nor registers the host-context callback
+# that wires up the Linux runloop -- leaving VSTGUI's xcb connection null
+# and crashing in xcb_generate_id() the instant the editor opens. The
+# SDK's own plugin cmake helpers define this; we bypass them, so set it
+# ourselves.
+target_compile_definitions(nedit_plugin PRIVATE VSTGUI_NEEDS_INIT_LIB=1)
 # vstguieditor.cpp is SDK code compiled inside OUR target: exempt the two
 # SDK TUs from the project warning set.
 set_source_files_properties(
