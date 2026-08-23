@@ -276,19 +276,36 @@ included/excluded.
     garbage rejection + truncation-at-every-byte fuzz, manager metadata +
     slot publication, AND first audible end-to-end (click-track WAV →
     transport-driven process() → picksStarted>0 + output energy).
-- Next work: Phase 4b UI. STATUS: VSTGUI's Linux backend is BLOCKED in
-  this environment (missing xcb-util/cursor/keysyms/xkb + xkbcommon-x11
-  dev headers, no sudo; `sudo apt install libxcb-util-dev libxcb-cursor-dev
-  libxcb-keysyms1-dev libxcb-xkb-dev libxkbcommon-x11-dev` unlocks it).
-  Part 1 landed instead: `src/ui/WaveformGeometry.{h,cpp}` — framework-
-  free view-model (peak columns seeded from real data, slice-marker x
-  with shared-boundary dedupe, frame<->pixel mapping, zoom-anchored/
-  clamped pan math over UiState.visibleStart/EndNorm). VSTGUI views will
-  be thin shells over this; integration path chosen: SDK `VSTGUIEditor`
-  base (vstguieditor.cpp handles Linux runloop via factory host-context
-  callback) + programmatic CFrame, NO uidescription XML.
+- Phase 4b UI — VSTGUI editor shell DONE (xcb dev packages installed;
+  the earlier environment blocker is gone):
+  - VSTGUI built via its own cmake as a subdirectory (core `vstgui`
+    target only: STANDALONE/TOOLS/UISCRIPTING/XMLPARSER all OFF); SDK's
+    `vstguieditor.cpp` + `vstgui_linux_runloop_support.cpp` compiled into
+    nedit_plugin (they need VSTGUI headers, so NOT in nedit_vst3_sdk).
+  - `NeditEditor.{h,cpp}` — programmatic CFrame (no uidescription XML):
+    top bar (trigger-mode COptionMenu bound to param 100 via the
+    beginEdit/setParamNormalized/performEdit/endEdit protocol, Load
+    Sample button → CNewFileSelector (x11fileselector) →
+    requestSampleLoad), WaveformView = stateless renderer over
+    acquireLoadedSample() + uiStateView() using ui::WaveformGeometry
+    (peaks, slice markers, wheel = anchored zoom, drag = pan, both
+    persisted through setVisibleWindow → UiState). Idle timer detects
+    sample-slot changes (loads from state restore too) and invalidates.
+  - CRITICAL FIX found on the way: the module exported no ModuleEntry/
+    ModuleExit (hosts would refuse to load it!) — `linuxmain.cpp` now
+    compiled via `nedit_plugin_entry` OBJECT lib (factory.cpp +
+    linuxmain.cpp) shared by the module AND the test binaries (VSTGUI's
+    ModuleInitializer references GetPluginFactory, so tests need real
+    module semantics). dlopen(RTLD_NOW) + ModuleEntry + factory smoke
+    test passes.
+  - src/plugin added BEFORE tests/ in the root CMakeLists (test targets
+    reference the entry objects).
+- Next work: Phase 4b polish — style-param controls (21 sliders over
+  ParameterSurface ids 0..20), playhead/step mailbox → UI, sensitivity/
+  trim editing (needs processor UI-edit entry points that re-run
+  analysis), sequencer grid view; then live DAW testing (Phase 5).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build adds pipeline/shell tests = 198/198, zero warnings.
+  plugin build 200/200, zero warnings.
 
 ## Rules of engagement
 

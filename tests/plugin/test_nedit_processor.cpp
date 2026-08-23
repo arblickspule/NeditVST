@@ -9,6 +9,7 @@
 #include "plugin/NeditProcessor.h"
 
 #include "public.sdk/source/common/memorystream.h"
+#include "pluginterfaces/gui/iplugview.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 
@@ -190,4 +191,39 @@ TEST_CASE ("shell: process block renders silence safely, MIDI routes to schedule
         CHECK (std::isfinite (sample));
     for (const float sample : right)
         CHECK (std::isfinite (sample));
+}
+
+TEST_CASE ("shell: createView produces the editor (headless-safe checks only)")
+{
+    RunningPlugin fx;
+
+    auto* view = fx.processor.createView (Steinberg::Vst::ViewType::kEditor);
+    REQUIRE (view != nullptr);
+
+    // Linux editors must embed via X11 window IDs.
+    CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeX11EmbedWindowID)
+           == Steinberg::kResultTrue);
+
+    Steinberg::ViewRect size {};
+    CHECK (view->getSize (&size) == Steinberg::kResultTrue);
+    CHECK (size.getWidth() > 0);
+    CHECK (size.getHeight() > 0);
+
+    view->release();
+
+    CHECK (fx.processor.createView ("definitely-not-a-view") == nullptr);
+}
+
+TEST_CASE ("shell: visible-window writes persist in UiState and sanitize")
+{
+    RunningPlugin fx;
+
+    fx.processor.setVisibleWindow (0.25, 0.5);
+    CHECK (fx.processor.debugUiState().ui.visibleStartNorm == 0.25);
+    CHECK (fx.processor.debugUiState().ui.visibleEndNorm == 0.5);
+
+    // Inverted garbage collapses back to the full window.
+    fx.processor.setVisibleWindow (0.9, 0.1);
+    CHECK (fx.processor.debugUiState().ui.visibleStartNorm == 0.0);
+    CHECK (fx.processor.debugUiState().ui.visibleEndNorm == 1.0);
 }

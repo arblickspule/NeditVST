@@ -44,6 +44,19 @@ public:
     // success. Returns false (state untouched) on failure.
     bool requestSampleLoad (const std::string& path);
 
+    // Editor read access. The editor is a stateless renderer over these.
+    [[nodiscard]] std::shared_ptr<const LoadedSample> acquireLoadedSample() const noexcept
+    {
+        return sampleManager_.acquire();
+    }
+    [[nodiscard]] const state::PluginState& uiStateView() const noexcept { return uiState_; }
+
+    // Waveform zoom/pan writes (UiState owns view state; pitfall #6).
+    void setVisibleWindow (double startNorm, double endNorm);
+
+    //--- IEditController: editor creation -----------------------------------
+    Steinberg::IPlugView* PLUGIN_API createView (Steinberg::FIDString name) override;
+
     //--- IPluginBase -------------------------------------------------------
     Steinberg::tresult PLUGIN_API initialize (Steinberg::FUnknown* context) override;
     Steinberg::tresult PLUGIN_API terminate() override;

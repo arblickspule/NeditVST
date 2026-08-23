@@ -79,17 +79,44 @@ target_include_directories(nedit_vst3_sdk SYSTEM PUBLIC ${VST3_SDK_DIR})
 find_package(Threads REQUIRED)
 target_link_libraries(nedit_vst3_sdk PUBLIC Threads::Threads ${CMAKE_DL_LIBS})
 
+# ---------------------------------------------------------------------------
+# VSTGUI (Phase 4b editor). Built via its own CMake as a subdirectory;
+# only the core `vstgui` library target is linked (no uidescription XML,
+# no standalone, no tools).
+# ---------------------------------------------------------------------------
+set(VSTGUI_STANDALONE OFF CACHE BOOL "" FORCE)
+set(VSTGUI_TOOLS OFF CACHE BOOL "" FORCE)
+set(VSTGUI_UISCRIPTING OFF CACHE BOOL "" FORCE)
+set(VSTGUI_ENABLE_XMLPARSER OFF CACHE BOOL "" FORCE)
+add_subdirectory(${VST3_SDK_DIR}/vstgui4/vstgui
+                 ${CMAKE_CURRENT_BINARY_DIR}/vstgui EXCLUDE_FROM_ALL)
+# Third-party code: its warnings are its own business.
+target_compile_options(vstgui PRIVATE -w)
+set_target_properties(vstgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
 # Our shell code (warnings apply here -- SDK headers are SYSTEM-included).
 # factory.cpp is deliberately NOT here: it defines GetPluginFactory and is
 # owned by the loadable module target below.
 add_library(nedit_plugin STATIC
     NeditProcessor.cpp
+    NeditEditor.cpp
     WavDecoder.cpp
+    # SDK's VSTGUI editor base + the Linux runloop bridge; compiled here
+    # (not in nedit_vst3_sdk) because they need VSTGUI headers.
+    ${VST3_SDK_DIR}/public.sdk/source/vst/vstguieditor.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/vstgui_linux_runloop_support.cpp
 )
 target_include_directories(nedit_plugin PUBLIC ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(nedit_plugin SYSTEM PUBLIC ${VST3_SDK_DIR}/vstgui4)
 set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# vstguieditor.cpp is SDK code compiled inside OUR target: exempt the two
+# SDK TUs from the project warning set.
+set_source_files_properties(
+    ${VST3_SDK_DIR}/public.sdk/source/vst/vstguieditor.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/vst/vstgui_linux_runloop_support.cpp
+    PROPERTIES COMPILE_OPTIONS "-w")
 target_link_libraries(nedit_plugin
-    PUBLIC nedit_vst3_sdk nedit_engine nedit_state nedit_debug
+    PUBLIC nedit_vst3_sdk nedit_engine nedit_state nedit_debug nedit_ui vstgui
     PRIVATE nedit_warnings)
 
 # ---------------------------------------------------------------------------
@@ -107,12 +134,26 @@ endif()
 set(NEDIT_VST3_BUNDLE_DIR ${CMAKE_BINARY_DIR}/nedit.vst3 CACHE PATH
     "Where to assemble the .vst3 bundle")
 
-# The loadable module. factory.cpp is the module's own TU (it carries the
-# class-factory definitions); nedit_plugin is linked WHOLE so the static
+# Module entry TUs shared by the loadable module AND the test binaries:
+# factory.cpp defines GetPluginFactory, linuxmain.cpp defines ModuleEntry/
+# ModuleExit + moduleHandle. As an OBJECT library the symbols can never be
+# dropped by archive resolution, and tests get real module semantics
+# (VSTGUI's ModuleInitializer references GetPluginFactory).
+add_library(nedit_plugin_entry OBJECT
+    factory.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/main/linuxmain.cpp
+)
+target_link_libraries(nedit_plugin_entry PRIVATE nedit_plugin nedit_warnings)
+set_target_properties(nedit_plugin_entry PROPERTIES POSITION_INDEPENDENT_CODE ON)
+set_source_files_properties(
+    ${VST3_SDK_DIR}/public.sdk/source/main/linuxmain.cpp
+    PROPERTIES COMPILE_OPTIONS "-w")
+
+# The loadable module. nedit_plugin is linked WHOLE so the static
 # initializer-driven factory and module glue are never dropped by archive
 # symbol resolution.
 add_library(nedit_vst3 MODULE
-    factory.cpp
+    $<TARGET_OBJECTS:nedit_plugin_entry>
 )
 target_link_libraries(nedit_vst3
     PRIVATE -Wl,--whole-archive nedit_plugin -Wl,--no-whole-archive)

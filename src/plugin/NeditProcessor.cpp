@@ -2,6 +2,7 @@
 
 #include "plugin/NeditProcessor.h"
 
+#include "plugin/NeditEditor.h"
 #include "state/Serialization.h"
 
 #include "base/source/fstreamer.h"
@@ -12,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 
 namespace nedit::plugin {
 
@@ -224,6 +226,23 @@ bool NeditProcessor::requestSampleLoad (const std::string& path)
     uiState_.generate.sliceWeights.assign (result->sample->slices.size(), 1.0f);
     provider_.publish (uiState_);
     return true;
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setVisibleWindow (double startNorm, double endNorm)
+{
+    uiState_.ui.visibleStartNorm = startNorm;
+    uiState_.ui.visibleEndNorm = endNorm;
+    uiState_.ui.sanitize();
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+Steinberg::IPlugView* PLUGIN_API NeditProcessor::createView (Steinberg::FIDString name)
+{
+    if (name != nullptr && std::strcmp (name, Vst::ViewType::kEditor) == 0)
+        return static_cast<Steinberg::IPlugView*> (new NeditEditor (this));
+    return nullptr;
 }
 
 //------------------------------------------------------------------------
