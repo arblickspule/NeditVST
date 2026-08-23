@@ -24,6 +24,8 @@ add_executable(nedit_engine_tests
     engine/test_transient_detector.cpp
     engine/test_slice_builder.cpp
     engine/test_tempo.cpp
+    engine/test_easing_fold.cpp
+    engine/test_granular_stretcher.cpp
 )
 target_link_libraries(nedit_engine_tests
     PRIVATE nedit_engine nedit_debug nedit_warnings

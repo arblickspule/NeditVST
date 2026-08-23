@@ -68,9 +68,9 @@ included/excluded.
 
 ## Session handoff (2026-08-23, afternoon)
 
-- Working tree: Phase 1 committed (`467349b`); Phase 2 started — first
-  engine chunk done, `ctest` 79/79 green (51 state + 28 engine),
-  zero warnings. Engine chunk not yet committed.
+- Working tree: Phase 1 committed (`467349b`), engine chunk 1 committed
+  (`f28be3b`); engine chunk 2 (stretcher/fold/easing) done but NOT yet
+  committed. `ctest` 96/96 green (51 state + 45 engine), zero warnings.
 - **Phase 2 progress** — `src/engine/` (pure C++, framework-free, links
   only `nedit_state`):
   - `Slice.h` — derived `[startFrame, endFrame)` slice type (int64).
@@ -96,8 +96,28 @@ included/excluded.
     known-position detection, sensitivity ordering, holdoff suppression,
     trim confinement, stereo mono-summing, peak snapping, full
     detector→merge pipeline, all tempo math.
-- Next engine work (in order): granular stretcher + `foldPosition`
-  (forward/pingPong/loop + easing curves), the 9 playback-style renderers,
+  - `Easing.h` — `applyEasingCurve` (linear/easeIn/easeOut/smoothstep);
+    enum stays in `state/Types.h` (it is serialized).
+  - `Fold.h` — `foldPosition` as a free function (shared by both pitch
+    modes' render paths): forward identity, pingPong triangle over
+    2×length with optional per-leg easing (kept as a SEPARATE branch so
+    linear callers stay bit-identical, same guarantee as the original),
+    loop modulo (Stretch step-extension fill).
+  - `GranularStretcher.h/.cpp` — faithful port, framework-free +
+    allocation-free (audio-thread safe): 4-grain pool with
+    furthest-into-life stealing, 50% overlap, hop scheduling separated
+    from per-grain read rate (pitchRatio never touches hops), Hann/
+    Triangular/hardEdge (10% ramp) windows, `windowGain` public static
+    for testability. Raw channel-pointer source API.
+  - Stretcher tests are rendered-output tests: Hann 50%-overlap
+    complementarity → unity DC reconstruction, ramp passthrough at 1:1,
+    2× stretch tracks half-speed trajectory within a grain, pitch ratio
+    leaves the stretch trajectory unchanged, loop fold keeps spawning
+    inside the slice, degenerate-input safety (null source, zero grain,
+    pool exhaustion).
+- Next engine work (in order): the 9 playback-style renderers (voice/
+  pick render path: repitch + time-stretch, fades, per-style DSP —
+  filter sweep, bitcrush, flanger, tape stop, scratch, volume ramps),
   then per-mode schedulers (per-sample ppq boundaries!), then the
   audio-thread snapshot/message-passing mechanism.
 
