@@ -20,6 +20,16 @@ target_link_libraries(nedit_state_tests
     PRIVATE nedit_state nedit_state_json nedit_debug nedit_warnings
             Catch2::Catch2WithMain)
 
+add_executable(nedit_engine_tests
+    engine/test_transient_detector.cpp
+    engine/test_slice_builder.cpp
+    engine/test_tempo.cpp
+)
+target_link_libraries(nedit_engine_tests
+    PRIVATE nedit_engine nedit_debug nedit_warnings
+            Catch2::Catch2WithMain)
+
 include(CTest)
 include(Catch)
 catch_discover_tests(nedit_state_tests)
+catch_discover_tests(nedit_engine_tests)

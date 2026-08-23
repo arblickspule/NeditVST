@@ -66,16 +66,40 @@ included/excluded.
 - `SequencerState` monophony (one style per column) is enforced by
   mutators/engine, not by the data structure.
 
-## Session handoff (2026-08-23)
+## Session handoff (2026-08-23, afternoon)
 
-- Working tree: Phase 1 complete, builds clean, `ctest` 51/51 green.
-- Git: repo initialized, **nothing committed yet** — first commit of the
-  Phase 1 baseline is a sensible next action (build/ is gitignored).
-- Toolchain decisions locked in: VST3 SDK via CMake FetchContent, VSTGUI
-  for UI, Catch2 for tests, binary chunk + JSON debug mirror for state.
-- Next work item: **Phase 2 (Engine)** — see roadmap below. Suggested
-  starting order: transient detector + slice builder (pure functions,
-  easiest to test offline), then tempo/repitch math, then schedulers.
+- Working tree: Phase 1 committed (`467349b`); Phase 2 started — first
+  engine chunk done, `ctest` 79/79 green (51 state + 28 engine),
+  zero warnings. Engine chunk not yet committed.
+- **Phase 2 progress** — `src/engine/` (pure C++, framework-free, links
+  only `nedit_state`):
+  - `Slice.h` — derived `[startFrame, endFrame)` slice type (int64).
+  - `TransientDetector.h/.cpp` — faithful port: 1ms/50ms envelope
+    follower → positive derivative → adaptive threshold
+    (`globalMax − s·(globalMax − noiseFloor)`, noise floor = mean positive
+    derivative, sensitivity 0 ⇒ zero onsets by contract) → rising-edge
+    peak-pick with holdoff; two-stage analyze/detect split retained;
+    `findNearestPeak` for manual-point/trim snapping. Raw channel-pointer
+    API, no JUCE AudioBuffer.
+  - `SliceBuilder.h/.cpp` — merge pipeline with the original's ordering
+    guarantees: exclusion matching against RAW detected positions
+    (±50 ms) BEFORE quantize; auto onsets optionally grid-quantized;
+    manual points merged as-is and soft-excluded outside trim; trim start
+    always the first boundary.
+  - `Tempo.h` — header-only pure functions: `sourceSpanSeconds`,
+    `calculatedOriginalBpm`, `minimumHoldoffMs` (1/32-note, 1 ms floor,
+    30 ms no-tempo fallback), `repitchRatio`, `playbackRate`,
+    `quantizeFrameToGrid` (shared by transient quantize + performance
+    trim snap). Reads `SampleState.trim*` directly — no `tempoTrim*`
+    duplicate needed since Performance no longer aliases the trim.
+  - `tests/engine/` — synthetic click-track tests (`TestSignals.h`):
+    known-position detection, sensitivity ordering, holdoff suppression,
+    trim confinement, stereo mono-summing, peak snapping, full
+    detector→merge pipeline, all tempo math.
+- Next engine work (in order): granular stretcher + `foldPosition`
+  (forward/pingPong/loop + easing curves), the 9 playback-style renderers,
+  then per-mode schedulers (per-sample ppq boundaries!), then the
+  audio-thread snapshot/message-passing mechanism.
 
 ## Rules of engagement
 
