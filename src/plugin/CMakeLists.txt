@@ -162,9 +162,11 @@ set_target_properties(nedit_vst3 PROPERTIES PREFIX "" OUTPUT_NAME "nedit")
 add_custom_command(TARGET nedit_vst3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}
+    # VST3 spec: the Linux binary MUST be named <bundle>.so -- hosts match
+    # it against the .vst3 folder name ("Not a plug-in file" otherwise).
     COMMAND ${CMAKE_COMMAND} -E copy
             $<TARGET_FILE:nedit_vst3>
-            ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/libnedit.vst.so
+            ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
     COMMENT "Assembling nedit.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
 
 message(STATUS "Nedit: plugin target enabled (SDK: ${VST3_SDK_DIR})")
