@@ -15,7 +15,9 @@
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/vsttypes.h"
 
+#include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -235,25 +237,61 @@ int main (int argc, char** argv)
                 }
 
                 // Prove the click path actually loaded audio: play transport
-                // (Slice Length is the default mode) and measure output.
+                // (Slice Length is the default mode), measure output, and dump
+                // it to a WAV so the rendered audio can be inspected offline.
                 STEP("play transport, measure output energy");
                 float peak = 0.f; double ppq = 0.0;
-                for (int blk = 0; blk < 60; ++blk)
+                std::vector<float> dumpL, dumpR;
+                const char* dumpPath = std::getenv ("NEDIT_DUMP_WAV");
+                for (int blk = 0; blk < 200; ++blk)   // ~2.1s at 48k/512
                 {
                     ProcessContext pc {};
                     pc.state = ProcessContext::kPlaying | ProcessContext::kTempoValid
                              | ProcessContext::kProjectTimeMusicValid;
                     pc.tempo = 120.0; pc.projectTimeMusic = ppq;
                     data.processContext = &pc;
-                    std::memset (left, 0, sizeof (left)); std::memset (right, 0, sizeof (right));
+                    // Poison the buffers to mimic a host that hands over dirty
+                    // memory -- proves the processor clears before adding.
+                    for (int s = 0; s < 512; ++s) { left[s] = 0.777f; right[s] = -0.777f; }
                     processor->process (data);
                     for (int s = 0; s < 512; ++s) peak = std::max (peak, std::abs (left[s]));
+                    if (dumpPath)
+                    {
+                        dumpL.insert (dumpL.end(), left, left + 512);
+                        dumpR.insert (dumpR.end(), right, right + 512);
+                    }
                     ppq += 512.0 * (120.0/60.0) / 48000.0;
                     host.pump (2);
                 }
                 data.processContext = nullptr;
                 std::printf ("[harness] post-load output peak = %.4f (%s)\n",
                              peak, peak > 0.001f ? "AUDIBLE" : "silent");
+                if (dumpPath && ! dumpL.empty())
+                {
+                    // Minimal 16-bit stereo WAV writer.
+                    std::FILE* f = std::fopen (dumpPath, "wb");
+                    if (f)
+                    {
+                        auto w32 = [&] (uint32_t v) { std::fwrite (&v, 4, 1, f); };
+                        auto w16 = [&] (uint16_t v) { std::fwrite (&v, 2, 1, f); };
+                        const uint32_t n = (uint32_t) dumpL.size();
+                        const uint32_t dataBytes = n * 2 * 2;
+                        std::fwrite ("RIFF", 1, 4, f); w32 (36 + dataBytes);
+                        std::fwrite ("WAVE", 1, 4, f); std::fwrite ("fmt ", 1, 4, f);
+                        w32 (16); w16 (1); w16 (2); w32 (48000); w32 (48000*4); w16 (4); w16 (16);
+                        std::fwrite ("data", 1, 4, f); w32 (dataBytes);
+                        for (uint32_t i = 0; i < n; ++i)
+                        {
+                            auto q = [] (float x) {
+                                long v = std::lround (x * 32767.0f);
+                                return (int16_t) (v < -32768 ? -32768 : v > 32767 ? 32767 : v);
+                            };
+                            w16 ((uint16_t) q (dumpL[i])); w16 ((uint16_t) q (dumpR[i]));
+                        }
+                        std::fclose (f);
+                        std::printf ("[harness] wrote %s (%u frames)\n", dumpPath, n);
+                    }
+                }
                 STEP("removed editor");
                 view->removed();
                 xcb_destroy_window (conn, win); xcb_flush (conn);

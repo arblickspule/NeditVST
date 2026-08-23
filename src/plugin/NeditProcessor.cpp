@@ -371,11 +371,20 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
         ctx_.sourceFrames = 0;
     }
 
+    // The scheduler ADDS into the output (outAdd[c] += ...); hosts do NOT
+    // guarantee zeroed output buffers, so clear them first -- otherwise we
+    // sum our signal onto whatever garbage/previous audio they contain.
+    auto& outBus = data.outputs[0];
+    outBus.silenceFlags = 0;
+    for (Steinberg::int32 ch = 0; ch < outBus.numChannels; ++ch)
+        if (outBus.channelBuffers32[ch] != nullptr)
+            std::memset (outBus.channelBuffers32[ch], 0,
+                         sizeof (float) * static_cast<std::size_t> (data.numSamples));
+
     // Hosts provide an array of per-channel pointers.
     scheduler_.process (*st, slices, ctx_, transport,
-                        data.outputs[0].channelBuffers32,
-                        data.outputs[0].numChannels < 1 ? 1
-                                                        : data.outputs[0].numChannels,
+                        outBus.channelBuffers32,
+                        outBus.numChannels < 1 ? 1 : outBus.numChannels,
                         data.numSamples);
 
     return kOk;
