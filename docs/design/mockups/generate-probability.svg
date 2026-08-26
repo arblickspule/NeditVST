@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="912" height="268" viewBox="0 0 912 268" font-family="Inter, Roboto, system-ui, sans-serif">
+  <style>
+    .pri{fill:#E8EAED}.sec{fill:#9AA0A6}.dis{fill:#5F6368}.sal{fill:#FA8072}
+    .sal3{fill:#FF9A8C}.onsal{fill:#20100D}.hair{stroke:#33383F;stroke-width:1}
+    .track{fill:#33383F}.chip{fill:#22262C;stroke:#33383F}
+    .mono{font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace}
+    .cap9{font-size:9.5px}
+  </style>
+  <rect width="912" height="268" fill="#14161A"/>
+
+  <!-- TAB BAR (active: GENERATE) -->
+  <g font-size="11" letter-spacing="1.5" text-anchor="middle" font-weight="500">
+    <text x="114" y="20" class="sal">GENERATE</text>
+    <text x="342" y="20" class="sec">SEQUENCER</text>
+    <text x="570" y="20" class="sec">PERFORMANCE</text>
+    <text x="798" y="20" class="sec">CONTROL</text>
+  </g>
+  <rect x="0" y="28" width="228" height="2" rx="1" class="sal"/>
+
+  <!-- Vertical side-tabs: STYLE / PROBABILITY (active) -->
+  <rect x="0" y="40" width="24" height="228" fill="#1B1E23"/>
+  <rect x="0" y="154" width="3" height="114" rx="1.5" class="sal"/>
+  <g font-size="9" letter-spacing="1.2" font-weight="600" text-anchor="middle">
+    <text x="14" y="108" transform="rotate(-90, 14, 108)" class="dis">STYLE</text>
+    <text x="14" y="194" transform="rotate(-90, 14, 194)" class="sal">PROBABILITY</text>
+  </g>
+
+  <!-- Content area: x=32..912 (880px) -->
+
+  <!-- Left card: STYLE CHANCE -->
+  <rect x="32" y="40" width="260" height="228" rx="6" fill="#1B1E23"/>
+  <text x="44" y="58" class="sec" font-size="10.5" letter-spacing="1.5" font-weight="500">STYLE CHANCE</text>
+  <g opacity="0.5">
+    <g stroke="#33383F" stroke-width="2" stroke-linecap="round">
+      <line x1="60" y1="72" x2="60" y2="244"/><line x1="86" y1="72" x2="86" y2="244"/>
+      <line x1="112" y1="72" x2="112" y2="244"/><line x1="138" y1="72" x2="138" y2="244"/>
+      <line x1="164" y1="72" x2="164" y2="244"/><line x1="190" y1="72" x2="190" y2="244"/>
+      <line x1="216" y1="72" x2="216" y2="244"/><line x1="242" y1="72" x2="242" y2="244"/>
+      <line x1="268" y1="72" x2="268" y2="244"/>
+    </g>
+    <g stroke="#FA8072" stroke-width="2" stroke-linecap="round">
+      <line x1="60" y1="162" x2="60" y2="244"/><line x1="86" y1="131" x2="86" y2="244"/>
+      <line x1="112" y1="183" x2="112" y2="244"/><line x1="138" y1="114" x2="138" y2="244"/>
+      <line x1="164" y1="196" x2="164" y2="244"/><line x1="190" y1="145" x2="190" y2="244"/>
+      <line x1="216" y1="172" x2="216" y2="244"/><line x1="242" y1="124" x2="242" y2="244"/>
+      <line x1="268" y1="165" x2="268" y2="244"/>
+    </g>
+    <!-- Percent labels under each bar -->
+    <g class="pri mono" font-size="8" text-anchor="middle">
+      <text x="60" y="254">41%</text><text x="86" y="254">58%</text><text x="112" y="254">35%</text>
+      <text x="138" y="254">72%</text><text x="164" y="254">28%</text><text x="190" y="254">55%</text>
+      <text x="216" y="254">45%</text><text x="242" y="254">65%</text><text x="268" y="254">38%</text>
+    </g>
+  </g>
+
+  <!-- Right card: LOOP LENGTH PROBABILITY -->
+  <rect x="300" y="40" width="612" height="228" rx="6" fill="#1B1E23"/>
+  <text x="312" y="58" class="sec" font-size="10.5" letter-spacing="1.5" font-weight="500">LOOP LENGTH PROBABILITY</text>
+
+  <!-- Column headers -->
+  <g class="dis" font-size="8.5" letter-spacing="0.5">
+    <text x="312" y="74">TIMING</text>
+    <text x="400" y="74">CHANCE</text>
+    <text x="580" y="74">TOTAL</text>
+  </g>
+  <line x1="312" y1="78" x2="896" y2="78" class="hair"/>
+
+  <!-- Timing rows: 11 entries, row height 16px, starting y=90 -->
+  <g font-size="9.5">
+    <!-- 1/1 -->
+    <text x="312" y="102" class="pri">1/1</text>
+    <rect x="370" y="95" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="95" width="20" height="4" rx="2" class="sal"/>
+    <text x="578" y="102" text-anchor="end" class="pri mono">10%</text>
+
+    <!-- 1/2 -->
+    <text x="312" y="118" class="pri">1/2</text>
+    <rect x="370" y="111" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="111" width="40" height="4" rx="2" class="sal"/>
+    <text x="578" y="118" text-anchor="end" class="pri mono">20%</text>
+
+    <!-- 1/4 -->
+    <text x="312" y="134" class="pri">1/4</text>
+    <rect x="370" y="127" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="127" width="70" height="4" rx="2" class="sal"/>
+    <text x="578" y="134" text-anchor="end" class="pri mono">35%</text>
+
+    <!-- 1/4t -->
+    <text x="312" y="150" class="sec">1/4t</text>
+    <rect x="370" y="143" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="143" width="10" height="4" rx="2" class="sal"/>
+    <text x="578" y="150" text-anchor="end" class="pri mono">5%</text>
+
+    <!-- 1/8 -->
+    <text x="312" y="166" class="pri">1/8</text>
+    <rect x="370" y="159" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="159" width="50" height="4" rx="2" class="sal"/>
+    <text x="578" y="166" text-anchor="end" class="pri mono">25%</text>
+
+    <!-- 1/8t -->
+    <text x="312" y="182" class="sec">1/8t</text>
+    <rect x="370" y="175" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="175" width="6" height="4" rx="2" class="sal"/>
+    <text x="578" y="182" text-anchor="end" class="pri mono">3%</text>
+
+    <!-- 1/16 -->
+    <text x="312" y="198" class="pri">1/16</text>
+    <rect x="370" y="191" width="200" height="4" rx="2" class="track"/>
+    <rect x="370" y="191" width="4" height="4" rx="2" class="sal"/>
+    <text x="578" y="198" text-anchor="end" class="pri mono">2%</text>
+
+    <!-- 1/16t -->
+    <text x="312" y="214" class="dis">1/16t</text>
+    <rect x="370" y="207" width="200" height="4" rx="2" class="track"/>
+    <text x="578" y="214" text-anchor="end" class="dis mono">0%</text>
+
+    <!-- 1/32 -->
+    <text x="312" y="230" class="dis">1/32</text>
+    <rect x="370" y="223" width="200" height="4" rx="2" class="track"/>
+    <text x="578" y="230" text-anchor="end" class="dis mono">0%</text>
+
+    <!-- 1/32t -->
+    <text x="312" y="246" class="dis">1/32t</text>
+    <rect x="370" y="239" width="200" height="4" rx="2" class="track"/>
+    <text x="578" y="246" text-anchor="end" class="dis mono">0%</text>
+
+    <!-- 1/64 -->
+    <text x="312" y="262" class="dis">1/64</text>
+    <rect x="370" y="255" width="200" height="4" rx="2" class="track"/>
+    <text x="578" y="262" text-anchor="end" class="dis mono">0%</text>
+  </g>
+
+  <!-- Running total column -->
+  <g font-size="9.5" text-anchor="end">
+    <text x="896" y="102" class="pri mono">10%</text>
+    <text x="896" y="118" class="pri mono">30%</text>
+    <text x="896" y="134" class="pri mono">65%</text>
+    <text x="896" y="150" class="pri mono">70%</text>
+    <text x="896" y="166" class="pri mono">95%</text>
+    <text x="896" y="182" class="pri mono">98%</text>
+    <text x="896" y="198" class="pri mono">100%</text>
+    <text x="896" y="214" class="dis mono">100%</text>
+    <text x="896" y="230" class="dis mono">100%</text>
+    <text x="896" y="246" class="dis mono">100%</text>
+    <text x="896" y="262" class="dis mono">100%</text>
+  </g>
+
+  <!-- Total bar (visual summary) -->
+  <rect x="600" y="95" width="280" height="4" rx="2" class="track"/>
+  <rect x="600" y="95" width="28" height="4" rx="2" class="sal" opacity="0.4"/>
+  <rect x="628" y="95" width="28" height="4" rx="2" class="sal" opacity="0.5"/>
+  <rect x="656" y="95" width="49" height="4" rx="2" class="sal" opacity="0.6"/>
+  <rect x="705" y="95" width="7" height="4" rx="2" class="sal" opacity="0.3"/>
+  <rect x="712" y="95" width="35" height="4" rx="2" class="sal" opacity="0.7"/>
+  <rect x="747" y="95" width="4" height="4" rx="2" class="sal" opacity="0.3"/>
+  <rect x="751" y="95" width="3" height="4" rx="2" class="sal" opacity="0.3"/>
+  <text x="600" y="88" class="dis" font-size="8">DISTRIBUTION</text>
+</svg>

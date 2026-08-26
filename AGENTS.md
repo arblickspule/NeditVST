@@ -300,6 +300,19 @@ included/excluded.
     test passes.
   - src/plugin added BEFORE tests/ in the root CMakeLists (test targets
     reference the entry objects).
+  - VSTGUI antialiasing is OFF by default on Linux: `CDrawMode` defaults
+    to `kAliasing` (value 0), which maps to `CAIRO_ANTIALIAS_NONE` in
+    `cairographicscontext.cpp:doInContext()`. Must call
+    `dc->setDrawMode(kAntiAliasing)` before any `drawGraphicsPath` or
+    `drawEllipse` call that needs AA (logo dots, arcs, custom shapes).
+    The backend supports it — the flag is just not set. Restore
+    `kAliasing` after to avoid AA on subsequent rect fills.
+  - CTextButton has no `setBackColor` — background is controlled via
+    `setGradient(CGradient*)`. A single-stop gradient (same color at 0
+    and 1) acts as a solid fill. `GradientColorStopMap` is
+    `std::multimap<double,CColor>` — use `emplace()`, not `operator[]`.
+    Two visual states only: normal and highlighted (pressed); no separate
+    hover colour.
 - Live DAW testing (Bitwig) round 1 — findings + fixes, all committed:
   - Bundle binary must be named <bundle>.so (lib*.so => "Not a plug-in
     file"); bundle needs Contents/Resources/moduleinfo.json (generated at

@@ -594,6 +594,7 @@ namespace {
         out.writeU8 (static_cast<std::uint8_t> (ui.activeTab));
         out.writeF64 (ui.visibleStartNorm);
         out.writeF64 (ui.visibleEndNorm);
+        out.writeBool (ui.auditionEnabled);
     }
 
     [[nodiscard]] bool readUi (StreamReader& in, UiState& ui)
@@ -601,6 +602,8 @@ namespace {
         ui.activeTab = static_cast<UiTab> (in.readU8());
         ui.visibleStartNorm = in.readF64();
         ui.visibleEndNorm = in.readF64();
+        if (in.ok())
+            ui.auditionEnabled = in.readBool();
         return in.ok();
     }
 

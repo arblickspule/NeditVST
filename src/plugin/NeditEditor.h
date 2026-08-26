@@ -1,15 +1,17 @@
 // Nedit -- Plugin layer.
 //
 // The VSTGUI editor shell: a programmatic CFrame (no uidescription XML)
-// whose views are stateless renderers over NeditProcessor's state and
-// sample slot. All geometry/zoom/pan math lives in ui::WaveformGeometry
-// (tested headless); this file only pushes pixels and routes input.
+// whose views are stateless renderers over NeditProcessor's state.
+// All geometry derives from Theme.h tokens and getViewSize(); nothing
+// hardcodes absolute pixel positions.
 
 #pragma once
 
 #include "public.sdk/source/vst/vstguieditor.h"
 
 #include "vstgui/lib/controls/icontrollistener.h"
+
+namespace VSTGUI { class CTextLabel; class CTextButton; }
 
 #include <atomic>
 #include <memory>
@@ -19,7 +21,6 @@
 namespace nedit::plugin {
 
 class NeditProcessor;
-class WaveformView;
 
 class NeditEditor : public Steinberg::Vst::VSTGUIEditor,
                     public VSTGUI::IControlListener
@@ -51,10 +52,12 @@ public:
 private:
     void runFileSelector();
     void applyParamFromControl (VSTGUI::CControl& control);
+    void styleAuditionButton();
 
     NeditProcessor* owner_ = nullptr;
-    WaveformView* waveform_ = nullptr;        // owned by the frame
-    const void* lastSampleIdentity_ = nullptr; // change detection for redraw
+    VSTGUI::CTextLabel* sampleNameLabel_ = nullptr; // app-bar sample pill
+    VSTGUI::CTextButton* auditionBtn_ = nullptr;    // app-bar audition toggle
+    VSTGUI::CTextButton* loadBtn_ = nullptr;         // app-bar load button
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the
@@ -70,6 +73,9 @@ private:
     };
     std::shared_ptr<FileDialogState> fileDialog_;
     bool testAutoloadFired_ = false;   // NEDIT_TEST_AUTOLOAD one-shot
+    bool lastAuditionSync_ = false;    // idle-timer dedup for audition btn
+    bool lastSampleSync_  = false;     // idle-timer dedup for sample presence
+    std::string lastSamplePath_;        // idle-timer dedup for sample name
 };
 
 } // namespace nedit::plugin

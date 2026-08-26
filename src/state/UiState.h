@@ -29,6 +29,10 @@ struct UiState
     double visibleStartNorm = 0.0;
     double visibleEndNorm = 1.0;
 
+    // Audition toggle: when true the scheduler produces audio.
+    // Disabled by the editor when no sample is loaded.
+    bool auditionEnabled = false;
+
     void sanitize() noexcept
     {
         // activeTab's underlying type is unsigned; only the upper bound

@@ -221,6 +221,7 @@ bool NeditProcessor::requestSampleLoad (const std::string& path)
         return false;
 
     uiState_.sample = result->updated;
+    auditionPosition_ = 0.0;  // reset audition cursor for the new sample
     // Slice weights are parallel to the derived slice list and reset when
     // slices rebuild -- fresh analysis means equal probability everywhere.
     uiState_.generate.sliceWeights.assign (result->sample->slices.size(), 1.0f);
@@ -234,6 +235,16 @@ void NeditProcessor::setVisibleWindow (double startNorm, double endNorm)
     uiState_.ui.visibleStartNorm = startNorm;
     uiState_.ui.visibleEndNorm = endNorm;
     uiState_.ui.sanitize();
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setAuditionEnabled (bool enabled)
+{
+    if (enabled)
+        auditionPosition_ = 0.0;  // start from trim start on next block
+
+    uiState_.ui.auditionEnabled = enabled;
     provider_.publish (uiState_);
 }
 
@@ -381,6 +392,29 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
             std::memset (outBus.channelBuffers32[ch], 0,
                          sizeof (float) * static_cast<std::size_t> (data.numSamples));
 
+    // Audition gate: when the user enables audition, the scheduler is
+    // bypassed entirely and renderAudition produces a raw loop of
+    // [trimStart, trimEnd) at native pitch/speed — no slicing, no
+    // playback styles, no effects. Auto-stops the instant host transport
+    // starts playing, so audition and the real engine never overlap.
+    if (st->ui.auditionEnabled)
+    {
+        if (transport.playing)
+        {
+            uiState_.ui.auditionEnabled = false;
+            provider_.publish (uiState_);
+        }
+        else if (loaded != nullptr)
+        {
+            renderAudition (outBus.channelBuffers32,
+                            outBus.numChannels < 1 ? 1 : outBus.numChannels,
+                            data.numSamples,
+                            processSetup.sampleRate > 0 ? processSetup.sampleRate
+                                                        : 44100.0);
+        }
+        return kOk;
+    }
+
     // Hosts provide an array of per-channel pointers.
     scheduler_.process (*st, slices, ctx_, transport,
                         outBus.channelBuffers32,
@@ -388,6 +422,62 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
                         data.numSamples);
 
     return kOk;
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::renderAudition (float* const* outAdd, int numOutChannels,
+                                     int numSamples, double hostSampleRate)
+{
+    const auto loaded = sampleManager_.acquire();
+    if (loaded == nullptr)
+        return;
+
+    const auto& audio = loaded->audio;
+    const auto& sample = uiState_.sample;
+    const int sourceChannels = audio.channelCount();
+    const int64_t sourceFrames = audio.frames;
+
+    if (sourceFrames == 0 || sourceChannels == 0 || numSamples <= 0)
+        return;
+
+    const int64_t trimStart = sample.trimStartFrame;
+    const int64_t trimEnd = sample.trimEndFrame;
+    const int64_t trimLen = trimEnd - trimStart;
+
+    if (trimLen <= 0)
+        return;
+
+    // Sample-rate matching only — never repitch.
+    const double auditionRate = (sample.sampleSampleRate > 0.0 && hostSampleRate > 0.0)
+                                    ? sample.sampleSampleRate / hostSampleRate
+                                    : 1.0;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        // Wrap position into [trimStart, trimEnd).
+        if (auditionPosition_ < static_cast<double> (trimStart)
+            || auditionPosition_ >= static_cast<double> (trimEnd))
+            auditionPosition_ = static_cast<double> (trimStart);
+
+        const int64_t idx0 = static_cast<int64_t> (auditionPosition_);
+        const int64_t idx1 = idx0 + 1;
+        const float frac = static_cast<float> (auditionPosition_ - static_cast<double> (idx0));
+
+        const int64_t idx0c = std::min (idx0, sourceFrames - 1);
+        const int64_t idx1c = std::min (idx1, sourceFrames - 1);
+
+        for (int ch = 0; ch < numOutChannels; ++ch)
+        {
+            const int srcCh = std::min (ch, sourceChannels - 1);
+            const float s0 = audio.channels[static_cast<std::size_t> (srcCh)]
+                                 [static_cast<std::size_t> (idx0c)];
+            const float s1 = audio.channels[static_cast<std::size_t> (srcCh)]
+                                 [static_cast<std::size_t> (idx1c)];
+            outAdd[ch][i] += s0 + frac * (s1 - s0);
+        }
+
+        auditionPosition_ += auditionRate;
+    }
 }
 
 } // namespace nedit::plugin

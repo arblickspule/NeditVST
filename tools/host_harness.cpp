@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <csignal>
 #include <map>
 #include <string>
 #include <vector>
@@ -29,6 +30,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
+#include <X11/keysym.h>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -87,6 +89,33 @@ public:
 
     FUnknown* unknownCast() { return static_cast<IHostApplication*> (this); }
 
+    // Merge registered event-handler fds into an external poll set (indices
+    // starting at offset) so the caller can include them in a single poll().
+    void gatherPollFds (std::vector<pollfd>& out) const
+    {
+        for (auto& [fd, handler] : fds_)
+            out.push_back ({fd, POLLIN, 0});
+    }
+
+    // After poll() returns, dispatch any ready fds that belong to us.
+    // baseIdx is the pollfd index where our fds start in the caller's vector.
+    void dispatchPollResults (const std::vector<pollfd>& pfds, std::size_t baseIdx = 1)
+    {
+        for (std::size_t i = 0; i < fds_.size (); ++i)
+        {
+            auto pi = baseIdx + i;
+            if (pi < pfds.size () && (pfds[pi].revents & POLLIN))
+                fds_[i].second->onFDIsSet (fds_[i].first);
+        }
+    }
+
+    // Fire all registered timers (VSTGUI idle, rendering, etc.).
+    void fireTimers ()
+    {
+        for (auto& [handler, interval] : timers_)
+            handler->onTimer ();
+    }
+
     void pump (int ms)
     {
         std::vector<pollfd> pfds;
@@ -108,10 +137,17 @@ private:
 
 #define STEP(msg) std::printf("[harness] %s\n", msg); std::fflush(stdout);
 
+static volatile sig_atomic_t g_running = 1;
+static void sigIntHandler (int) { g_running = 0; }
+
+// Interactive preview: open the editor in a real window and pump events
+// until the user closes it or presses Ctrl-C.
 int main (int argc, char** argv)
 {
-    if (argc < 2) { std::printf("usage: harness <bundle.vst3> [noeditor]\n"); return 2; }
-    const bool doEditor = ! (argc >= 3 && std::string(argv[2]) == "noeditor");
+    if (argc < 2) { std::printf("usage: harness <bundle.vst3> [noeditor|preview]\n"); return 2; }
+    const char* mode = argc >= 3 ? argv[2] : "editor";
+    const bool doEditor = (std::string(mode) != "noeditor");
+    const bool preview  = (std::string(mode) == "preview");
 
     static HarnessHost host;
 
@@ -182,12 +218,22 @@ int main (int argc, char** argv)
                 const xcb_setup_t* s = xcb_get_setup (conn);
                 xcb_screen_t* screen = xcb_setup_roots_iterator (s).data;
                 xcb_window_t win = xcb_generate_id (conn);
-                uint32_t vals[1] = { 1 };   // override_redirect: keep at 0,0
+                const uint16_t wW = (uint16_t)(vr.right-vr.left>0?vr.right-vr.left:760);
+                const uint16_t wH = (uint16_t)(vr.bottom-vr.top>0?vr.bottom-vr.top:440);
+                uint32_t vals[1] = { XCB_EVENT_MASK_STRUCTURE_NOTIFY
+                                   | XCB_EVENT_MASK_EXPOSURE
+                                   | XCB_EVENT_MASK_KEY_PRESS
+                                   | XCB_EVENT_MASK_BUTTON_PRESS
+                                   | XCB_EVENT_MASK_BUTTON_RELEASE
+                                   | XCB_EVENT_MASK_POINTER_MOTION };
                 xcb_create_window (conn, XCB_COPY_FROM_PARENT, win, screen->root,
-                                   0,0, (uint16_t)(vr.right-vr.left>0?vr.right-vr.left:600),
-                                   (uint16_t)(vr.bottom-vr.top>0?vr.bottom-vr.top:400),
+                                   100, 100, wW, wH,
                                    0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual,
-                                   XCB_CW_OVERRIDE_REDIRECT, vals);
+                                   XCB_CW_EVENT_MASK, vals);
+                // Set WM_NAME so the window is identifiable.
+                xcb_change_property (conn, XCB_PROP_MODE_REPLACE, win,
+                                     XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8,
+                                     11, "Nedit Preview");
                 xcb_map_window (conn, win);
                 uint32_t stack[1] = { XCB_STACK_MODE_ABOVE };
                 xcb_configure_window (conn, win, XCB_CONFIG_WINDOW_STACK_MODE, stack);
@@ -197,6 +243,82 @@ int main (int argc, char** argv)
                 tresult r = view->attached (reinterpret_cast<void*>((uintptr_t)win),
                                             kPlatformTypeX11EmbedWindowID);
                 std::printf("[harness] attached -> %d\n", r);
+
+                if (preview)
+                {
+                    STEP("interactive preview -- close window or Ctrl-C to exit");
+                    std::signal (SIGINT, sigIntHandler);
+
+                    Display* dpy = XOpenDisplay (nullptr);
+
+                    xcb_intern_atom_cookie_t wmProto =
+                        xcb_intern_atom (conn, 1, 12, "WM_PROTOCOLS");
+                    xcb_intern_atom_cookie_t wmDel =
+                        xcb_intern_atom (conn, 1, 16, "WM_DELETE_WINDOW");
+                    xcb_intern_atom_reply_t* wmProtoR =
+                        xcb_intern_atom_reply (conn, wmProto, nullptr);
+                    xcb_intern_atom_reply_t* wmDelR =
+                        xcb_intern_atom_reply (conn, wmDel, nullptr);
+                    xcb_atom_t wmDeleteAtom = 0;
+                    if (wmProtoR && wmDelR)
+                    {
+                        wmDeleteAtom = wmDelR->atom;
+                        xcb_change_property (conn, XCB_PROP_MODE_REPLACE, win,
+                                             wmProtoR->atom, 4, 32, 1, &wmDeleteAtom);
+                    }
+                    free (wmProtoR); free (wmDelR);
+                    xcb_flush (conn);
+
+                    while (g_running)
+                    {
+                        // Collect our xcb fd + VSTGUI runloop fds into one
+                        // poll set so everything wakes up together.
+                        std::vector<pollfd> pfds;
+                        pfds.push_back ({xcb_get_file_descriptor (conn), POLLIN, 0});
+                        // Let the harness expose its registered fds for merging.
+                        host.gatherPollFds (pfds);
+                        ::poll (pfds.data (), pfds.size (), 16); // ~60 fps
+
+                        // Dispatch our own xcb events.
+                        xcb_generic_event_t* ev;
+                        while ((ev = xcb_poll_for_event (conn)))
+                        {
+                            const uint8_t type = ev->response_type & ~0x80;
+                            if (type == XCB_CLIENT_MESSAGE)
+                            {
+                                auto* cm = reinterpret_cast<xcb_client_message_event_t*>(ev);
+                                if (wmDeleteAtom && cm->data.data32[0] == wmDeleteAtom)
+                                    g_running = 0;
+                            }
+                            else if (type == XCB_KEY_PRESS && dpy)
+                            {
+                                auto* kp = reinterpret_cast<xcb_key_press_event_t*>(ev);
+                                XKeyEvent xev {};
+                                xev.display = dpy;
+                                xev.keycode = kp->detail;
+                                if (XLookupKeysym (&xev, 0) == XK_q)
+                                    g_running = 0;
+                            }
+                            free (ev);
+                        }
+
+                        // Dispatch VSTGUI runloop fds + timers.
+                        host.dispatchPollResults (pfds, 1);
+                        host.fireTimers ();
+                        processor->process (data);
+                    }
+
+                    STEP("shutting down");
+                    if (dpy) XCloseDisplay (dpy);
+                    view->removed();
+                    xcb_destroy_window (conn, win); xcb_flush (conn);
+                    xcb_disconnect (conn);
+                    view->release();
+                    processor->setProcessing (false);
+                    component->setActive (false);
+                    component->terminate();
+                    return 0;
+                }
 
                 STEP("pump + process with editor open");
                 for (int i = 0; i < 20; ++i)

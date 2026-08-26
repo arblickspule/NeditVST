@@ -42,6 +42,7 @@ if(NEDIT_BUILD_PLUGIN)
     # Phase 4: VST3 SDK + VSTGUI via FetchContent. See AGENTS.md roadmap.
     # Added BEFORE tests/ so test targets can reference the entry objects.
     add_subdirectory(src/plugin)
+    add_subdirectory(tools)
 endif()
 
 if(NEDIT_BUILD_TESTS)

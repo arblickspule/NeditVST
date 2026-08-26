@@ -1,0 +1,1865 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="1260"
+   height="880"
+   viewBox="0 0 1260 880"
+   font-family="Inter, Roboto, system-ui, sans-serif"
+   version="1.1"
+   id="svg529"
+   sodipodi:docname="shell-layout_edit.svg"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs533" />
+  <sodipodi:namedview
+     id="namedview531"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#505050"
+     showgrid="false"
+     inkscape:zoom="1.346717"
+     inkscape:cx="391.32201"
+     inkscape:cy="373.50089"
+     inkscape:window-width="1920"
+     inkscape:window-height="1008"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg529" />
+  <style
+     id="style2">
+    .pri { fill:#E8EAED; }
+    .sec { fill:#9AA0A6; }
+    .dis { fill:#5F6368; }
+    .sal { fill:#FA8072; }
+    .sal3 { fill:#FF9A8C; }
+    .onsal { fill:#20100D; }
+    .mono { font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace; }
+    .badge { fill:#14161A; stroke:#FA8072; stroke-width:1.5; }
+    .badgetxt { fill:#FA8072; font-size:10px; font-weight:600; }
+    .legendtxt { fill:#9AA0A6; font-size:10.5px; }
+    .hair { stroke:#33383F; stroke-width:1; }
+    .slice { stroke:#454C56; stroke-width:1; }
+  </style>
+  <rect
+     width="1260"
+     height="880"
+     fill="#14161A"
+     id="rect4" />
+  <rect
+     x="40"
+     y="40"
+     width="960"
+     height="800"
+     rx="8"
+     fill="#14161A"
+     stroke="#33383F"
+     id="rect6" />
+  <path
+     d="M40,88 V48 Q40,40 48,40 H992 Q1000,40 1000,48 V88 Z"
+     fill="#1B1E23"
+     id="path8" />
+  <line
+     x1="40"
+     y1="88"
+     x2="1000"
+     y2="88"
+     class="hair"
+     id="line10" />
+  <circle
+     cx="64"
+     cy="64"
+     r="6"
+     class="sal"
+     id="circle12" />
+  <text
+     x="78"
+     y="69"
+     class="pri"
+     font-size="14"
+     font-weight="700"
+     letter-spacing="2"
+     id="text14">NEDIT</text>
+  <rect
+     x="150"
+     y="52"
+     width="170"
+     height="24"
+     rx="2"
+     fill="#22262C"
+     stroke="#33383F"
+     id="rect16" />
+  <text
+     x="162"
+     y="67"
+     class="sec"
+     font-size="10.5"
+     letter-spacing="0.5"
+     id="text18">TRIGGER MODE</text>
+  <path
+     d="M300,61 l5,6 l5,-6 z"
+     class="sec"
+     id="path20" />
+  <rect
+     x="328"
+     y="52"
+     width="104"
+     height="24"
+     rx="2"
+     fill="#22262C"
+     stroke="#33383F"
+     id="rect22" />
+  <text
+     x="340"
+     y="68"
+     class="pri mono"
+     font-size="11"
+     id="text24">120.0 BPM</text>
+  <rect
+     x="668"
+     y="52"
+     width="158"
+     height="24"
+     rx="2"
+     fill="#22262C"
+     stroke="#33383F"
+     id="rect26" />
+  <text
+     x="680"
+     y="68"
+     class="sec"
+     font-size="10.5"
+     id="text28">breaks_120.wav</text>
+  <rect
+     x="834"
+     y="52"
+     width="96"
+     height="24"
+     rx="4"
+     class="sal"
+     id="rect30" />
+  <text
+     x="882"
+     y="68"
+     text-anchor="middle"
+     class="onsal"
+     font-size="10.5"
+     font-weight="700"
+     letter-spacing="1"
+     id="text32">LOAD SAMPLE</text>
+  <circle
+     cx="958"
+     cy="64"
+     r="8"
+     fill="none"
+     stroke="#9AA0A6"
+     stroke-width="1.5"
+     id="circle34" />
+  <circle
+     cx="958"
+     cy="64"
+     r="2.5"
+     fill="none"
+     stroke="#9AA0A6"
+     stroke-width="1.5"
+     id="circle36" />
+  <!-- Waveform card h240 -->
+  <rect
+     x="64"
+     y="96"
+     width="912"
+     height="240"
+     rx="6"
+     fill="#1B1E23"
+     id="rect38" />
+  <clipPath
+     id="waveclip">
+    <rect
+       x="76"
+       y="108"
+       width="888"
+       height="194"
+       id="rect40" />
+  </clipPath>
+  <g
+     clip-path="url(#waveclip)"
+     id="g75">
+    <polygon
+       fill="#343A43"
+       points="84,201 100,196 112,165 120,178 136,198 152,202 168,171 176,184 192,199 208,204       224,166 232,181 248,201 264,205 280,160 290,177 306,199 320,204 336,172 344,186 360,202 376,205       392,157 402,175 418,198 434,203 450,168 458,183 474,201 490,205 506,163 516,179 532,200 548,204       564,169 572,183 588,201 604,205 620,159 630,176 646,198 662,204 678,167 686,182 702,202 718,205       734,162 744,177 760,199 776,204 792,170 800,184 816,202 832,205 848,164 858,180 874,201 890,204       906,171 914,185 930,201 946,204 964,201       964,209 946,206 930,209 914,225 906,239 890,206 874,209 858,230 848,246 832,205 816,208 800,226       792,240 776,206 760,211 744,233 734,248 718,205 702,208 686,228 678,243 662,206 646,212 630,234       620,251 604,205 588,209 572,227 564,241 548,206 532,210 516,231 506,247 490,205 474,209 458,227       450,242 434,207 418,212 402,235 392,253 376,205 360,208 344,224 336,238 320,206 306,211 290,233       280,250 264,205 248,209 232,229 224,244 208,206 192,211 176,226 168,239 152,208 136,212 120,232       112,245 100,214 84,209"
+       id="polygon43" />
+    <line
+       x1="76"
+       y1="205"
+       x2="964"
+       y2="205"
+       stroke="#2A2F36"
+       stroke-width="1"
+       id="line45" />
+    <g
+       class="slice"
+       id="g63">
+      <line
+         x1="148"
+         y1="112"
+         x2="148"
+         y2="302"
+         id="line47" />
+      <line
+         x1="232"
+         y1="112"
+         x2="232"
+         y2="302"
+         id="line49" />
+      <line
+         x1="308"
+         y1="112"
+         x2="308"
+         y2="302"
+         id="line51" />
+      <line
+         x1="560"
+         y1="112"
+         x2="560"
+         y2="302"
+         id="line53" />
+      <line
+         x1="644"
+         y1="112"
+         x2="644"
+         y2="302"
+         id="line55" />
+      <line
+         x1="720"
+         y1="112"
+         x2="720"
+         y2="302"
+         id="line57" />
+      <line
+         x1="800"
+         y1="112"
+         x2="800"
+         y2="302"
+         id="line59" />
+      <line
+         x1="880"
+         y1="112"
+         x2="880"
+         y2="302"
+         id="line61" />
+    </g>
+    <rect
+       x="392"
+       y="112"
+       width="88"
+       height="190"
+       fill="#3B2622"
+       opacity="0.6"
+       id="rect65" />
+    <line
+       x1="392"
+       y1="112"
+       x2="392"
+       y2="302"
+       stroke="#FA8072"
+       stroke-width="1.5"
+       id="line67" />
+    <line
+       x1="480"
+       y1="112"
+       x2="480"
+       y2="302"
+       stroke="#FA8072"
+       stroke-width="1.5"
+       id="line69" />
+    <line
+       x1="430"
+       y1="112"
+       x2="430"
+       y2="302"
+       stroke="#FF9A8C"
+       stroke-width="2"
+       id="line71" />
+    <polygon
+       points="424,106 436,106 430,114"
+       class="sal3"
+       id="polygon73" />
+  </g>
+  <line
+     x1="64"
+     y1="308"
+     x2="976"
+     y2="308"
+     class="hair"
+     id="line77" />
+  <g
+     class="dis mono"
+     font-size="8.5"
+     id="g89">
+    <text
+       x="84"
+       y="326"
+       id="text79">0:00</text>
+    <text
+       x="264"
+       y="326"
+       id="text81">0:02</text>
+    <text
+       x="448"
+       y="326"
+       id="text83">0:04</text>
+    <text
+       x="632"
+       y="326"
+       id="text85">0:06</text>
+    <text
+       x="816"
+       y="326"
+       id="text87">0:08</text>
+  </g>
+  <g
+     stroke="#33383F"
+     stroke-width="1"
+     id="g101">
+    <line
+       x1="84"
+       y1="312"
+       x2="84"
+       y2="318"
+       id="line91" />
+    <line
+       x1="264"
+       y1="312"
+       x2="264"
+       y2="318"
+       id="line93" />
+    <line
+       x1="448"
+       y1="312"
+       x2="448"
+       y2="318"
+       id="line95" />
+    <line
+       x1="632"
+       y1="312"
+       x2="632"
+       y2="318"
+       id="line97" />
+    <line
+       x1="816"
+       y1="312"
+       x2="816"
+       y2="318"
+       id="line99" />
+  </g>
+  <g
+     id="g117">
+    <rect
+       x="896"
+       y="310"
+       width="20"
+       height="18"
+       rx="2"
+       fill="#22262C"
+       stroke="#33383F"
+       id="rect103" />
+    <rect
+       x="920"
+       y="310"
+       width="20"
+       height="18"
+       rx="2"
+       fill="#22262C"
+       stroke="#33383F"
+       id="rect105" />
+    <rect
+       x="944"
+       y="310"
+       width="20"
+       height="18"
+       rx="2"
+       fill="#22262C"
+       stroke="#33383F"
+       id="rect107" />
+    <g
+       class="sec"
+       font-size="10"
+       text-anchor="middle"
+       id="g115">
+      <text
+         x="906"
+         y="323"
+         id="text109">+</text>
+      <text
+         x="930"
+         y="323"
+         id="text111">−</text>
+      <text
+         x="954"
+         y="323"
+         id="text113">⌄</text>
+    </g>
+  </g>
+  <g
+     font-size="11px"
+     letter-spacing="1.5"
+     text-anchor="middle"
+     font-weight="500"
+     id="g127"
+     transform="translate(3.5512014,182.19565)">
+    <text
+       x="178"
+       y="364"
+       class="sal"
+       id="text119">GENERATE</text>
+    <text
+       x="406"
+       y="364"
+       class="sec"
+       id="text121">SEQUENCER</text>
+    <text
+       x="634"
+       y="364"
+       class="sec"
+       id="text123">PERFORMANCE</text>
+    <text
+       x="862"
+       y="364"
+       class="sec"
+       id="text125">CONTROL</text>
+  </g>
+  <rect
+     x="67.551201"
+     y="554.19568"
+     width="228"
+     height="2"
+     rx="1"
+     class="sal"
+     id="rect129" />
+  <!-- PANEL AREA h424 -->
+  <rect
+     x="60.395691"
+     y="566.1095"
+     width="292.63797"
+     height="235.91672"
+     rx="6.2708139"
+     fill="#1b1e23"
+     id="rect131"
+     style="stroke-width:1.11033" />
+  <text
+     x="77.486816"
+     y="552.8573"
+     class="sec"
+     font-size="11.6584px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text133"
+     transform="scale(0.9412868,1.0623755)"
+     style="stroke-width:1.11033">STYLE WEIGHTS</text>
+  <g
+     opacity="0.5"
+     id="g175"
+     transform="matrix(1.0451356,0,0,1.1795836,-6.4929884,113.14939)">
+    <g
+       stroke="#33383f"
+       stroke-width="2"
+       stroke-linecap="round"
+       id="g153">
+      <line
+         x1="92"
+         y1="420"
+         x2="92"
+         y2="560"
+         id="line135" />
+      <line
+         x1="120"
+         y1="420"
+         x2="120"
+         y2="560"
+         id="line137" />
+      <line
+         x1="148"
+         y1="420"
+         x2="148"
+         y2="560"
+         id="line139" />
+      <line
+         x1="176"
+         y1="420"
+         x2="176"
+         y2="560"
+         id="line141" />
+      <line
+         x1="204"
+         y1="420"
+         x2="204"
+         y2="560"
+         id="line143" />
+      <line
+         x1="232"
+         y1="420"
+         x2="232"
+         y2="560"
+         id="line145" />
+      <line
+         x1="260"
+         y1="420"
+         x2="260"
+         y2="560"
+         id="line147" />
+      <line
+         x1="288"
+         y1="420"
+         x2="288"
+         y2="560"
+         id="line149" />
+      <line
+         x1="316"
+         y1="420"
+         x2="316"
+         y2="560"
+         id="line151" />
+    </g>
+    <g
+       stroke="#fa8072"
+       stroke-width="2"
+       stroke-linecap="round"
+       id="g173">
+      <line
+         x1="92"
+         y1="488"
+         x2="92"
+         y2="560"
+         id="line155" />
+      <line
+         x1="120"
+         y1="462"
+         x2="120"
+         y2="560"
+         id="line157" />
+      <line
+         x1="148"
+         y1="505"
+         x2="148"
+         y2="560"
+         id="line159" />
+      <line
+         x1="176"
+         y1="448"
+         x2="176"
+         y2="560"
+         id="line161" />
+      <line
+         x1="204"
+         y1="517"
+         x2="204"
+         y2="560"
+         id="line163" />
+      <line
+         x1="232"
+         y1="474"
+         x2="232"
+         y2="560"
+         id="line165" />
+      <line
+         x1="260"
+         y1="497"
+         x2="260"
+         y2="560"
+         id="line167" />
+      <line
+         x1="288"
+         y1="456"
+         x2="288"
+         y2="560"
+         id="line169" />
+      <line
+         x1="316"
+         y1="491"
+         x2="316"
+         y2="560"
+         id="line171" />
+    </g>
+  </g>
+  <rect
+     x="63.054451"
+     y="341.25616"
+     width="912.94556"
+     height="59.970947"
+     rx="19.563118"
+     fill="#1b1e23"
+     id="rect177"
+     style="stroke-width:0.951455" />
+  <text
+     x="75.054451"
+     y="359.25616"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text179">TEMPO &amp; TIMING</text>
+  <text
+     x="75.054443"
+     y="389.2562"
+     id="text181"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">MANUAL TEMPO</text>
+  <text
+     x="382.20575"
+     y="389.91479"
+     id="text183"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">LOOP LENGTH</text>
+  <text
+     x="700.79199"
+     y="389.09293"
+     id="text185"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">QUANTIZE</text>
+  <rect
+     x="185.05444"
+     y="382.2562"
+     width="90"
+     height="4"
+     rx="2"
+     id="rect189"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="492.20572"
+     y="382.91479"
+     width="90"
+     height="4"
+     rx="2"
+     id="rect191"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="810.79199"
+     y="382.09293"
+     width="90"
+     height="4"
+     rx="2"
+     id="rect193"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="185.05444"
+     y="382.2562"
+     width="58"
+     height="4"
+     rx="2"
+     id="rect197"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="492.20572"
+     y="382.91479"
+     width="36"
+     height="4"
+     rx="2"
+     id="rect199"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="810.79199"
+     y="382.09293"
+     width="70"
+     height="4"
+     rx="2"
+     id="rect201"
+     style="opacity:0.5;fill:#fa8072" />
+  <text
+     x="331.05444"
+     y="389.2562"
+     id="text205"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">132.0 BPM</text>
+  <text
+     x="638.20575"
+     y="389.91479"
+     id="text207"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">8 BARS</text>
+  <rect
+     x="520"
+     y="407.04218"
+     width="454.49652"
+     height="59.970947"
+     rx="9.7392111"
+     fill="#1b1e23"
+     id="rect177-3"
+     style="stroke-width:0.671322"
+     inkscape:label="rect177-3" />
+  <text
+     x="529.23627"
+     y="426.12759"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text179-6"
+     style="fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       id="tspan1113"
+       x="529.23627"
+       y="426.12759">ENVELOPE</tspan><tspan
+       sodipodi:role="line"
+       id="tspan1115"
+       x="529.23627"
+       y="439.25259" /></text>
+  <text
+     x="527.24054"
+     y="452.49966"
+     id="text181-7"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">ATTACK</text>
+  <text
+     x="756.70892"
+     y="452.09232"
+     id="text183-5"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">RELEASE</text>
+  <rect
+     x="590.03442"
+     y="448.59467"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect189-3"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="821.64777"
+     y="448.70081"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect191-5"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="590.03442"
+     y="448.59467"
+     width="57.999996"
+     height="4"
+     rx="1.9999999"
+     id="rect197-6"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="821.64777"
+     y="448.70081"
+     width="36"
+     height="4"
+     rx="1.9999999"
+     id="rect199-2"
+     style="opacity:0.5;fill:#fa8072" />
+  <text
+     x="749.55695"
+     y="455.64545"
+     id="text205-9"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">132.0 BPM</text>
+  <text
+     x="967.64789"
+     y="455.70081"
+     id="text207-1"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">8 BARS</text>
+  <rect
+     x="61.467522"
+     y="406.13391"
+     width="449.19284"
+     height="59.970947"
+     rx="9.6255608"
+     fill="#1b1e23"
+     id="rect177-3-2"
+     style="stroke-width:0.667394"
+     inkscape:label="rect177-3" />
+  <text
+     x="78.45665"
+     y="422.26883"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text179-6-7"
+     style="fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       id="tspan1115-9"
+       x="78.45665"
+       y="422.26883">DETECTOR</tspan></text>
+  <text
+     x="73.467522"
+     y="454.13397"
+     id="text181-7-3"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">SENSITIVITY</text>
+  <text
+     x="363.61185"
+     y="447.37079"
+     id="text183-5-6"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       id="tspan1943"
+       x="363.61185"
+       y="447.37079"
+       style="text-align:end;text-anchor:end">ONSET</tspan><tspan
+       sodipodi:role="line"
+       x="363.61185"
+       y="459.24579"
+       id="tspan1947"
+       style="text-align:end;text-anchor:end">CORRECTION</tspan></text>
+  <rect
+     x="136.03291"
+     y="449.10815"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect189-3-0"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="375.34372"
+     y="449.10815"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect191-5-6"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="136.03291"
+     y="449.10815"
+     width="57.999996"
+     height="4"
+     rx="1.9999999"
+     id="rect197-6-2"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="375.34372"
+     y="449.10815"
+     width="36"
+     height="4"
+     rx="1.9999999"
+     id="rect199-2-6"
+     style="opacity:0.5;fill:#fa8072" />
+  <text
+     x="281.12842"
+     y="452.97363"
+     id="text205-9-1"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">132.0 BPM</text>
+  <text
+     x="500.51096"
+     y="452.97363"
+     id="text207-1-8"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">30%</text>
+  <rect
+     x="61.467529"
+     y="471.98373"
+     width="449.19284"
+     height="59.970947"
+     rx="9.6255608"
+     fill="#1b1e23"
+     id="rect177-3-2-7"
+     style="stroke-width:0.667394"
+     inkscape:label="rect177-3" />
+  <text
+     x="78.456665"
+     y="487.82895"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text179-6-7-9"
+     style="fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       id="tspan1115-9-2"
+       x="78.456665"
+       y="487.82895">PITCH MODE</tspan></text>
+  <text
+     x="73.467529"
+     y="519.69409"
+     id="text181-7-3-0"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">MODE</text>
+  <text
+     x="363.61188"
+     y="512.93091"
+     id="text183-5-6-2"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       x="363.61188"
+       y="512.93091"
+       id="tspan1947-7"
+       style="text-align:end;text-anchor:end">QUANTIZE</tspan><tspan
+       sodipodi:role="line"
+       x="363.61188"
+       y="524.80591"
+       style="text-align:end;text-anchor:end"
+       id="tspan2111">LENGTH</tspan></text>
+  <rect
+     x="136.03293"
+     y="514.66827"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect189-3-0-5"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="375.34375"
+     y="514.66827"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect191-5-6-9"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="136.03293"
+     y="514.66827"
+     width="57.999996"
+     height="4"
+     rx="1.9999999"
+     id="rect197-6-2-2"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="375.34375"
+     y="514.66827"
+     width="36"
+     height="4"
+     rx="1.9999999"
+     id="rect199-2-6-2"
+     style="opacity:0.5;fill:#fa8072" />
+  <text
+     x="281.12842"
+     y="518.53375"
+     id="text205-9-1-8"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">REPITCH</text>
+  <text
+     x="500.51099"
+     y="518.53375"
+     id="text207-1-8-9"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">30%</text>
+  <rect
+     x="519.0022"
+     y="471.98373"
+     width="449.19284"
+     height="59.970947"
+     rx="9.6255608"
+     fill="#1b1e23"
+     id="rect177-3-2-73"
+     style="stroke-width:0.667394"
+     inkscape:label="rect177-3" />
+  <text
+     x="535.99133"
+     y="488.11865"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text179-6-7-6"
+     style="fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       id="tspan1115-9-1"
+       x="535.99133"
+       y="488.11865">SOMETHING ELSE</tspan></text>
+  <text
+     x="531.0022"
+     y="519.98383"
+     id="text181-7-3-2"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6">SOMETHING</text>
+  <text
+     x="820.995"
+     y="518.86365"
+     id="text183-5-6-9"
+     style="font-size:9.5px;opacity:0.5;fill:#9aa0a6"><tspan
+       sodipodi:role="line"
+       x="820.995"
+       y="518.86365"
+       id="tspan1947-9"
+       style="text-align:end;text-anchor:end">ELSE</tspan></text>
+  <rect
+     x="593.56763"
+     y="514.95801"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect189-3-0-4"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="832.87842"
+     y="514.95801"
+     width="90"
+     height="4"
+     rx="1.9999999"
+     id="rect191-5-6-7"
+     style="opacity:0.5;fill:#33383f" />
+  <rect
+     x="593.56763"
+     y="514.95801"
+     width="57.999996"
+     height="4"
+     rx="1.9999999"
+     id="rect197-6-2-8"
+     style="opacity:0.5;fill:#fa8072" />
+  <rect
+     x="832.87842"
+     y="514.95801"
+     width="36"
+     height="4"
+     rx="1.9999999"
+     id="rect199-2-6-4"
+     style="opacity:0.5;fill:#fa8072" />
+  <text
+     x="738.66309"
+     y="518.82349"
+     id="text205-9-1-5"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">132.0 BPM</text>
+  <text
+     x="958.04565"
+     y="518.82349"
+     id="text207-1-8-0"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">30%</text>
+  <text
+     x="956.79199"
+     y="389.09293"
+     id="text209"
+     style="font-size:9.5px;font-family:'JetBrains Mono', 'Roboto Mono', ui-monospace, monospace;text-anchor:end;opacity:0.5;fill:#e8eaed">1/16</text>
+  <rect
+     x="361.3732"
+     y="563.93121"
+     width="624"
+     height="248.00003"
+     rx="6"
+     fill="#1b1e23"
+     id="rect215"
+     style="stroke-width:0.764791" />
+  <text
+     x="373.3732"
+     y="581.93121"
+     class="sec"
+     font-size="10.5px"
+     letter-spacing="1.5"
+     font-weight="500"
+     id="text217">STYLE PARAMETERS — 21 AUTOMATABLE</text>
+  <g
+     opacity="0.5"
+     font-size="9.5px"
+     id="g395"
+     transform="translate(9.3731993,179.93121)">
+    <g
+       class="sec"
+       id="g261">
+      <text
+         x="418.13101"
+         y="430"
+         id="text219"
+         style="text-align:end;text-anchor:end">RESONANCE</text>
+      <text
+         x="416.07898"
+         y="462"
+         id="text221"
+         style="text-align:end;text-anchor:end">FILTER TYPE</text>
+      <text
+         x="364"
+         y="494"
+         id="text223">CURVE SHAPE</text>
+      <text
+         x="364"
+         y="526"
+         id="text225">GRAIN SIZE</text>
+      <text
+         x="364"
+         y="558"
+         id="text227">GRAIN SPEED</text>
+      <text
+         x="364"
+         y="590"
+         id="text229">SUBDIVIDE</text>
+      <text
+         x="364"
+         y="622"
+         id="text231">SR REDUCTION</text>
+      <text
+         x="576"
+         y="430"
+         id="text233">SR MODE</text>
+      <text
+         x="576"
+         y="462"
+         id="text235">BIT DEPTH</text>
+      <text
+         x="576"
+         y="494"
+         id="text237">BIT MODE</text>
+      <text
+         x="576"
+         y="526"
+         id="text239">RATE</text>
+      <text
+         x="576"
+         y="558"
+         id="text241">FWD CURVE</text>
+      <text
+         x="576"
+         y="590"
+         id="text243">BWD CURVE</text>
+      <text
+         x="576"
+         y="622"
+         id="text245">DELAY TIME</text>
+      <text
+         x="788"
+         y="430"
+         id="text247">DELAY MODE</text>
+      <text
+         x="788"
+         y="462"
+         id="text249">MIX</text>
+      <text
+         x="788"
+         y="494"
+         id="text251">MIX MODE</text>
+      <text
+         x="788"
+         y="526"
+         id="text253">FEEDBACK</text>
+      <text
+         x="788"
+         y="558"
+         id="text255">FBK MODE</text>
+      <text
+         x="788"
+         y="590"
+         id="text257">VOLUME</text>
+      <text
+         x="788"
+         y="622"
+         id="text259">VOLUME MODE</text>
+    </g>
+    <g
+       fill="#33383f"
+       id="g305">
+      <rect
+         x="434"
+         y="423"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect263" />
+      <rect
+         x="434"
+         y="455"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect265" />
+      <rect
+         x="434"
+         y="487"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect267" />
+      <rect
+         x="434"
+         y="519"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect269" />
+      <rect
+         x="434"
+         y="551"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect271" />
+      <rect
+         x="434"
+         y="583"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect273" />
+      <rect
+         x="434"
+         y="615"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect275" />
+      <rect
+         x="646"
+         y="423"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect277" />
+      <rect
+         x="646"
+         y="455"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect279" />
+      <rect
+         x="646"
+         y="487"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect281" />
+      <rect
+         x="646"
+         y="519"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect283" />
+      <rect
+         x="646"
+         y="551"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect285" />
+      <rect
+         x="646"
+         y="583"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect287" />
+      <rect
+         x="646"
+         y="615"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect289" />
+      <rect
+         x="858"
+         y="423"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect291" />
+      <rect
+         x="858"
+         y="455"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect293" />
+      <rect
+         x="858"
+         y="487"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect295" />
+      <rect
+         x="858"
+         y="519"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect297" />
+      <rect
+         x="858"
+         y="551"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect299" />
+      <rect
+         x="858"
+         y="583"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect301" />
+      <rect
+         x="858"
+         y="615"
+         width="70"
+         height="4"
+         rx="2"
+         id="rect303" />
+    </g>
+    <g
+       class="sal"
+       id="g349">
+      <rect
+         x="434"
+         y="423"
+         width="30"
+         height="4"
+         rx="2"
+         id="rect307" />
+      <rect
+         x="434"
+         y="455"
+         width="20"
+         height="4"
+         rx="2"
+         id="rect309" />
+      <rect
+         x="434"
+         y="487"
+         width="44"
+         height="4"
+         rx="2"
+         id="rect311" />
+      <rect
+         x="434"
+         y="519"
+         width="52"
+         height="4"
+         rx="2"
+         id="rect313" />
+      <rect
+         x="434"
+         y="551"
+         width="62"
+         height="4"
+         rx="2"
+         id="rect315" />
+      <rect
+         x="434"
+         y="583"
+         width="14"
+         height="4"
+         rx="2"
+         id="rect317" />
+      <rect
+         x="434"
+         y="615"
+         width="38"
+         height="4"
+         rx="2"
+         id="rect319" />
+      <rect
+         x="646"
+         y="423"
+         width="24"
+         height="4"
+         rx="2"
+         id="rect321" />
+      <rect
+         x="646"
+         y="455"
+         width="42"
+         height="4"
+         rx="2"
+         id="rect323" />
+      <rect
+         x="646"
+         y="487"
+         width="18"
+         height="4"
+         rx="2"
+         id="rect325" />
+      <rect
+         x="646"
+         y="519"
+         width="48"
+         height="4"
+         rx="2"
+         id="rect327" />
+      <rect
+         x="646"
+         y="551"
+         width="28"
+         height="4"
+         rx="2"
+         id="rect329" />
+      <rect
+         x="646"
+         y="583"
+         width="56"
+         height="4"
+         rx="2"
+         id="rect331" />
+      <rect
+         x="646"
+         y="615"
+         width="34"
+         height="4"
+         rx="2"
+         id="rect333" />
+      <rect
+         x="858"
+         y="423"
+         width="22"
+         height="4"
+         rx="2"
+         id="rect335" />
+      <rect
+         x="858"
+         y="455"
+         width="50"
+         height="4"
+         rx="2"
+         id="rect337" />
+      <rect
+         x="858"
+         y="487"
+         width="16"
+         height="4"
+         rx="2"
+         id="rect339" />
+      <rect
+         x="858"
+         y="519"
+         width="40"
+         height="4"
+         rx="2"
+         id="rect341" />
+      <rect
+         x="858"
+         y="551"
+         width="26"
+         height="4"
+         rx="2"
+         id="rect343" />
+      <rect
+         x="858"
+         y="583"
+         width="66"
+         height="4"
+         rx="2"
+         id="rect345" />
+      <rect
+         x="858"
+         y="615"
+         width="12"
+         height="4"
+         rx="2"
+         id="rect347" />
+    </g>
+    <g
+       class="pri mono"
+       font-size="9.5px"
+       text-anchor="end"
+       id="g393">
+      <text
+         x="514"
+         y="430"
+         id="text351">0.42</text>
+      <text
+         x="514"
+         y="462"
+         id="text353">LP12</text>
+      <text
+         x="514"
+         y="494"
+         id="text355">SMOOTH</text>
+      <text
+         x="514"
+         y="526"
+         id="text357">40 MS</text>
+      <text
+         x="514"
+         y="558"
+         id="text359">4.0×</text>
+      <text
+         x="514"
+         y="590"
+         id="text361">OFF</text>
+      <text
+         x="514"
+         y="622"
+         id="text363">12</text>
+      <text
+         x="726"
+         y="430"
+         id="text365">SWEEP</text>
+      <text
+         x="726"
+         y="462"
+         id="text367">5 BIT</text>
+      <text
+         x="726"
+         y="494"
+         id="text369">WINDOW</text>
+      <text
+         x="726"
+         y="526"
+         id="text371">1/8</text>
+      <text
+         x="726"
+         y="558"
+         id="text373">LINEAR</text>
+      <text
+         x="726"
+         y="590"
+         id="text375">EASE-IN</text>
+      <text
+         x="726"
+         y="622"
+         id="text377">6.0 MS</text>
+      <text
+         x="938"
+         y="430"
+         id="text379">WINDOW</text>
+      <text
+         x="938"
+         y="462"
+         id="text381">0.50</text>
+      <text
+         x="938"
+         y="494"
+         id="text383">PER-PICK</text>
+      <text
+         x="938"
+         y="526"
+         id="text385">0.30</text>
+      <text
+         x="938"
+         y="558"
+         id="text387">WHOLE</text>
+      <text
+         x="938"
+         y="590"
+         id="text389">1.00</text>
+      <text
+         x="938"
+         y="622"
+         id="text391">OFF</text>
+    </g>
+  </g>
+  <!-- Footer h24 -->
+  <line
+     x1="40"
+     y1="816"
+     x2="1000"
+     y2="816"
+     class="hair"
+     id="line397" />
+  <text
+     x="64"
+     y="831"
+     class="sec mono"
+     font-size="9.5"
+     id="text399">44.1 kHz · STEREO · 3:02.4 · 37 SLICES</text>
+  <circle
+     cx="898"
+     cy="827"
+     r="3"
+     class="sal"
+     id="circle401" />
+  <text
+     x="908"
+     y="831"
+     class="sec"
+     font-size="9.5"
+     letter-spacing="1"
+     id="text403">ENGINE LIVE</text>
+  <g
+     id="g437">
+    <circle
+       cx="1012"
+       cy="52"
+       r="10"
+       class="badge"
+       id="circle405" />
+    <text
+       x="1012"
+       y="56"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text407">1</text>
+    <circle
+       cx="1012"
+       cy="76"
+       r="10"
+       class="badge"
+       id="circle409" />
+    <text
+       x="1012"
+       y="80"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text411">2</text>
+    <circle
+       cx="1012"
+       cy="184"
+       r="10"
+       class="badge"
+       id="circle413" />
+    <text
+       x="1012"
+       y="188"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text415">4</text>
+    <circle
+       cx="1012"
+       cy="248"
+       r="10"
+       class="badge"
+       id="circle417" />
+    <text
+       x="1012"
+       y="252"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text419">5</text>
+    <circle
+       cx="1012"
+       cy="216"
+       r="10"
+       class="badge"
+       id="circle421" />
+    <text
+       x="1012"
+       y="220"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text423">3</text>
+    <circle
+       cx="1012"
+       cy="360"
+       r="10"
+       class="badge"
+       id="circle425" />
+    <text
+       x="1012"
+       y="364"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text427">6</text>
+    <circle
+       cx="1012"
+       cy="500"
+       r="10"
+       class="badge"
+       id="circle429" />
+    <text
+       x="1012"
+       y="504"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text431">7</text>
+    <circle
+       cx="1012"
+       cy="828"
+       r="10"
+       class="badge"
+       id="circle433" />
+    <text
+       x="1012"
+       y="832"
+       text-anchor="middle"
+       class="badgetxt"
+       id="text435">8</text>
+  </g>
+  <g
+     id="g527">
+    <text
+       x="1044"
+       y="64"
+       class="pri"
+       font-size="13"
+       font-weight="600"
+       letter-spacing="1"
+       id="text439">NEDIT — SHELL v0.2 · 960×800</text>
+    <text
+       x="1044"
+       y="80"
+       class="dis"
+       font-size="9.5"
+       id="text441">dark material · graphite &amp; salmon</text>
+    <g
+       class="badgetxt"
+       id="g475">
+      <circle
+         cx="1050"
+         cy="108"
+         r="8"
+         class="badge"
+         id="circle443" />
+      <text
+         x="1050"
+         y="111.5"
+         text-anchor="middle"
+         id="text445">1</text>
+      <circle
+         cx="1050"
+         cy="156"
+         r="8"
+         class="badge"
+         id="circle447" />
+      <text
+         x="1050"
+         y="159.5"
+         text-anchor="middle"
+         id="text449">2</text>
+      <circle
+         cx="1050"
+         cy="204"
+         r="8"
+         class="badge"
+         id="circle451" />
+      <text
+         x="1050"
+         y="207.5"
+         text-anchor="middle"
+         id="text453">3</text>
+      <circle
+         cx="1050"
+         cy="260"
+         r="8"
+         class="badge"
+         id="circle455" />
+      <text
+         x="1050"
+         y="263.5"
+         text-anchor="middle"
+         id="text457">4</text>
+      <circle
+         cx="1050"
+         cy="308"
+         r="8"
+         class="badge"
+         id="circle459" />
+      <text
+         x="1050"
+         y="311.5"
+         text-anchor="middle"
+         id="text461">5</text>
+      <circle
+         cx="1050"
+         cy="356"
+         r="8"
+         class="badge"
+         id="circle463" />
+      <text
+         x="1050"
+         y="359.5"
+         text-anchor="middle"
+         id="text465">6</text>
+      <circle
+         cx="1050"
+         cy="412"
+         r="8"
+         class="badge"
+         id="circle467" />
+      <text
+         x="1050"
+         y="415.5"
+         text-anchor="middle"
+         id="text469">7</text>
+      <circle
+         cx="1050"
+         cy="476"
+         r="8"
+         class="badge"
+         id="circle471" />
+      <text
+         x="1050"
+         y="479.5"
+         text-anchor="middle"
+         id="text473">8</text>
+    </g>
+    <g
+       class="legendtxt"
+       id="g515">
+      <text
+         x="1066"
+         y="105"
+         id="text477">APP BAR h48 — graphite-800,</text>
+      <text
+         x="1066"
+         y="117"
+         id="text479">hairline divider below</text>
+      <text
+         x="1066"
+         y="153"
+         id="text481">PRIMARY ACTION — salmon-400,</text>
+      <text
+         x="1066"
+         y="165"
+         id="text483">r4; chips r2 h24 graphite-700</text>
+      <text
+         x="1066"
+         y="201"
+         id="text485">WAVEFORM CARD h240 — exactly</text>
+      <text
+         x="1066"
+         y="213"
+         id="text487">⅓ of inner column (240/720);</text>
+      <text
+         x="1066"
+         y="225"
+         id="text489">r6, pad 12, ruler inside card</text>
+      <text
+         x="1066"
+         y="257"
+         id="text491">SLICE MARKERS — outline @60%;</text>
+      <text
+         x="1066"
+         y="269"
+         id="text493">live slice tinted salmon-</text>
+      <text
+         x="1066"
+         y="281"
+         id="text495">container + salmon edges</text>
+      <text
+         x="1066"
+         y="305"
+         id="text497">PLAYHEAD — salmon-300, 2px,</text>
+      <text
+         x="1066"
+         y="317"
+         id="text499">cap handle, full-height</text>
+      <text
+         x="1066"
+         y="353"
+         id="text501">TAB BAR h32 — underline tabs;</text>
+      <text
+         x="1066"
+         y="365"
+         id="text503">active = salmon + 2px indicator</text>
+      <text
+         x="1066"
+         y="409"
+         id="text505">PANEL AREA h424 — weights,</text>
+      <text
+         x="1066"
+         y="421"
+         id="text507">timing + params cards, 8px</text>
+      <text
+         x="1066"
+         y="433"
+         id="text509">gutters; content swaps per tab</text>
+      <text
+         x="1066"
+         y="473"
+         id="text511">FOOTER h24 — tabular mono</text>
+      <text
+         x="1066"
+         y="485"
+         id="text513">metadata + engine status dot</text>
+    </g>
+    <text
+       x="1044"
+       y="530"
+       class="dis"
+       font-size="9.5"
+       id="text517">vertical stack: 48 + 8 + 240 + 8</text>
+    <text
+       x="1044"
+       y="544"
+       class="dis"
+       font-size="9.5"
+       id="text519">+ 32 + 8 + 424 + 8 + 24 = 800</text>
+    <text
+       x="1044"
+       y="566"
+       class="dis"
+       font-size="9.5"
+       id="text521">grid 4px · gutters 8 · radii 2/4/6/8</text>
+    <text
+       x="1044"
+       y="588"
+       class="dis"
+       font-size="9.5"
+       id="text523">tokens: design-language.md ·</text>
+    <text
+       x="1044"
+       y="602"
+       class="dis"
+       font-size="9.5"
+       id="text525">states sheet: tokens-anatomy.svg</text>
+  </g>
+</svg>

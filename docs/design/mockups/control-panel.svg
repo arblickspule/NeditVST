@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="912" height="268" viewBox="0 0 912 268" font-family="Inter, Roboto, system-ui, sans-serif">
+  <style>
+    .pri{fill:#E8EAED}.sec{fill:#9AA0A6}.dis{fill:#5F6368}.sal{fill:#FA8072}
+    .sal3{fill:#FF9A8C}.onsal{fill:#20100D}.hair{stroke:#33383F;stroke-width:1}
+    .track{fill:#33383F}.chip{fill:#22262C;stroke:#33383F}
+    .mono{font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace}
+    .cap9{font-size:9.5px}
+  </style>
+  <rect width="912" height="268" fill="#14161A"/>
+
+  <!-- TAB BAR (active: CONTROL) -->
+  <g font-size="11" letter-spacing="1.5" text-anchor="middle" font-weight="500">
+    <text x="114" y="20" class="sec">GENERATE</text>
+    <text x="342" y="20" class="sec">SEQUENCER</text>
+    <text x="570" y="20" class="sec">PERFORMANCE</text>
+    <text x="798" y="20" class="sal">CONTROL</text>
+  </g>
+  <rect x="684" y="28" width="228" height="2" rx="1" class="sal"/>
+
+  <!-- PANEL y=40..268 -->
+  <!-- Base note + gate card -->
+  <rect x="0" y="40" width="280" height="228" rx="6" fill="#1B1E23"/>
+  <text x="12" y="58" class="sec" font-size="10.5" letter-spacing="1.5" font-weight="500">CONTROL SETTINGS</text>
+  <g opacity="0.5">
+    <text x="12" y="86" class="sec cap9">BASE NOTE</text>
+    <rect x="108" y="74" width="80" height="18" rx="2" class="chip"/>
+    <text x="118" y="88" class="pri mono cap9">C-1</text>
+    <path d="M170,80 l4,5 l4,-5 z" class="sec"/>
+
+    <text x="12" y="118" class="sec cap9">GATE MODE</text>
+    <rect x="108" y="106" width="80" height="18" rx="2" class="chip"/>
+    <text x="118" y="118" class="pri cap9">ONE-SHOT</text>
+
+    <text x="12" y="150" class="sec cap9">NUM SLICES</text>
+    <rect x="108" y="138" width="80" height="18" rx="2" class="chip"/>
+    <text x="118" y="150" class="pri mono cap9">9</text>
+
+    <text x="12" y="182" class="sec cap9">VELOCITY GAIN</text>
+    <rect x="108" y="172" width="90" height="4" rx="2" class="track"/>
+    <rect x="108" y="172" width="63" height="4" rx="2" class="sal"/>
+    <text x="212" y="178" text-anchor="end" class="pri mono cap9">0.70</text>
+
+    <text x="12" y="210" class="sec cap9">RETRIGGER</text>
+    <rect x="108" y="198" width="80" height="18" rx="2" class="chip"/>
+    <text x="118" y="210" class="pri cap9">OFF</text>
+
+    <text x="12" y="242" class="sec cap9">MIDI CHANNEL</text>
+    <rect x="108" y="230" width="80" height="18" rx="2" class="chip"/>
+    <text x="118" y="242" class="pri mono cap9">1</text>
+  </g>
+
+  <!-- Keyswitch legend -->
+  <rect x="288" y="40" width="624" height="228" rx="6" fill="#1B1E23"/>
+  <text x="300" y="58" class="sec" font-size="10.5" letter-spacing="1.5" font-weight="500">KEY SWITCH LEGEND</text>
+  <g opacity="0.5">
+    <!-- Column headers -->
+    <text x="300" y="80" class="dis cap9">KEY</text>
+    <text x="370" y="80" class="dis cap9">STYLE</text>
+    <text x="520" y="80" class="dis cap9">WEIGHT</text>
+    <line x1="300" y1="86" x2="888" y2="86" class="hair"/>
+
+    <!-- Rows: key -> style mapping (9 styles at base-1) -->
+    <g font-size="10">
+      <!-- Row: highlighted (active) -->
+      <rect x="296" y="94" width="596" height="20" rx="2" fill="#3B2622" opacity="0.4"/>
+      <rect x="304" y="100" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="110" class="pri cap9">C-2</text>
+      <text x="370" y="110" class="sal cap9">Forward</text>
+      <rect x="520" y="104" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="104" width="80" height="4" rx="2" class="sal"/>
+      <text x="612" y="110" class="pri mono" font-size="8">1.00</text>
+
+      <rect x="304" y="122" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="132" class="pri cap9">C#-2</text>
+      <text x="370" y="132" class="pri cap9">PingPong</text>
+      <rect x="520" y="126" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="126" width="56" height="4" rx="2" class="sal"/>
+      <text x="612" y="132" class="pri mono" font-size="8">0.70</text>
+
+      <rect x="304" y="144" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="154" class="pri cap9">D-2</text>
+      <text x="370" y="154" class="pri cap9">TapeStop</text>
+      <rect x="520" y="148" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="148" width="64" height="4" rx="2" class="sal"/>
+      <text x="612" y="154" class="pri mono" font-size="8">0.80</text>
+
+      <rect x="304" y="166" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="176" class="pri cap9">D#-2</text>
+      <text x="370" y="176" class="pri cap9">Stretch</text>
+      <rect x="520" y="170" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="170" width="48" height="4" rx="2" class="sal"/>
+      <text x="612" y="176" class="pri mono" font-size="8">0.60</text>
+
+      <rect x="304" y="188" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="198" class="pri cap9">E-2</text>
+      <text x="370" y="198" class="pri cap9">FilterDown</text>
+      <rect x="520" y="192" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="192" width="32" height="4" rx="2" class="sal"/>
+      <text x="612" y="198" class="pri mono" font-size="8">0.40</text>
+
+      <rect x="304" y="210" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="220" class="pri cap9">F-2</text>
+      <text x="370" y="220" class="pri cap9">FilterUp</text>
+      <rect x="520" y="214" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="214" width="40" height="4" rx="2" class="sal"/>
+      <text x="612" y="220" class="pri mono" font-size="8">0.50</text>
+
+      <rect x="304" y="232" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="242" class="pri cap9">F#-2</text>
+      <text x="370" y="242" class="pri cap9">Bitcrush</text>
+      <rect x="520" y="236" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="236" width="52" height="4" rx="2" class="sal"/>
+      <text x="612" y="242" class="pri mono" font-size="8">0.65</text>
+
+      <rect x="304" y="254" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="264" class="pri cap9">G-2</text>
+      <text x="370" y="264" class="pri cap9">Scratch</text>
+      <rect x="520" y="258" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="258" width="24" height="4" rx="2" class="sal"/>
+      <text x="612" y="264" class="pri mono" font-size="8">0.30</text>
+
+      <rect x="304" y="276" width="52" height="12" rx="2" class="chip"/>
+      <text x="314" y="286" class="pri cap9">G#-2</text>
+      <text x="370" y="286" class="pri cap9">Flanger</text>
+      <rect x="520" y="280" width="80" height="4" rx="2" class="track"/>
+      <rect x="520" y="280" width="60" height="4" rx="2" class="sal"/>
+      <text x="612" y="286" class="pri mono" font-size="8">0.75</text>
+    </g>
+
+    <!-- Slice notes hint -->
+    <text x="700" y="80" class="dis cap9">SLICE NOTES</text>
+    <line x1="700" y1="86" x2="888" y2="86" class="hair"/>
+    <text x="700" y="110" class="dis" font-size="8">C-1 to B-1 = slices</text>
+    <text x="700" y="124" class="dis" font-size="8">of focused pick</text>
+  </g>
+</svg>

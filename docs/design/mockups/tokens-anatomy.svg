@@ -1,0 +1,177 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="940" viewBox="0 0 1200 940" font-family="Inter, Roboto, system-ui, sans-serif">
+  <style>
+    .pri { fill:#E8EAED; }
+    .sec { fill:#9AA0A6; }
+    .dis { fill:#5F6368; }
+    .sal { fill:#FA8072; }
+    .onsal { fill:#20100D; }
+    .mono { font-family:'JetBrains Mono','Roboto Mono',ui-monospace,monospace; }
+    .h-section { fill:#9AA0A6; font-size:11px; letter-spacing:2px; font-weight:500; }
+    .swname { fill:#9AA0A6; font-size:9.5px; }
+    .swhex { fill:#5F6368; font-size:9px; }
+    .cap { fill:#5F6368; font-size:8.5px; }
+  </style>
+
+  <rect width="1200" height="940" fill="#14161A"/>
+
+  <text x="48" y="52" class="pri" font-size="16" font-weight="600" letter-spacing="1">DESIGN TOKENS &#8212; v0.1</text>
+  <text x="48" y="68" class="dis" font-size="10">graphite &amp; salmon &#183; dark material &#183; small radii</text>
+
+  <!-- ==================== COLOR ==================== -->
+  <text x="48" y="100" class="h-section">GRAPHITE RAMP</text>
+  <g>
+    <rect x="48"  y="112" width="92" height="56" rx="4" fill="#14161A" stroke="#33383F"/>
+    <rect x="152" y="112" width="92" height="56" rx="4" fill="#1B1E23" stroke="#33383F"/>
+    <rect x="256" y="112" width="92" height="56" rx="4" fill="#22262C" stroke="#33383F"/>
+    <rect x="360" y="112" width="92" height="56" rx="4" fill="#2A2F36" stroke="#33383F"/>
+    <rect x="464" y="112" width="92" height="56" rx="4" fill="#33383F" stroke="#33383F"/>
+    <rect x="568" y="112" width="92" height="56" rx="4" fill="#E8EAED" stroke="#33383F"/>
+    <rect x="672" y="112" width="92" height="56" rx="4" fill="#9AA0A6" stroke="#33383F"/>
+    <g class="swname">
+      <text x="52"  y="182">graphite-900</text><text x="156" y="182">graphite-800</text>
+      <text x="260" y="182">graphite-700</text><text x="364" y="182">graphite-600</text>
+      <text x="468" y="182">outline</text><text x="572" y="182">text-primary</text>
+      <text x="676" y="182">text-secondary</text>
+    </g>
+    <g class="swhex mono">
+      <text x="52"  y="194">#14161A</text><text x="156" y="194">#1B1E23</text>
+      <text x="260" y="194">#22262C</text><text x="364" y="194">#2A2F36</text>
+      <text x="468" y="194">#33383F</text><text x="572" y="194">#E8EAED</text>
+      <text x="676" y="194">#9AA0A6</text>
+    </g>
+  </g>
+
+  <text x="48" y="228" class="h-section">SALMON RAMP</text>
+  <g>
+    <rect x="48"  y="240" width="92" height="56" rx="4" fill="#FF9A8C" stroke="#33383F"/>
+    <rect x="152" y="240" width="92" height="56" rx="4" fill="#FA8072" stroke="#33383F"/>
+    <rect x="256" y="240" width="92" height="56" rx="4" fill="#E0685A" stroke="#33383F"/>
+    <rect x="360" y="240" width="92" height="56" rx="4" fill="#C25548" stroke="#33383F"/>
+    <rect x="464" y="240" width="92" height="56" rx="4" fill="#3B2622" stroke="#33383F"/>
+    <rect x="568" y="240" width="92" height="56" rx="4" fill="#20100D" stroke="#33383F"/>
+    <g class="swname">
+      <text x="52"  y="310">salmon-300</text><text x="156" y="310">salmon-400</text>
+      <text x="260" y="310">salmon-500</text><text x="364" y="310">salmon-600</text>
+      <text x="468" y="310">salmon-container</text><text x="572" y="310">on-salmon</text>
+    </g>
+    <g class="swhex mono">
+      <text x="52"  y="322">#FF9A8C</text><text x="156" y="322">#FA8072</text>
+      <text x="260" y="322">#E0685A</text><text x="364" y="322">#C25548</text>
+      <text x="468" y="322">#3B2622</text><text x="572" y="322">#20100D</text>
+    </g>
+    <text x="700" y="270" class="sec" font-size="10">one accent, spent deliberately:</text>
+    <text x="700" y="284" class="sec" font-size="10">playhead &#183; live slice &#183; active tab</text>
+    <text x="700" y="298" class="sec" font-size="10">&#183; armed cell &#183; pressed control</text>
+  </g>
+
+  <!-- ==================== RADII ==================== -->
+  <text x="48" y="356" class="h-section">RADII</text>
+  <g>
+    <rect x="48"  y="368" width="56" height="56" rx="2" fill="#22262C" stroke="#33383F"/>
+    <rect x="160" y="368" width="56" height="56" rx="4" fill="#22262C" stroke="#33383F"/>
+    <rect x="272" y="368" width="56" height="56" rx="6" fill="#22262C" stroke="#33383F"/>
+    <rect x="384" y="368" width="56" height="56" rx="8" fill="#22262C" stroke="#33383F"/>
+    <g class="sec mono" font-size="10">
+      <text x="48"  y="440">r-xs &#183; 2</text><text x="160" y="440">r-s &#183; 4</text>
+      <text x="272" y="440">r-m &#183; 6</text><text x="384" y="440">r-l &#183; 8</text>
+    </g>
+    <g class="cap">
+      <text x="48"  y="452">chips, inputs,</text><text x="160" y="452">buttons, knobs,</text>
+      <text x="272" y="452">cards, waveform,</text><text x="384" y="452">window sheet</text>
+      <text x="48"  y="462">cells, toggles</text><text x="160" y="462">tab container</text>
+      <text x="272" y="462">panels</text><text x="384" y="462">(inset sheets)</text>
+    </g>
+  </g>
+
+  <!-- ==================== ELEVATION ==================== -->
+  <text x="48" y="500" class="h-section">ELEVATION = LIGHTNESS, NOT SHADOW</text>
+  <g>
+    <rect x="48" y="512" width="160" height="64" rx="6" fill="#14161A" stroke="#33383F"/>
+    <rect x="60" y="524" width="136" height="28" rx="4" fill="#1B1E23"/>
+    <text x="128" y="566" text-anchor="middle" class="sec" font-size="9">s1 on base</text>
+
+    <rect x="224" y="512" width="160" height="64" rx="6" fill="#1B1E23" stroke="#33383F"/>
+    <rect x="236" y="524" width="136" height="28" rx="4" fill="#22262C"/>
+    <text x="304" y="566" text-anchor="middle" class="sec" font-size="9">s2 on s1</text>
+
+    <rect x="400" y="512" width="160" height="64" rx="6" fill="#22262C" stroke="#33383F"/>
+    <rect x="412" y="524" width="136" height="28" rx="4" fill="#2A2F36"/>
+    <text x="480" y="566" text-anchor="middle" class="sec" font-size="9">s3 on s2</text>
+
+    <text x="600" y="530" class="sec" font-size="10">surfaces rise by getting lighter;</text>
+    <text x="600" y="544" class="sec" font-size="10">hairline outline only when lightness alone is not enough.</text>
+    <text x="600" y="558" class="sec" font-size="10">hover = white @6% over surface &#183; pressed = white @12%.</text>
+  </g>
+
+  <!-- ==================== SPACING ==================== -->
+  <text x="48" y="608" class="h-section">SPACING &#183; 4PX GRID</text>
+  <g>
+    <g class="sec mono" font-size="10" text-anchor="middle">
+      <text x="50"  y="628">4</text><text x="98" y="628">8</text><text x="164" y="628">12</text>
+      <text x="246" y="628">16</text><text x="346" y="628">24</text>
+    </g>
+    <rect x="48"  y="634" width="4"  height="16" fill="#3B2622" stroke="#FA8072" stroke-width="0.75"/>
+    <rect x="94"  y="634" width="8"  height="16" fill="#3B2622" stroke="#FA8072" stroke-width="0.75"/>
+    <rect x="158" y="634" width="12" height="16" fill="#3B2622" stroke="#FA8072" stroke-width="0.75"/>
+    <rect x="238" y="634" width="16" height="16" fill="#3B2622" stroke="#FA8072" stroke-width="0.75"/>
+    <rect x="334" y="634" width="24" height="16" fill="#3B2622" stroke="#FA8072" stroke-width="0.75"/>
+    <g class="swname">
+      <text x="48"  y="666">space-1</text><text x="94" y="666">space-2</text><text x="158" y="666">space-3</text>
+      <text x="238" y="666">space-4</text><text x="334" y="666">space-6</text>
+    </g>
+    <g class="cap">
+      <text x="48"  y="678">control gaps</text><text x="94" y="678">card gutters</text><text x="158" y="678">card padding</text>
+      <text x="238" y="678">section gaps</text><text x="334" y="678">window margins</text>
+    </g>
+    <text x="600" y="646" class="sec" font-size="10">window 960&#215;800 logical &#183; heights: app-bar 48 &#183; tabs 32 &#183; footer 24</text>
+    <text x="600" y="660" class="sec" font-size="10">slider rows 24 &#183; grid cells 24&#215;28 &#183; menu rows 24</text>
+  </g>
+
+  <!-- ==================== TYPE ==================== -->
+  <text x="48" y="708" class="h-section">TYPE ROLES</text>
+  <g>
+    <text x="48" y="736" class="pri" font-size="18" font-weight="600">Display 18 &#183; Semibold &#8212; NEDIT wordmark</text>
+    <text x="48" y="762" class="pri" font-size="12">Body 12 &#183; Regular &#8212; quick brown slicer jumps over the lazy beat</text>
+    <text x="48" y="784" class="sec" font-size="11" letter-spacing="2" font-weight="500">SECTION 11 &#183; MEDIUM &#183; CAPS &#183; TRACKING +5%</text>
+    <text x="48" y="804" class="sec" font-size="10.5">Label 10.5 &#183; Regular &#8212; Fade Out</text>
+    <text x="48" y="826" class="pri mono" font-size="11">Numeric 11 &#183; tabular mono &#8212; 0000123456789 &#183; 120.0 BPM &#183; 37 SLICES</text>
+  </g>
+
+  <!-- ==================== STATES ==================== -->
+  <text x="48" y="864" class="h-section">STATES</text>
+  <g>
+    <rect x="48"  y="876" width="104" height="24" rx="4" class="sal"/>
+    <text x="100" y="892" text-anchor="middle" class="onsal" font-size="10" font-weight="700" letter-spacing="1">LOAD SAMPLE</text>
+    <rect x="168" y="876" width="104" height="24" rx="4" fill="#E0685A"/>
+    <text x="220" y="892" text-anchor="middle" class="onsal" font-size="10" font-weight="700" letter-spacing="1">LOAD SAMPLE</text>
+    <rect x="288" y="876" width="104" height="24" rx="4" fill="#C25548"/>
+    <text x="340" y="892" text-anchor="middle" class="onsal" font-size="10" font-weight="700" letter-spacing="1">LOAD SAMPLE</text>
+    <rect x="408" y="876" width="104" height="24" rx="4" fill="#22262C" stroke="#33383F"/>
+    <text x="460" y="892" text-anchor="middle" class="dis" font-size="10" font-weight="700" letter-spacing="1">LOAD SAMPLE</text>
+    <g class="cap" text-anchor="middle">
+      <text x="100" y="916">normal</text><text x="220" y="916">hover</text>
+      <text x="340" y="916">pressed</text><text x="460" y="916">disabled</text>
+    </g>
+
+    <rect x="560" y="878" width="76" height="20" rx="2" fill="#3B2622" stroke="#FA8072" stroke-width="1"/>
+    <circle cx="572" cy="888" r="3" class="sal"/>
+    <text x="582" y="892" class="sal" font-size="9.5" font-weight="500">SYNC ON</text>
+    <rect x="648" y="878" width="56" height="20" rx="2" fill="#22262C" stroke="#33383F"/>
+    <text x="676" y="892" text-anchor="middle" class="sec" font-size="9.5">OFF</text>
+
+    <rect x="760" y="886" width="140" height="4" rx="2" fill="#33383F"/>
+    <rect x="760" y="886" width="84" height="4" rx="2" class="sal"/>
+    <circle cx="844" cy="888" r="5" fill="#E8EAED"/>
+    <rect x="940" y="886" width="140" height="4" rx="2" fill="#33383F"/>
+    <rect x="940" y="886" width="84" height="4" rx="2" class="sal"/>
+    <circle cx="1024" cy="888" r="8" fill="#3B2622" stroke="#FA8072" stroke-width="1"/>
+    <circle cx="1024" cy="888" r="5" class="sal"/>
+
+    <rect x="1100" y="876" width="24" height="24" rx="2" fill="#14161A" stroke="#33383F"/>
+    <rect x="1132" y="876" width="24" height="24" rx="2" fill="#3B2622" stroke="#FA8072" stroke-width="1"/>
+    <rect x="1164" y="876" width="24" height="24" rx="2" class="sal"/>
+    <g class="cap" text-anchor="middle">
+      <text x="1112" y="916">empty</text><text x="1144" y="916">armed</text><text x="1176" y="916">playing</text>
+    </g>
+  </g>
+</svg>

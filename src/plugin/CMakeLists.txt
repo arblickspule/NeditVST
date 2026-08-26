@@ -17,7 +17,7 @@ if(NOT vst3sdk_POPULATED)
     FetchContent_Populate(vst3sdk)
 endif()
 
-set(VST3_SDK_DIR ${vst3sdk_SOURCE_DIR})
+set(VST3_SDK_DIR ${vst3sdk_SOURCE_DIR} CACHE PATH "VST3 SDK source root")
 
 add_library(nedit_vst3_sdk STATIC
     # pluginterfaces ----------------------------------------------------------

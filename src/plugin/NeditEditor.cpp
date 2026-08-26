@@ -5,13 +5,12 @@
 #include "NeditProcessor.h"
 #include "ParameterSurface.h"
 
-#include <ui/WaveformGeometry.h>
-
 #include "vstgui/lib/ccolor.h"
 #include "vstgui/lib/cdrawcontext.h"
+#include "vstgui/lib/cfont.h"
 #include "vstgui/lib/cframe.h"
+#include "vstgui/lib/cgradient.h"
 #include "vstgui/lib/controls/cbuttons.h"
-#include "vstgui/lib/controls/coptionmenu.h"
 #include "vstgui/lib/controls/ctextlabel.h"
 #include "vstgui/lib/cvstguitimer.h"
 #include "vstgui/lib/events.h"
@@ -30,6 +29,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 namespace nedit::plugin {
@@ -38,156 +38,75 @@ using namespace VSTGUI;
 
 namespace {
 
-constexpr int kEditorWidth = 760;
-constexpr int kEditorHeight = 440;
-constexpr int kTopBarHeight = 40;
+// ── Layout constants (from mockup shell-layout.svg) ────────────────────
+constexpr int kEditorWidth  = 960;
+constexpr int kEditorHeight = 800;
+constexpr int kAppBarHeight = 48;
 
-const CColor kColorBackground { 24, 24, 28, 255 };
-const CColor kColorPanel { 34, 34, 40, 255 };
-const CColor kColorWave { 120, 190, 255, 255 };
-const CColor kColorMarker { 255, 150, 60, 200 };
-const CColor kColorText { 220, 220, 224, 255 };
+// ── Colour tokens (design-language.md "Graphite & Salmon") ─────────────
+const CColor kWindowBase    {  20,  22,  26, 255 }; // graphite-900
+const CColor kSurface1      {  27,  30,  35, 255 }; // graphite-800  app bar, cards
+const CColor kSurface2      {  34,  38,  44, 255 }; // graphite-700  chips, inputs
+const CColor kSurface3      {  42,  47,  54, 255 }; // graphite-600  hover / active-fill
+const CColor kOutline       {  51,  56,  63, 255 }; // hairlines, strokes
+const CColor kTextPrimary   { 232, 234, 237, 255 }; // primary copy
+const CColor kTextSecondary { 154, 160, 166, 255 }; // labels, inactive
+const CColor kTextDisabled  {  95,  99, 104, 255 }; // disabled
+const CColor kAccent        { 250, 128, 114, 255 }; // salmon-400
+const CColor kAccentBright  { 255, 154, 140, 255 }; // salmon-300  playhead
+const CColor kAccentOn      {  32,  16,  13, 255 }; // on-salmon   text on accent fill
+const CColor kAccentHover   { 224, 104,  90, 255 }; // salmon-500  hover
+const CColor kAccentPressed { 194,  85,  72, 255 }; // salmon-600  pressed
+
+// ── Control tags ───────────────────────────────────────────────────────
+constexpr auto kTagAudition = static_cast<VSTGUI_INT32> (1001);
 
 Steinberg::ViewRect kEditorRect (0, 0, kEditorWidth, kEditorHeight);
 
-const char* const kTriggerModeNames[5] = { "Slice Length", "Clock", "Sequenced",
-                                           "Performance", "Control" };
-
-} // namespace
-
-//------------------------------------------------------------------------
-// WaveformView: stateless renderer over the processor's sample slot and
-// UiState; wheel = anchored zoom, drag = pan (both persisted in UiState).
-//------------------------------------------------------------------------
-class WaveformView : public CView
+// ── AppBar: graphite-800 background + salmon logo dot + wordmark ───────
+class AppBarView : public CView
 {
 public:
-    WaveformView (const CRect& size, NeditProcessor* owner)
-        : CView (size), owner_ (owner)
-    {
-    }
+    using CView::CView;
 
     void draw (CDrawContext* dc) override
     {
         const CRect r = getViewSize();
 
-        dc->setFillColor (kColorPanel);
+        // Full-fill graphite-800.
+        dc->setFillColor (kSurface1);
         dc->drawRect (r, kDrawFilled);
 
-        const auto loaded = owner_->acquireLoadedSample();
-        const auto& st = owner_->uiStateView();
-
-        if (loaded == nullptr || loaded->audio.frames <= 0)
+        // Salmon logo dot — drawn via CGraphicsPath so Cairo's
+        // antialiasing applies. VSTGUI defaults to kAliasing (NONE);
+        // must explicitly enable AA before drawing.
+        if (auto* path = dc->createGraphicsPath())
         {
-            dc->setFontColor (kColorText);
-            dc->drawString ("Load a sample to begin", CPoint (r.left + 16.0, r.top + 28.0));
-            setDirty (false);
-            return;
+            path->addEllipse (CRect (r.left + 19, r.top + 21,
+                                     r.left + 29, r.top + 31));
+            dc->setDrawMode (kAntiAliasing);
+            dc->setFillColor (kAccent);
+            dc->drawGraphicsPath (path, CDrawContext::kPathFilled);
+            dc->setDrawMode (kAliasing);
+            path->forget ();
         }
 
-        std::vector<const float*> channels;
-        channels.reserve (loaded->audio.channels.size());
-        for (const auto& c : loaded->audio.channels)
-            channels.push_back (c.data());
+        // "NEDIT" wordmark — baseline y so cap-height centres on the dot.
+        dc->setFont (kNormalFontBig, 17);
+        dc->setFontColor (kTextPrimary);
+        dc->drawString ("NEDIT", CPoint (r.left + 38, r.top + 32));
 
-        const auto width = std::max (1, static_cast<int> (r.getWidth()));
-        const auto peaks = ui::computeWaveformPeaks (
-            channels.data(), static_cast<int> (channels.size()), loaded->audio.frames,
-            st.sample.trimStartFrame, st.sample.trimEndFrame, st.ui, width);
-
-        const double midY = r.top + r.getHeight() / 2.0;
-        const double halfH = r.getHeight() / 2.0 - 3.0;
-
-        dc->setFrameColor (kColorWave);
-        dc->setLineWidth (1.0);
-
-        for (std::size_t c = 0; c < peaks.size(); ++c)
-        {
-            const double x = r.left + static_cast<double> (c);
-            const double yTop = midY - static_cast<double> (peaks[c].max) * halfH;
-            const double yBottom = midY - static_cast<double> (peaks[c].min) * halfH;
-            dc->drawLine (CPoint (x, yTop), CPoint (x, std::max (yBottom, yTop + 1.0)));
-        }
-
-        const auto markers = ui::computeSliceMarkerX (
-            loaded->slices, st.sample.trimStartFrame, st.sample.trimEndFrame, st.ui,
-            r.getWidth());
-
-        dc->setFrameColor (kColorMarker);
-        for (const double mx : markers)
-        {
-            const double x = r.left + mx;
-            dc->drawLine (CPoint (x, r.top), CPoint (x, r.bottom));
-        }
+        // Hairline divider at bottom edge.
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawLine (CPoint (r.left, r.bottom - 1),
+                      CPoint (r.right, r.bottom - 1));
 
         setDirty (false);
     }
-
-    void onMouseWheelEvent (MouseWheelEvent& event) override
-    {
-        const CRect r = getViewSize();
-        if (r.getWidth() <= 0.0)
-            return;
-
-        const auto& st = owner_->uiStateView();
-        const double span = st.ui.visibleEndNorm - st.ui.visibleStartNorm;
-        const double anchorNorm = st.ui.visibleStartNorm
-                                + ((event.mousePosition.x - r.left) / r.getWidth()) * span;
-
-        const double factor = event.deltaY > 0.0 ? 1.25 : 0.8;
-        const auto w = ui::zoomedWindow (st.ui, anchorNorm, factor);
-        owner_->setVisibleWindow (w.start, w.end);
-
-        invalid();
-        event.consumed = true;
-    }
-
-    void onMouseDownEvent (MouseDownEvent& event) override
-    {
-        if (event.buttonState.isLeft())
-        {
-            dragging_ = true;
-            lastDragX_ = event.mousePosition.x;
-            event.consumed = true;
-        }
-    }
-
-    void onMouseMoveEvent (MouseMoveEvent& event) override
-    {
-        if (! dragging_)
-            return;
-
-        const CRect r = getViewSize();
-        if (r.getWidth() <= 0.0)
-            return;
-
-        const auto& st = owner_->uiStateView();
-        const double span = st.ui.visibleEndNorm - st.ui.visibleStartNorm;
-        const double deltaNorm =
-            -(event.mousePosition.x - lastDragX_) / r.getWidth() * span;
-        lastDragX_ = event.mousePosition.x;
-
-        const auto w = ui::pannedWindow (st.ui, deltaNorm);
-        owner_->setVisibleWindow (w.start, w.end);
-
-        invalid();
-        event.consumed = true;
-    }
-
-    void onMouseUpEvent (MouseUpEvent& event) override
-    {
-        if (dragging_)
-        {
-            dragging_ = false;
-            event.consumed = true;
-        }
-    }
-
-private:
-    NeditProcessor* owner_ = nullptr;
-    bool dragging_ = false;
-    double lastDragX_ = 0.0;
 };
+
+} // namespace
 
 //------------------------------------------------------------------------
 NeditEditor::NeditEditor (NeditProcessor* owner)
@@ -196,18 +115,66 @@ NeditEditor::NeditEditor (NeditProcessor* owner)
 }
 
 //------------------------------------------------------------------------
+// Apply the current audition state + sample presence to the button's
+// visual appearance. Called after every toggle and on idle-timer sync.
+void NeditEditor::styleAuditionButton()
+{
+    if (! auditionBtn_)
+        return;
+
+    const bool hasSample = owner_->hasSample();
+    const bool auditionOn = owner_->uiStateView().ui.auditionEnabled;
+
+    // Button is clickable only when a sample is loaded.
+    auditionBtn_->setMouseEnabled (hasSample);
+
+    if (auditionOn)
+    {
+        // Salmon filled — audition is ON.
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        auditionBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        auditionBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        auditionBtn_->setTextColor (kAccentOn);
+        auditionBtn_->setTextColorHighlighted (kAccentOn);
+        auditionBtn_->setFrameColor (kAccent);
+        auditionBtn_->setFrameColorHighlighted (kAccentPressed);
+        auditionBtn_->setRoundRadius (4);
+        auditionBtn_->setTitle ("SILENCE");
+    }
+    else
+    {
+        // Graphite outlined — audition is OFF.
+        GradientColorStopMap stops;
+        stops.emplace (0., kSurface2);
+        stops.emplace (1., kSurface2);
+        auditionBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kSurface3);
+        hlStops.emplace (1., kSurface3);
+        auditionBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        auditionBtn_->setTextColor (hasSample ? kTextSecondary : kTextDisabled);
+        auditionBtn_->setTextColorHighlighted (kTextPrimary);
+        auditionBtn_->setFrameColor (kOutline);
+        auditionBtn_->setFrameColorHighlighted (hasSample ? kOutline : kTextDisabled);
+        auditionBtn_->setRoundRadius (2);
+        auditionBtn_->setTitle ("AUDITION");
+    }
+}
+
+//------------------------------------------------------------------------
 bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformType)
 {
     CRect frameSize (0, 0, kEditorWidth, kEditorHeight);
 
     frame = new CFrame (frameSize, this);
-    frame->setBackgroundColor (kColorBackground);
+    frame->setBackgroundColor (kWindowBase);
 
 #if SMTG_OS_LINUX
-    // On Linux VSTGUI opens its xcb connection only when a frame config
-    // carrying the host run loop is supplied -- without it X11::Frame
-    // crashes in xcb_generate_id() creating the child window. Wrap the
-    // host's IPlugFrame (which provides Linux::IRunLoop) and pass it in.
     VSTGUI::X11::FrameConfig x11Config;
     if (plugFrame)
         Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
@@ -224,46 +191,72 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
         return false;
     }
 
-    // --- top bar -------------------------------------------------------------
-    auto* title = new CTextLabel (CRect (12, 8, 130, kTopBarHeight - 8), "NEDIT");
-    title->setBackColor (kTransparentCColor);
-    title->setFrameColor (kTransparentCColor);
-    title->setFontColor (kColorText);
-    title->setHoriAlign (kLeftText);
-    frame->addView (title);
+    // ── App bar (h48) ──────────────────────────────────────────────────
+    auto* appBar = new AppBarView (CRect (0, 0, kEditorWidth, kAppBarHeight));
+    frame->addView (appBar);
 
-    auto* modeMenu = new COptionMenu (CRect (140, 8, 320, kTopBarHeight - 8), this,
-                                      static_cast<std::int32_t> (kParamTriggerMode));
-    for (const char* name : kTriggerModeNames)
-        modeMenu->addEntry (name);
-    const auto modeNorm = getController()->getParamNormalized (kParamTriggerMode);
-    modeMenu->setCurrent (static_cast<std::int32_t> (
-        std::lround (modeNorm * 4.0)));
-    frame->addView (modeMenu);
+    // Sample name pill — right-aligned group.
+    // Position: right edge of bar minus trailing controls.
+    constexpr int kLoadBtnW   = 110;
+    constexpr int kAuditionW  =  64;
+    constexpr int kSampleW    = 170;
+    constexpr int kBarRight   = kEditorWidth - 12;     // right margin
 
-    auto* loadButton = new CTextButton (
-        CRect (kEditorWidth - 170, 8, kEditorWidth - 12, kTopBarHeight - 8), this,
-        kTagLoadSample, "Load Sample...");
-    frame->addView (loadButton);
+    const int loadX  = kBarRight - kLoadBtnW;
+    const int audX   = loadX - 8 - kAuditionW;
+    const int sampX  = audX - 8 - kSampleW;
 
-    // --- waveform ------------------------------------------------------------
-    waveform_ = new WaveformView (
-        CRect (12, kTopBarHeight + 8, kEditorWidth - 12, kEditorHeight - 12), owner_);
-    frame->addView (waveform_);
+    // Sample name chip (graphite-700 fill, outline stroke, secondary text).
+    auto* sampleChip = new CTextLabel (
+        CRect (sampX, 12, sampX + kSampleW, 12 + 24), "No sample");
+    sampleChip->setBackColor (kSurface2);
+    sampleChip->setFrameColor (kOutline);
+    sampleChip->setFontColor (kTextSecondary);
+    sampleChip->setHoriAlign (kLeftText);
+    frame->addView (sampleChip);
+    sampleNameLabel_ = sampleChip;
 
-    lastSampleIdentity_ = owner_->acquireLoadedSample().get();
+    // Audition button (toggle: AUDITION off / SILENCE on).
+    auto* auditionBtn = new CTextButton (
+        CRect (audX, 12, audX + kAuditionW, 12 + 24), this,
+        kTagAudition, "AUDITION");
+    frame->addView (auditionBtn);
+    auditionBtn_ = auditionBtn;
+    styleAuditionButton();
 
-    setIdleRate (60);   // ms; drives notify() below
+    // Load Sample button (salmon-400 fill, on-salmon text, rx=4).
+    auto* loadBtn = new CTextButton (
+        CRect (loadX, 12, loadX + kLoadBtnW, 12 + 24), this,
+        kTagLoadSample, "LOAD SAMPLE");
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        loadBtn->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        loadBtn->setGradientHighlighted (CGradient::create (hlStops));
+        loadBtn->setTextColor (kAccentOn);
+        loadBtn->setTextColorHighlighted (kAccentOn);
+        loadBtn->setRoundRadius (4);
+    }
+    frame->addView (loadBtn);
+    loadBtn_ = loadBtn;
+
+    setIdleRate (60);
     return true;
 }
 
 //------------------------------------------------------------------------
 void PLUGIN_API NeditEditor::close()
 {
+    sampleNameLabel_ = nullptr;
+    auditionBtn_ = nullptr;
+    loadBtn_ = nullptr;
     if (frame != nullptr)
     {
-        waveform_ = nullptr;   // owned (and destroyed) by the frame
-        frame->close();        // also forgets the frame
+        frame->close();
         frame = nullptr;
     }
 }
@@ -276,9 +269,19 @@ void NeditEditor::valueChanged (CControl* control)
 
     if (control->getTag() == kTagLoadSample)
     {
-        // Fire on release only (buttons emit 1 then 0).
         if (control->getValue() > 0.5f)
             runFileSelector();
+        return;
+    }
+
+    if (control->getTag() == kTagAudition)
+    {
+        if (control->getValue() > 0.5f && owner_->hasSample())
+        {
+            const bool wasOn = owner_->uiStateView().ui.auditionEnabled;
+            owner_->setAuditionEnabled (! wasOn);
+            styleAuditionButton();
+        }
         return;
     }
 
@@ -330,12 +333,8 @@ void NeditEditor::endEdit (VSTGUI_INT32 index)
 
 namespace {
 
-// Runs a native file chooser via zenity/kdialog on a BACKGROUND thread and
-// returns the chosen path (empty if cancelled / unavailable). Never touches
-// VSTGUI or the editor, so it's safe off the UI thread.
 [[nodiscard]] std::string runNativeFileDialog()
 {
-    // Headless/testing override: skip the GUI dialog entirely.
     if (const char* forced = std::getenv ("NEDIT_TEST_FILE"))
         return forced;
 
@@ -374,14 +373,11 @@ void NeditEditor::runFileSelector()
     if (! fileDialog_)
         fileDialog_ = std::make_shared<FileDialogState>();
 
-    // One dialog at a time.
     if (fileDialog_->running.exchange (true))
         return;
 
     fileDialog_->ready.store (false);
 
-    // Detached + shared state: the dialog thread never blocks the UI thread
-    // and can safely outlive the editor.
     auto state = fileDialog_;
     std::thread ([state]() {
         std::string path = runNativeFileDialog();
@@ -399,15 +395,12 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
 {
     if (message == CVSTGUITimer::kMsgTimer)
     {
-        // Test hook: exercise the async load path once, headless.
         if (std::getenv ("NEDIT_TEST_AUTOLOAD") && ! testAutoloadFired_)
         {
             testAutoloadFired_ = true;
             runFileSelector();
         }
 
-        // Apply a file the background dialog thread selected (marshalled
-        // onto the UI thread here, where touching state is safe).
         if (fileDialog_ && fileDialog_->ready.exchange (false))
         {
             std::string path;
@@ -419,14 +412,44 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
                 owner_->requestSampleLoad (path);
         }
 
-        // Redraw the waveform when the sample slot changes underneath us
-        // (loads come from the dialog above or from state restore).
-        const void* identity = owner_->acquireLoadedSample().get();
-        if (identity != lastSampleIdentity_)
+        // Sync buttons on sample presence or audition state changes.
+        const bool samplePresent = owner_->hasSample();
+        const bool auditionOn    = owner_->uiStateView().ui.auditionEnabled;
+        const bool sampleChanged = samplePresent != lastSampleSync_;
+        const bool auditionChanged = auditionOn != lastAuditionSync_;
+        lastSampleSync_ = samplePresent;
+        lastAuditionSync_ = auditionOn;
+
+        if (auditionChanged || sampleChanged)
+            styleAuditionButton();
+
+        if (sampleChanged && loadBtn_)
         {
-            lastSampleIdentity_ = identity;
-            if (waveform_ != nullptr)
-                waveform_->invalid();
+            const CColor fill = samplePresent ? kAccentPressed : kAccent;
+            GradientColorStopMap stops;
+            stops.emplace (0., fill);
+            stops.emplace (1., fill);
+            loadBtn_->setGradient (CGradient::create (stops));
+        }
+
+        // Sync sample name chip.
+        const auto& path = owner_->uiStateView().sample.samplePath;
+        if (path != lastSamplePath_)
+        {
+            lastSamplePath_ = path;
+            if (sampleNameLabel_)
+            {
+                if (path.empty())
+                    sampleNameLabel_->setText ("No sample");
+                else
+                {
+                    // Extract filename from path.
+                    const auto pos = path.find_last_of ("/\\");
+                    const auto name = (pos != std::string::npos) ? path.substr (pos + 1)
+                                                                 : path;
+                    sampleNameLabel_->setText (name.c_str());
+                }
+            }
         }
     }
     return VSTGUIEditor::notify (sender, message);

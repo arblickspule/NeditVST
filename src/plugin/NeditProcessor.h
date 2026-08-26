@@ -54,6 +54,16 @@ public:
     // Waveform zoom/pan writes (UiState owns view state; pitfall #6).
     void setVisibleWindow (double startNorm, double endNorm);
 
+    // Audition toggle — gates whether the scheduler produces audio.
+    void setAuditionEnabled (bool enabled);
+
+    // Sample presence query (editor uses this to disable the audition
+    // button when nothing is loaded).
+    [[nodiscard]] bool hasSample() const noexcept
+    {
+        return sampleManager_.acquire() != nullptr;
+    }
+
     //--- IEditController: editor creation -----------------------------------
     Steinberg::IPlugView* PLUGIN_API createView (Steinberg::FIDString name) override;
 
@@ -86,6 +96,8 @@ public:
 private:
     void registerParameters();
     void syncParameterObjectsFromState();
+    void renderAudition (float* const* outAdd, int numOutChannels,
+                         int numSamples, double hostSampleRate);
 
     // Controller-side authoritative live state.
     state::PluginState uiState_;
@@ -100,6 +112,7 @@ private:
     std::array<const float*, kMaxSourceChannels> sourceChannelPointers_ {};
     state::PluginState automationScratch_;
     double lastBlockEndPpq_ = 0.0;
+    double auditionPosition_ = 0.0;  // read cursor for raw audition loop
 
     NeditProcessor (const NeditProcessor&) = delete;
     NeditProcessor& operator= (const NeditProcessor&) = delete;
