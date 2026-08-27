@@ -940,3 +940,49 @@ TEST_CASE ("control: trigger mode ignores note-offs entirely", "[scheduler][ctl]
     fx.play (2000);
     CHECK (fx.scheduler.renderer().hasPick());   // untouched by the note-off
 }
+
+TEST_CASE ("scheduler: sliceWeightsOverride replaces state weights in the picker")
+{
+    const std::vector<Slice> list {
+        {      0, 22050 },
+        {  22050, 44100 },
+        {  44100, 88200 },
+    };
+
+    // Baseline: the default path (fixture fills state weights with 1.0)
+    // starts picks across a bar.
+    Fixture base (list, 1);
+    base.play (88200);
+    REQUIRE (base.picks() > 0);
+
+    // Empty override = no pickable slices even though the STATE weights are
+    // all 1.0 -> proves the override is really consulted. The shell uses
+    // this to hand the scheduler a list clipped to the SOFT trim, so a
+    // clip-of-everything goes silent instead of playing outside the trim.
+    Fixture fx (list, 1);
+    std::vector<float> empty;
+    const float* channels[] = { fx.source.data() };
+    fx.ctx.source = channels;
+    fx.ctx.sourceChannels = 1;
+    fx.ctx.sourceFrames = static_cast<std::int64_t> (fx.source.size());
+    std::vector<float> sink (static_cast<std::size_t> (88200), 0.0f);
+    float* outs[] = { sink.data() };
+    fx.scheduler.process (fx.state, fx.slices, fx.ctx, { true, 120.0, 0.0 },
+                          outs, 1, 88200, &empty);
+    CHECK (fx.picks() == 0);
+
+    // Override matching the state weights reproduces the default pick count
+    // (same deterministic seed) -- the shell's clipped-slices + remapped-
+    // weights pair routes exactly like the untouched list.
+    Fixture match (list, 1);
+    const std::vector<float> sameWeights (list.size(), 1.0f);
+    const float* mChannels[] = { match.source.data() };
+    match.ctx.source = mChannels;
+    match.ctx.sourceChannels = 1;
+    match.ctx.sourceFrames = static_cast<std::int64_t> (match.source.size());
+    std::vector<float> mSink (static_cast<std::size_t> (88200), 0.0f);
+    float* mOuts[] = { mSink.data() };
+    match.scheduler.process (match.state, match.slices, match.ctx,
+                             { true, 120.0, 0.0 }, mOuts, 1, 88200, &sameWeights);
+    CHECK (match.picks() == base.picks());
+}

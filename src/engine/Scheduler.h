@@ -92,13 +92,21 @@ public:
     // Deterministic draw sequence for tests (and reproducible sessions).
     void setSeed (std::uint32_t seed) noexcept;
 
-    // Process one audio block.
+// Process one audio block.
     //
     // ctx must have the raw source fields pre-filled by the caller
     // (source pointers/channels/frames, host + source sample rates);
     // every DERIVED field (playback rate, granular settings, fades) is
     // recomputed here from state + transport so callers cannot desync
     // from the state snapshot.
+    //
+    // By default the picker reads per-slice weights from
+    // state.generate.sliceWeights, assumed parallel to `slices`. When the
+    // caller TRANSLATES `slices` (e.g. the shell clips the shared list to
+    // the current SOFT trim so playback never reads audio outside it), it
+    // must pass a matching `sliceWeightsOverride` so indices stay aligned
+    // (nullptr = no override, default path). The override is POD scratch
+    // the caller holds, read but never stored here.
     //
     // outAdd receives the rendered audio (rendered additively).
     void process (const state::PluginState& state,
@@ -107,7 +115,8 @@ public:
                   const TransportFrame& transport,
                   float* const* outAdd,
                   int numOutChannels,
-                  int numSamples);
+                  int numSamples,
+                  const std::vector<float>* sliceWeightsOverride = nullptr);
 
     // Diagnostics / tests: how many picks have been started since
     // construction (never reset).
@@ -171,6 +180,7 @@ private:
         const state::PluginState& state;
         const state::GenerateState& generate;
         const std::vector<Slice>& slices;
+        const std::vector<float>* sliceWeights = nullptr;  // override; null = from state
         BlockContext& ctx;
         TransportFrame transport;
         double ppqPerSample = 0.0;

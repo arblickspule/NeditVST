@@ -77,13 +77,14 @@ int VoiceScheduler::pickWeightedIndex (const float* weights, std::size_t count)
 
 int VoiceScheduler::pickWeightedSlice (const Run& r)
 {
-    const auto count = std::min<std::size_t> (r.slices.size(),
-                                              r.generate.sliceWeights.size());
+    const auto& weights = (r.sliceWeights != nullptr) ? *r.sliceWeights
+                                                      : r.generate.sliceWeights;
+    const auto count = std::min<std::size_t> (r.slices.size(), weights.size());
 
     if (count == 0)
         return -1;
 
-    return pickWeightedIndex (r.generate.sliceWeights.data(), count);
+    return pickWeightedIndex (weights.data(), count);
 }
 
 state::PlaybackStyle VoiceScheduler::pickWeightedStyle (const Run& r)
@@ -196,7 +197,8 @@ void VoiceScheduler::process (const state::PluginState& state,
                               const TransportFrame& transport,
                               float* const* outAdd,
                               int numOutChannels,
-                              int numSamples)
+                              int numSamples,
+                              const std::vector<float>* sliceWeightsOverride)
 {
     if (numSamples <= 0 || outAdd == nullptr || numOutChannels <= 0)
         return;
@@ -232,6 +234,7 @@ void VoiceScheduler::process (const state::PluginState& state,
     Run r { state,
             state.generate,
             slices,
+            sliceWeightsOverride,
             ctx,
             transport,
             (transport.bpm / 60.0) / hostSampleRate,

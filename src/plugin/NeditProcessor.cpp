@@ -37,7 +37,36 @@ constexpr auto kFalse = Steinberg::kResultFalse;
 // in steady state instead of allocating.
 constexpr std::size_t kReservedSamplePoints = 1024;
 
+// Fade slider range (ms) -- matches the original's Fade In/Out sliders.
+constexpr float kMaxFadeMs = 100.0f;
+
 } // namespace
+
+//------------------------------------------------------------------------
+void clipSlicesToTrim (const std::vector<engine::Slice>& slices,
+                       std::int64_t trimStart, std::int64_t trimEnd,
+                       const std::vector<float>& sliceWeights,
+                       std::vector<engine::Slice>& outSlices,
+                       std::vector<float>& outWeights)
+{
+    outSlices.clear();
+    outWeights.clear();
+
+    for (std::size_t i = 0; i < slices.size(); ++i)
+    {
+        const auto& sl = slices[i];
+        if (sl.endFrame <= trimStart || sl.startFrame >= trimEnd)
+            continue;   // wholly outside the trim (soft-hidden by the view)
+
+        const std::int64_t clipStart = std::max (sl.startFrame, trimStart);
+        const std::int64_t clipEnd = std::min (sl.endFrame, trimEnd);
+        if (clipEnd <= clipStart)
+            continue;   // degenerate overlap -- never selectable
+
+        outSlices.push_back ({ clipStart, clipEnd });
+        outWeights.push_back ((i < sliceWeights.size()) ? sliceWeights[i] : 1.0f);
+    }
+}
 
 //------------------------------------------------------------------------
 NeditProcessor::NeditProcessor()
@@ -45,6 +74,8 @@ NeditProcessor::NeditProcessor()
 {
     automationScratch_.sample.manualPoints.reserve (kReservedSamplePoints);
     automationScratch_.sample.excludedPoints.reserve (kReservedSamplePoints);
+    trimSlices_.reserve (128);
+    trimWeights_.reserve (128);
 }
 
 //------------------------------------------------------------------------
@@ -388,6 +419,49 @@ bool NeditProcessor::excludeNearestAutoPoint (std::int64_t frame)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setSensitivity (float value)
+{
+    if (! uiState_.sample.hasSample())
+        return;
+    uiState_.sample.sensitivity = value < 0.0f ? 0.0f : (value > 1.0f ? 1.0f : value);
+    rebuildSlicesPreservingWeights();
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setQuantizeTransients (bool on)
+{
+    if (! uiState_.sample.hasSample())
+        return;
+    uiState_.sample.quantizeTransients = on;
+    rebuildSlicesPreservingWeights();
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setQuantizeGrid (int gridIndex)
+{
+    if (! uiState_.sample.hasSample())
+        return;
+    if (! state::isValidNoteValueIndex (gridIndex))
+        return;
+    uiState_.sample.quantizeGridIndex = gridIndex;
+    rebuildSlicesPreservingWeights();
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setFadeInMs (float ms)
+{
+    uiState_.render.fadeInMs = ms < 0.0f ? 0.0f : (ms > kMaxFadeMs ? kMaxFadeMs : ms);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setFadeOutMs (float ms)
+{
+    uiState_.render.fadeOutMs = ms < 0.0f ? 0.0f : (ms > kMaxFadeMs ? kMaxFadeMs : ms);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 void NeditProcessor::rebuildSlicesPreservingWeights()
 {
     // Snapshot the OLD slices + their painted weights (kept parallel).
@@ -524,11 +598,24 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
         // Stopped: freeze at the last position (fixture semantics).
     }
 
-    // --- sample slot --------------------------------------------------------
+// --- sample slot --------------------------------------------------------
     const auto loaded = sampleManager_.acquire();
-    static const std::vector<engine::Slice> kNoSlices;
-    const auto& slices = (loaded != nullptr && ! loaded->slices.empty()) ? loaded->slices
-                                                                         : kNoSlices;
+    static const std::vector<engine::Slice> kEmptySlices;
+    const auto& rawSlices = (loaded != nullptr) ? loaded->slices
+                                                : kEmptySlices;
+
+    // The view keeps a SOFT trim -- trim edits do NOT rebuild the slice list
+    // (slices outside the trim are merely hidden; widening reveals them with
+    // weights intact; see WaveformView's draw comment). The engine must apply
+    // the same rule to what it PLAYS, otherwise picks draw audio/slices from
+    // outside the trim. Clip the shared list to [trimStart, trimEnd) every
+    // block and remap generate.sliceWeights in lockstep into pre-reserved
+    // scratch (no audio-thread allocation in steady state); the scheduler
+    // picks from the override weights so indices stay parallel.
+    clipSlicesToTrim (rawSlices, st->sample.trimStartFrame, st->sample.trimEndFrame,
+                      st->generate.sliceWeights, trimSlices_, trimWeights_);
+    const auto& slices = trimSlices_;
+    const std::vector<float>* sliceWeights = &trimWeights_;
 
     // Slice audition (RMB hold): raw loop of a single slice region,
     // bypasses everything. No host-transport auto-stop — the user is
@@ -640,7 +727,8 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
     scheduler_.process (*st, slices, ctx_, transport,
                         outBus.channelBuffers32,
                         outBus.numChannels < 1 ? 1 : outBus.numChannels,
-                        data.numSamples);
+                        data.numSamples,
+                        sliceWeights);
 
     return kOk;
 }

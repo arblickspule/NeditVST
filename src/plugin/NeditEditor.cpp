@@ -6,6 +6,8 @@
 #include "ParameterSurface.h"
 #include "WaveformView.h"
 
+#include "engine/Tempo.h"
+
 #include "vstgui/lib/ccolor.h"
 #include "vstgui/lib/cdrawcontext.h"
 #include "vstgui/lib/cfileselector.h"
@@ -13,6 +15,7 @@
 #include "vstgui/lib/cframe.h"
 #include "vstgui/lib/cgradient.h"
 #include "vstgui/lib/controls/cbuttons.h"
+#include "vstgui/lib/controls/coptionmenu.h"
 #include "vstgui/lib/controls/ctextlabel.h"
 #include "vstgui/lib/cvstguitimer.h"
 #include "vstgui/lib/events.h"
@@ -49,6 +52,22 @@ constexpr int kEditorHeight = 800;
 constexpr int kAppBarHeight = 48;
 constexpr int kToolBarHeight = 48;   // second strip: bar length / BPM / etc.
 
+// Toolbar control geometry (local to each control's 48px strip): caption
+// zone on top, editable box below.
+constexpr double kBoxTop = 14.0;     // caption baseline sits above this
+constexpr double kBoxH = 24.0;
+constexpr double kStepperArmW = 22.0;
+
+// Loop-length bar range (mirror of ParameterSurface's kMaxBars) and the
+// manual-BPM surface range. 1..16 bars, 30..300 BPM.
+constexpr int kBarsMax = 16;
+constexpr double kBpmMin = 30.0;
+constexpr double kBpmMax = 300.0;
+// Scrub feel: one whole field-width of horizontal drag = 80 BPM. Wide
+// enough to sweep the range in a few swipes, fine enough that a 112px
+// field gives ~0.7 BPM/px (Shift scales to 0.1x for 0.07 BPM/px).
+constexpr double kScrubBpmPerFieldWidth = 80.0;
+
 // ── Colour tokens (design-language.md "Graphite & Salmon") ─────────────
 const CColor kWindowBase    {  20,  22,  26, 255 }; // graphite-900
 const CColor kSurface1      {  27,  30,  35, 255 }; // graphite-800  app bar, cards
@@ -65,7 +84,12 @@ const CColor kAccentHover   { 224, 104,  90, 255 }; // salmon-500  hover
 const CColor kAccentPressed { 194,  85,  72, 255 }; // salmon-600  pressed
 
 // ── Control tags ───────────────────────────────────────────────────────
-constexpr auto kTagAudition = static_cast<VSTGUI_INT32> (1001);
+constexpr auto kTagAudition   = static_cast<VSTGUI_INT32> (1001);
+constexpr auto kTagSensitivity = static_cast<VSTGUI_INT32> (1002);
+constexpr auto kTagQuantize   = static_cast<VSTGUI_INT32> (1003);
+constexpr auto kTagQuantizeGrid = static_cast<VSTGUI_INT32> (1004);
+constexpr auto kTagFadeIn   = static_cast<VSTGUI_INT32> (1005);
+constexpr auto kTagFadeOut  = static_cast<VSTGUI_INT32> (1006);
 
 Steinberg::ViewRect kEditorRect (0, 0, kEditorWidth, kEditorHeight);
 
@@ -139,6 +163,553 @@ public:
 
 } // namespace
 
+// ── Toolbar controls --------------------------------------------------------
+namespace ui {
+
+// ── Bars stepper: [−] N [+] over the loopLengthBars param (tag 103). ──
+// A single CControl drawing its own caption + shell + arms; click on the
+// left/right arm steps the bar count and publishes through valueChanged.
+class BarsStepper : public CControl
+{
+public:
+    BarsStepper (const CRect& size, IControlListener* l, int32_t t)
+        : CControl (size, l, t)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new BarsStepper (getViewSize(), getListener(), getTag());
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
+        const CRect minusBox (box.left, box.top, box.left + kStepperArmW, box.bottom);
+        const CRect plusBox (box.right - kStepperArmW, box.top, box.right, box.bottom);
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("BARS", CRect (r.left, r.top + 2, r.right, r.top + 12), kLeftText);
+
+        dc->setFillColor (kSurface2);
+        dc->drawRect (box, kDrawFilled);
+
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawLine (CPoint (minusBox.right, minusBox.top),
+                      CPoint (minusBox.right, minusBox.bottom));
+        dc->drawLine (CPoint (plusBox.left, plusBox.top),
+                      CPoint (plusBox.left, plusBox.bottom));
+
+        if (hoverMinus_)
+        {
+            dc->setFillColor (kSurface3);
+            dc->drawRect (minusBox, kDrawFilled);
+        }
+        if (hoverPlus_)
+        {
+            dc->setFillColor (kSurface3);
+            dc->drawRect (plusBox, kDrawFilled);
+        }
+
+        dc->setFont (kNormalFontBig);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("-", minusBox, kCenterText);
+        dc->drawString ("+", plusBox, kCenterText);
+
+        dc->setFontColor (kTextPrimary);
+        const int bars = currentBars();
+        char buf[16];
+        std::snprintf (buf, sizeof (buf), "%d", bars);
+        dc->drawString (buf, CRect (minusBox.right, box.top, plusBox.left, box.bottom),
+                        kCenterText);
+
+        // Shell stroke on top of everything.
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (box, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
+        if (! box.pointInside (local))
+            return kMouseEventNotHandled;
+
+        const int bars = currentBars();
+        int next = bars;
+        if (local.x <= kStepperArmW)
+            next = std::max (1, bars - 1);
+        else if (local.x >= getViewSize().getWidth() - kStepperArmW)
+            next = std::min (kBarsMax, bars + 1);
+        else
+            return kMouseEventNotHandled;
+
+        setValueNormalized (static_cast<float> (next - 1)
+                            / static_cast<float> (kBarsMax - 1));
+        hoverFollow (where);
+        invalid();
+        valueChanged();
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        hoverFollow (where);
+        return kMouseEventNotHandled;
+    }
+
+private:
+    int currentBars() const noexcept
+    {
+        const float normalized = getValueNormalized();
+        const int bars = 1 + static_cast<int> (
+            std::lround (normalized * static_cast<float> (kBarsMax - 1)));
+        return bars < 1 ? 1 : (bars > kBarsMax ? kBarsMax : bars);
+    }
+
+    void hoverFollow (const CPoint& where) noexcept
+    {
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const bool inBox = local.y >= kBoxTop && local.y < kBoxTop + kBoxH;
+        const bool hMinus = inBox && local.x <= kStepperArmW;
+        const bool hPlus = inBox && local.x >= getViewSize().getWidth() - kStepperArmW;
+        if (hMinus != hoverMinus_ || hPlus != hoverPlus_)
+        {
+            hoverMinus_ = hMinus;
+            hoverPlus_ = hPlus;
+            invalid();
+        }
+    }
+
+    bool hoverMinus_ = false;
+    bool hoverPlus_ = false;
+};
+
+// ── BPM field: drag-to-scrub readout over the manualTempoBpm param ────
+// (tag 102). With the override off it is a read-only greyed label showing
+// the tempo DERIVED from loopLengthBars + the source span (calculatedBpm);
+// when override is on it becomes active and drag across the field scrubs
+// the value (Shift = 0.1x resolution), wheel nudges by 1 BPM.
+class BpmScrubField : public CControl
+{
+public:
+    BpmScrubField (const CRect& size, IControlListener* l, int32_t t)
+        : CControl (size, l, t)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new BpmScrubField (getViewSize(), getListener(), getTag());
+    }
+
+    void setMode (bool active, double calculatedBpm)
+    {
+        active_ = active;
+        calcBpm_ = calculatedBpm;
+        setMouseEnabled (active);
+        if (! active)
+            dragging_ = false;
+        invalid();
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("BPM", CRect (r.left, r.top + 2, r.right, r.top + 12), kLeftText);
+
+        dc->setFillColor (kSurface2);
+        dc->drawRect (box, kDrawFilled);
+
+        const double displayed = active_ ? bpmFromValue (getValueNormalized()) : calcBpm_;
+        char buf[32];
+        if (displayed <= 0.0)
+            std::snprintf (buf, sizeof (buf), "--");
+        else
+            std::snprintf (buf, sizeof (buf), "%.1f", displayed);
+
+        dc->setFont (kNormalFontBig);
+        dc->setFontColor (active_ ? kTextPrimary : kTextDisabled);
+        dc->drawString (buf, box, kCenterText);
+
+        dc->setFrameColor (active_ ? kAccent : kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (box, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! active_ || ! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
+        if (! box.pointInside (local))
+            return kMouseEventNotHandled;
+
+        dragging_ = true;
+        startX_ = local.x;
+        startBpm_ = bpmFromValue (getValueNormalized());
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const double width = getViewSize().getWidth();
+        double delta = (local.x - startX_) / width * kScrubBpmPerFieldWidth;
+        if (buttons.isShiftSet())
+            delta *= 0.1;
+
+        double bpm = startBpm_ + delta;
+        if (bpm < kBpmMin)
+            bpm = kBpmMin;
+        if (bpm > kBpmMax)
+            bpm = kBpmMax;
+        applyBpm (std::round (bpm * 10.0) / 10.0);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (! active_ || event.deltaY == 0.0)
+            return;
+
+        const double step = event.modifiers.has (ModifierKey::Shift) ? 0.1 : 1.0;
+        double bpm = bpmFromValue (getValueNormalized()) + event.deltaY * step;
+        if (bpm < kBpmMin)
+            bpm = kBpmMin;
+        if (bpm > kBpmMax)
+            bpm = kBpmMax;
+        applyBpm (std::round (bpm * 10.0) / 10.0);
+        event.consumed = true;
+    }
+
+private:
+    double bpmFromValue (float normalized) const noexcept
+    {
+        return kBpmMin + static_cast<double> (normalized) * (kBpmMax - kBpmMin);
+    }
+
+    void applyBpm (double bpm)
+    {
+        const float normalized = static_cast<float> ((bpm - kBpmMin) / (kBpmMax - kBpmMin));
+        setValueNormalized (normalized);
+        invalid();
+        valueChanged();
+    }
+
+    bool active_ = false;
+    bool dragging_ = false;
+    double calcBpm_ = 0.0;
+    double startBpm_ = 0.0;
+    VSTGUI::CCoord startX_ = 0.0;
+};
+
+// ── Sensitivity slider: transient-detection threshold, 0..1. ─────────────
+// (editor-local tag 1002, NOT a host param -- dragging re-runs detection at
+// the new threshold and rebuilds the slice list, so it is a structural edit
+// like a manual marker, not automatable automation). Dragging anywhere on
+// the box sets the value; wheel nudges by 0.05. Only active with a sample.
+class SensitivitySlider : public CControl
+{
+public:
+    SensitivitySlider (const CRect& size, IControlListener* l, int32_t t)
+        : CControl (size, l, t)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new SensitivitySlider (getViewSize(), getListener(), getTag());
+    }
+
+    void setActive (bool active)
+    {
+        active_ = active;
+        setMouseEnabled (active);
+        if (! active)
+            dragging_ = false;
+        invalid();
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("SENS", CRect (r.left, r.top + 2, r.right, r.top + 12), kLeftText);
+
+        const float v = getValueNormalized();
+
+        char buf[24];
+        std::snprintf (buf, sizeof (buf), "%d%%",
+                       static_cast<int> (std::lround (v * 100.0f)));
+        dc->setFontColor (active_ ? kAccentBright : kTextDisabled);
+        dc->drawString (buf, CRect (r.right - 52, r.top + 2, r.right, r.top + 12), kRightText);
+
+        dc->setFillColor (kSurface2);
+        dc->drawRect (box, kDrawFilled);
+
+        if (v > 0.0f)
+        {
+            const double inset = 2.0;
+            const double fillW = (box.right - box.left - 2.0 * inset) * v;
+            const CRect fill (box.left + inset, box.top + inset,
+                              box.left + inset + fillW, box.bottom - inset);
+            dc->setFillColor (kAccent);
+            dc->drawRect (fill, kDrawFilled);
+        }
+
+        dc->setFrameColor (active_ ? kAccent : kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (box, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! active_ || ! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
+        if (! box.pointInside (local))
+            return kMouseEventNotHandled;
+
+        dragging_ = true;
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (! active_ || event.deltaY == 0.0)
+            return;
+
+        applyValue (getValueNormalized()
+                    + static_cast<float> (event.deltaY * 0.05));
+        event.consumed = true;
+    }
+
+private:
+    void applyFromX (double localX)
+    {
+        const double width = getViewSize().getWidth();
+        applyValue (static_cast<float> (localX / width));
+    }
+
+    void applyValue (float v)
+    {
+        if (v < 0.0f)
+            v = 0.0f;
+        if (v > 1.0f)
+            v = 1.0f;
+        setValueNormalized (v);
+        invalid();
+        valueChanged();
+    }
+
+    bool active_ = false;
+    bool dragging_ = false;
+};
+
+// ── Fade slider: per-pick declick fade in ms, 0..100. ─────────────────────
+// (editor-local tags 1005/1006, NOT host params -- attack = render.fadeInMs,
+// release = render.fadeOutMs, a global play-feel setting like the original's
+// continuous Fade In/Out sliders). The caption row doubles as the ms readout:
+// label left, current value right. Track fill + frame mirror the SENS slider;
+// always active (valid without a sample). Wheel nudges by 5 ms.
+class FadeSlider : public CControl
+{
+public:
+    FadeSlider (const CRect& size, IControlListener* l, int32_t t, const char* label)
+        : CControl (size, l, t), label_ (label != nullptr ? label : "")
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new FadeSlider (getViewSize(), getListener(), getTag(), label_.c_str());
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmall);
+        const float v = getValueNormalized();
+        dc->setFontColor (kTextSecondary);
+        dc->drawString (label_.c_str(),
+                        CRect (r.left, r.top + 2, r.right - 52, r.top + 12), kLeftText);
+
+        char buf[24];
+        std::snprintf (buf, sizeof (buf), "%dms",
+                       static_cast<int> (std::lround (msFromValue (v))));
+        dc->setFontColor (kAccentBright);
+        dc->drawString (buf, CRect (r.right - 52, r.top + 2, r.right, r.top + 12), kRightText);
+
+        dc->setFillColor (kSurface2);
+        dc->drawRect (box, kDrawFilled);
+
+        if (v > 0.0f)
+        {
+            const double inset = 2.0;
+            const double fillW = (box.right - box.left - 2.0 * inset) * v;
+            const CRect fill (box.left + inset, box.top + inset,
+                              box.left + inset + fillW, box.bottom - inset);
+            dc->setFillColor (kAccent);
+            dc->drawRect (fill, kDrawFilled);
+        }
+
+        dc->setFrameColor (kAccent);
+        dc->setLineWidth (1);
+        dc->drawRect (box, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
+        if (! box.pointInside (local))
+            return kMouseEventNotHandled;
+
+        dragging_ = true;
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (event.deltaY == 0.0)
+            return;
+
+        applyValue (msFromValue (getValueNormalized()) + event.deltaY * 5.0);
+        event.consumed = true;
+    }
+
+private:
+    static constexpr double kMinMs = 0.0;
+    static constexpr double kMaxMs = 100.0;
+
+    double msFromValue (float normalized) const noexcept
+    {
+        return kMinMs + static_cast<double> (normalized) * (kMaxMs - kMinMs);
+    }
+
+    void applyFromX (double localX)
+    {
+        const double width = getViewSize().getWidth();
+        applyValue (msFromValue (static_cast<float> (localX / width)));
+    }
+
+    void applyValue (double ms)
+    {
+        if (ms < kMinMs)
+            ms = kMinMs;
+        if (ms > kMaxMs)
+            ms = kMaxMs;
+        setValueNormalized (static_cast<float> ((ms - kMinMs) / (kMaxMs - kMinMs)));
+        invalid();
+        valueChanged();
+    }
+
+    std::string label_;
+    bool dragging_ = false;
+};
+
+}; // namespace ui
+
 //------------------------------------------------------------------------
 NeditEditor::NeditEditor (NeditProcessor* owner)
     : VSTGUIEditor (owner, &kEditorRect), owner_ (owner)
@@ -194,6 +765,186 @@ void NeditEditor::styleAuditionButton()
         auditionBtn_->setFrameColorHighlighted (hasSample ? kOutline : kTextDisabled);
         auditionBtn_->setRoundRadius (2);
         auditionBtn_->setTitle ("AUDITION");
+    }
+}
+
+//------------------------------------------------------------------------
+// Apply the manual-BPM override state to the toolbar toggle's visual
+// appearance (salmon filled when ON, graphite outlined when OFF).
+void NeditEditor::styleOverrideButton()
+{
+    if (! overrideBtn_)
+        return;
+
+    const bool on = owner_->uiStateView().sample.manualBpmOverrideEnabled;
+
+    if (on)
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        overrideBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        overrideBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        overrideBtn_->setTextColor (kAccentOn);
+        overrideBtn_->setTextColorHighlighted (kAccentOn);
+        overrideBtn_->setFrameColor (kAccent);
+        overrideBtn_->setFrameColorHighlighted (kAccentPressed);
+    }
+    else
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kSurface2);
+        stops.emplace (1., kSurface2);
+        overrideBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kSurface3);
+        hlStops.emplace (1., kSurface3);
+        overrideBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        overrideBtn_->setTextColor (kTextSecondary);
+        overrideBtn_->setTextColorHighlighted (kTextPrimary);
+        overrideBtn_->setFrameColor (kOutline);
+        overrideBtn_->setFrameColorHighlighted (kOutline);
+    }
+    overrideBtn_->setRoundRadius (2);
+}
+
+//------------------------------------------------------------------------
+// Apply the auto-transient grid-quantize state to the toolbar toggle's
+// visual appearance (salmon filled when ON, graphite outlined when OFF,
+// disabled without a sample).
+void NeditEditor::styleQuantizeButton()
+{
+    if (! quantizeBtn_)
+        return;
+
+    const bool on = owner_->uiStateView().sample.quantizeTransients;
+    const bool hasSample = owner_->hasSample();
+    quantizeBtn_->setMouseEnabled (hasSample);
+
+    if (on)
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        quantizeBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        quantizeBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        quantizeBtn_->setTextColor (kAccentOn);
+        quantizeBtn_->setTextColorHighlighted (kAccentOn);
+        quantizeBtn_->setFrameColor (kAccent);
+        quantizeBtn_->setFrameColorHighlighted (kAccentPressed);
+    }
+    else
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kSurface2);
+        stops.emplace (1., kSurface2);
+        quantizeBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kSurface3);
+        hlStops.emplace (1., kSurface3);
+        quantizeBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        quantizeBtn_->setTextColor (hasSample ? kTextSecondary : kTextDisabled);
+        quantizeBtn_->setTextColorHighlighted (kTextPrimary);
+        quantizeBtn_->setFrameColor (kOutline);
+        quantizeBtn_->setFrameColorHighlighted (kOutline);
+    }
+    quantizeBtn_->setRoundRadius (2);
+}
+
+//------------------------------------------------------------------------
+// Push the live model state into the toolbar controls. Runs on the idle
+// timer and after local edits so host automation / state loads / box-tool
+// changes all surface. Only pushes on change; the controls repaint lazily.
+void NeditEditor::syncToolBarControls()
+{
+    if (! barsStepper_ || ! bpmField_ || ! quantizeMenu_ || ! fadeInSlider_
+        || ! fadeOutSlider_)
+        return;
+
+    const auto& sample = owner_->uiStateView().sample;
+
+    const int bars = sample.loopLengthBars < 1 ? 1 : sample.loopLengthBars;
+    if (bars != lastBarsSync_)
+    {
+        lastBarsSync_ = bars;
+        barsStepper_->setValueNormalized (static_cast<float> (bars - 1)
+                                          / static_cast<float> (kBarsMax - 1));
+        barsStepper_->invalid();
+    }
+
+    const float bpmNorm = static_cast<float> (
+        (sample.manualBpmOverrideValue - kBpmMin) / (kBpmMax - kBpmMin));
+    if (bpmNorm != lastBpmNormSync_)
+    {
+        lastBpmNormSync_ = bpmNorm;
+        bpmField_->setValueNormalized (bpmNorm);
+        bpmField_->invalid();
+    }
+
+    const bool overrideOn = sample.manualBpmOverrideEnabled;
+    const double calcBpm = engine::tempo::calculatedOriginalBpm (sample);
+    if (overrideOn != lastOverrideSync_ || calcBpm != lastCalcBpmSync_)
+    {
+        lastOverrideSync_ = overrideOn;
+        lastCalcBpmSync_ = calcBpm;
+        bpmField_->setMode (overrideOn, calcBpm);
+    }
+    if (overrideOn != lastOverrideStyling_)
+    {
+        lastOverrideStyling_ = overrideOn;
+        styleOverrideButton();
+    }
+
+    const bool hasSample = owner_->hasSample();
+
+    const float sens = sample.sensitivity;
+    if (sens != lastSensitivitySync_ || hasSample != lastSensActive_)
+    {
+        lastSensitivitySync_ = sens;
+        lastSensActive_ = hasSample;
+        sensSlider_->setValueNormalized (sens);
+        sensSlider_->setActive (hasSample);
+        sensSlider_->invalid();
+    }
+
+    const bool quantOn = sample.quantizeTransients;
+    if (quantOn != lastQuantizeSync_ || hasSample != lastQuantizeActive_)
+    {
+        lastQuantizeSync_ = quantOn;
+        lastQuantizeActive_ = hasSample;
+        styleQuantizeButton();
+    }
+
+    const int grid = sample.quantizeGridIndex;
+    if (grid != lastGridSync_ || hasSample != lastGridActive_)
+    {
+        lastGridSync_ = grid;
+        lastGridActive_ = hasSample;
+        quantizeMenu_->setValue (static_cast<float> (grid));
+        quantizeMenu_->setMouseEnabled (hasSample);
+        quantizeMenu_->invalid();
+    }
+
+    const float fadeInMs = owner_->uiStateView().render.fadeInMs;
+    if (fadeInMs != lastFadeInSync_)
+    {
+        lastFadeInSync_ = fadeInMs;
+        fadeInSlider_->setValueNormalized (fadeInMs / 100.0f);
+        fadeInSlider_->invalid();
+    }
+
+    const float fadeOutMs = owner_->uiStateView().render.fadeOutMs;
+    if (fadeOutMs != lastFadeOutSync_)
+    {
+        lastFadeOutSync_ = fadeOutMs;
+        fadeOutSlider_->setValueNormalized (fadeOutMs / 100.0f);
+        fadeOutSlider_->invalid();
     }
 }
 
@@ -281,6 +1032,114 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
         CRect (0, kAppBarHeight, kEditorWidth, kAppBarHeight + kToolBarHeight));
     frame->addView (toolbar);
 
+    // Document-level controls, left-aligned in the strip. Each custom
+    // control draws its own caption + box within the full 48px band; all
+    // route value edits through the param IDs (101/102/103) so host
+    // automation and the state stay in lockstep.
+    constexpr int kBarsW = 88;
+    constexpr int kBpmW = 112;
+    constexpr int kOverrideW = 88;
+    constexpr int kSensW = 110;
+    constexpr int kQuantW = 88;
+    constexpr int kGridW = 110;
+    constexpr int kFadeW = 110;
+    constexpr int kX0 = 16;
+    constexpr int kGap = 18;
+
+    const int barsX = kX0;
+    const int bpmX = barsX + kBarsW + kGap;
+    const int overX = bpmX + kBpmW + kGap;
+    const int sensX = overX + kOverrideW + kGap;
+    const int quantX = sensX + kSensW + kGap;
+    const int gridX = quantX + kQuantW + kGap;
+    const int fadeInX  = gridX + kGridW + kGap;
+    const int fadeOutX = fadeInX + kFadeW + kGap;
+    const CRect strip (0, kAppBarHeight, 0, kAppBarHeight + kToolBarHeight);
+
+    auto* bars = new ui::BarsStepper (
+        CRect (barsX, strip.top, barsX + kBarsW, strip.bottom), this,
+        static_cast<VSTGUI_INT32> (kParamLoopLengthBars));
+    frame->addView (bars);
+    barsStepper_ = bars;
+
+    auto* bpm = new ui::BpmScrubField (
+        CRect (bpmX, strip.top, bpmX + kBpmW, strip.bottom), this,
+        static_cast<VSTGUI_INT32> (kParamManualTempoBpm));
+    bpm->setMode (false, 0.0);
+    frame->addView (bpm);
+    bpmField_ = bpm;
+
+    // Override toggle sits INSIDE the BPM field's box band (not the full
+    // 48px strip) so its height matches its neighbours — 24px starting at
+    // kBoxTop down into the strip.
+    auto* overrideBtn = new CTextButton (
+        CRect (overX, strip.top + static_cast<int> (std::lround (kBoxTop)),
+               overX + kOverrideW,
+               strip.top + static_cast<int> (std::lround (kBoxTop + kBoxH))),
+        this, static_cast<VSTGUI_INT32> (kParamManualTempoEnabled), "OVERRIDE");
+    frame->addView (overrideBtn);
+    overrideBtn_ = overrideBtn;
+    styleOverrideButton();
+
+    // Detection sensitivity slider (editor-local; drag re-runs detection).
+    auto* sens = new ui::SensitivitySlider (
+        CRect (sensX, strip.top, sensX + kSensW, strip.bottom), this,
+        kTagSensitivity);
+    sens->setActive (false);
+    frame->addView (sens);
+    sensSlider_ = sens;
+
+    // Auto-onsets grid-quantize toggle -- the ANALYSIS quantize (snaps
+    // detected onsets to the note-value grid during slicing); NOT the
+    // playback beat-quantize (RenderState.beatQuantize*, exposed with the
+    // style-param sliders later). Sits INSIDE the box band like OVERRIDE.
+    auto* quant = new CTextButton (
+        CRect (quantX, strip.top + static_cast<int> (std::lround (kBoxTop)),
+               quantX + kQuantW,
+               strip.top + static_cast<int> (std::lround (kBoxTop + kBoxH))),
+        this, kTagQuantize, "QUANTIZE");
+    frame->addView (quant);
+    quantizeBtn_ = quant;
+    styleQuantizeButton();
+
+    // Quantize-grid dropdown -- the note-value the quantize toggle snaps
+    // detected auto onsets to (SampleState.quantizeGridIndex). Palette names
+    // in kNoteValues order so ENTRY INDEX == palette index; getValue() is
+    // the 0-based entry/index. Editor-local, not a host param. The popup
+    // list itself is themed by the platform; the button is themed to match
+    // the toolbar's flat boxed controls.
+    auto* grid = new COptionMenu (
+        CRect (gridX, strip.top + static_cast<int> (std::lround (kBoxTop)),
+               gridX + kGridW,
+               strip.top + static_cast<int> (std::lround (kBoxTop + kBoxH))),
+        this, kTagQuantizeGrid);
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+        grid->addEntry (state::kNoteValues[static_cast<std::size_t> (i)].name);
+    grid->setBackColor (kSurface2);
+    grid->setFrameColor (kOutline);
+    grid->setFont (kNormalFontSmall);
+    grid->setFontColor (kTextPrimary);
+    grid->setHoriAlign (kLeftText);
+    frame->addView (grid);
+    quantizeMenu_ = grid;
+
+    // Per-pick declick fades (global play feel, always active). Attack =
+    // fade-in, release = fade-out; each clamped by the engine to half the
+    // pick length during rendering.
+    auto* fadeIn = new ui::FadeSlider (
+        CRect (fadeInX, strip.top, fadeInX + kFadeW, strip.bottom), this,
+        kTagFadeIn, "ATTACK");
+    frame->addView (fadeIn);
+    fadeInSlider_ = fadeIn;
+
+    auto* fadeOut = new ui::FadeSlider (
+        CRect (fadeOutX, strip.top, fadeOutX + kFadeW, strip.bottom), this,
+        kTagFadeOut, "RELEASE");
+    frame->addView (fadeOut);
+    fadeOutSlider_ = fadeOut;
+
+    syncToolBarControls();
+
     // ── Waveform display (below the tool bar) ──────────────────────────
     constexpr int kWaveformH = 144;
     constexpr int kWaveTop  = kAppBarHeight + kToolBarHeight;
@@ -299,6 +1158,14 @@ void PLUGIN_API NeditEditor::close()
     sampleNameLabel_ = nullptr;
     auditionBtn_ = nullptr;
     loadBtn_ = nullptr;
+    overrideBtn_ = nullptr;
+    barsStepper_ = nullptr;
+    bpmField_ = nullptr;
+    sensSlider_ = nullptr;
+    quantizeBtn_ = nullptr;
+    quantizeMenu_ = nullptr;
+    fadeInSlider_ = nullptr;
+    fadeOutSlider_ = nullptr;
     waveformView_ = nullptr;
     if (frame != nullptr)
     {
@@ -315,14 +1182,15 @@ void NeditEditor::valueChanged (CControl* control)
 
     if (control->getTag() == kTagLoadSample)
     {
-        if (control->getValue() > 0.5f)
+        if (pressedEdge (*control, lastLoadPressed_))
             runFileSelector();
         return;
     }
 
     if (control->getTag() == kTagAudition)
     {
-        if (control->getValue() > 0.5f && owner_->hasSample())
+        const bool press = pressedEdge (*control, lastAuditionPressed_);
+        if (press && owner_->hasSample())
         {
             const bool wasOn = owner_->uiStateView().ui.auditionEnabled;
             owner_->setAuditionEnabled (! wasOn);
@@ -331,7 +1199,93 @@ void NeditEditor::valueChanged (CControl* control)
         return;
     }
 
+    if (control->getTag() == static_cast<VSTGUI_INT32> (kParamManualTempoEnabled))
+    {
+        if (pressedEdge (*control, lastOverridePressed_))
+        {
+            const bool enabled = owner_->uiStateView().sample.manualBpmOverrideEnabled;
+            if (! enabled)
+            {
+                // Fresh override has manualBpmOverrideValue == 0 (never
+                // scrubbed), which the engine treats as "no tempo". Seed the
+                // BPM value to what was being derived so toggling ON starts
+                // from the current state instead of a broken 0.
+                const auto& sample = owner_->uiStateView().sample;
+                double seed = engine::tempo::calculatedOriginalBpm (sample);
+                if (seed < kBpmMin || seed > kBpmMax || seed != seed)   // NaN guard
+                    seed = 0.5 * (kBpmMin + kBpmMax);
+                const float norm = static_cast<float> ((seed - kBpmMin) / (kBpmMax - kBpmMin));
+                setParam (kParamManualTempoBpm, norm);
+            }
+            setParam (kParamManualTempoEnabled, enabled ? 0.0f : 1.0f);
+            // Idle sync re-derives the style from state; toggle immediately
+            // so the toolbar reads correct even before the next timer tick.
+            syncToolBarControls();
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagSensitivity)
+    {
+        // Structural edit (re-runs detection), not a host param.
+        if (owner_->hasSample())
+        {
+            owner_->setSensitivity (control->getValueNormalized());
+            if (waveformView_)
+                waveformView_->invalid();   // slice markers changed
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagQuantize)
+    {
+        if (pressedEdge (*control, lastQuantizePressed_))
+        {
+            const bool on = owner_->uiStateView().sample.quantizeTransients;
+            owner_->setQuantizeTransients (! on);
+            styleQuantizeButton();
+            if (waveformView_)
+                waveformView_->invalid();   // auto-boundary positions changed
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagQuantizeGrid)
+    {
+        // Structural edit (re-runs slicing), not a host param. getValue()
+        // on a COptionMenu is the 0-based entry index == palette index.
+        if (owner_->hasSample())
+        {
+            const int idx = static_cast<int> (std::lround (control->getValue()));
+            owner_->setQuantizeGrid (idx);
+            if (waveformView_)
+                waveformView_->invalid();   // auto-boundary positions changed
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagFadeIn)
+    {
+        owner_->setFadeInMs (100.0f * control->getValueNormalized());
+        return;
+    }
+
+    if (control->getTag() == kTagFadeOut)
+    {
+        owner_->setFadeOutMs (100.0f * control->getValueNormalized());
+        return;
+    }
+
     applyParamFromControl (*control);
+}
+
+//------------------------------------------------------------------------
+bool NeditEditor::pressedEdge (CControl& control, bool& lastPressed)
+{
+    const bool pressed = control.getValue() > 0.5f;
+    const bool edge = pressed && ! lastPressed;
+    lastPressed = pressed;
+    return edge;
 }
 
 //------------------------------------------------------------------------
@@ -341,8 +1295,6 @@ void NeditEditor::applyParamFromControl (CControl& control)
 
     if (tag < 0 || ! isValidParamId (static_cast<std::uint32_t> (tag)))
         return;
-
-    const auto id = static_cast<Steinberg::Vst::ParamID> (tag);
 
     double norm = 0.0;
     if (auto* menu = dynamic_cast<COptionMenu*> (&control))
@@ -356,11 +1308,22 @@ void NeditEditor::applyParamFromControl (CControl& control)
         norm = control.getValueNormalized();
     }
 
+    setParam (static_cast<std::uint32_t> (tag), static_cast<float> (norm));
+}
+
+//------------------------------------------------------------------------
+void NeditEditor::setParam (std::uint32_t id, float normalized)
+{
+    if (! isValidParamId (id))
+        return;
+
+    const auto paramId = static_cast<Steinberg::Vst::ParamID> (id);
+
     auto* ec = getController();
-    ec->beginEdit (id);
-    ec->setParamNormalized (id, norm);
-    ec->performEdit (id, norm);
-    ec->endEdit (id);
+    ec->beginEdit (paramId);
+    ec->setParamNormalized (paramId, static_cast<Steinberg::Vst::ParamValue> (normalized));
+    ec->performEdit (paramId, static_cast<Steinberg::Vst::ParamValue> (normalized));
+    ec->endEdit (paramId);
 }
 
 //------------------------------------------------------------------------
@@ -492,6 +1455,11 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
 
         if (auditionChanged || sampleChanged)
             styleAuditionButton();
+
+        // Toolbar controls (bars / BPM / override) — cheap deduped push so
+        // host automation and state restores surface without waiting for a
+        // user edit.
+        syncToolBarControls();
 
         if (sampleChanged && loadBtn_)
         {

@@ -11,7 +11,7 @@
 
 #include "vstgui/lib/controls/icontrollistener.h"
 
-namespace VSTGUI { class CTextLabel; class CTextButton; }
+namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; }
 
 #include <atomic>
 #include <memory>
@@ -22,6 +22,15 @@ namespace nedit::plugin {
 
 class NeditProcessor;
 class WaveformView;
+
+namespace ui {
+
+class BarsStepper;
+class BpmScrubField;
+class SensitivitySlider;
+class FadeSlider;
+
+} // namespace ui
 
 class NeditEditor : public Steinberg::Vst::VSTGUIEditor,
                     public VSTGUI::IControlListener
@@ -51,15 +60,51 @@ public:
                                    VSTGUI::IdStringPtr message) override;
 
 private:
-    void runFileSelector();
+void runFileSelector();
     void applyParamFromControl (VSTGUI::CControl& control);
     void styleAuditionButton();
+    void styleOverrideButton();
+    void styleQuantizeButton();
+    void syncToolBarControls();
+    // Returns true only on the RISING EDGE of a CTextButton press. The
+    // default kKickStyle fires valueChanged once with the flipped value
+    // (max) and once after resetting to min — the rising edge is the one
+    // actionable press; this dedupes to exactly one action per click
+    // regardless of button value semantics.
+    bool pressedEdge (VSTGUI::CControl& control, bool& lastPressed);
+    // Host edit protocol for an editor-originated param change:
+    // beginEdit / setParamNormalized / performEdit / endEdit.
+    void setParam (std::uint32_t id, float normalized);
 
     NeditProcessor* owner_ = nullptr;
     WaveformView* waveformView_ = nullptr;
     VSTGUI::CTextLabel* sampleNameLabel_ = nullptr; // app-bar sample pill
     VSTGUI::CTextButton* auditionBtn_ = nullptr;    // app-bar audition toggle
     VSTGUI::CTextButton* loadBtn_ = nullptr;         // app-bar load button
+    VSTGUI::CTextButton* overrideBtn_ = nullptr;    // toolbar manual-BPM toggle
+    ui::BarsStepper* barsStepper_ = nullptr;        // toolbar loop-length stepper
+    ui::BpmScrubField* bpmField_ = nullptr;         // toolbar BPM scrub
+    ui::SensitivitySlider* sensSlider_ = nullptr;   // toolbar detection slider
+    VSTGUI::CTextButton* quantizeBtn_ = nullptr;    // toolbar auto-quantize toggle
+    VSTGUI::COptionMenu* quantizeMenu_ = nullptr;   // toolbar quantize-grid dropdown
+    ui::FadeSlider* fadeInSlider_ = nullptr;    // toolbar fade-in (attack)
+    ui::FadeSlider* fadeOutSlider_ = nullptr;   // toolbar fade-out (release)
+
+    // Idle-timer dedup for the toolbar control-value sync (host automation
+    // can change the state any time; only push to the controls on change).
+    int lastBarsSync_ = -1;
+    float lastBpmNormSync_ = -1.0f;
+    bool lastOverrideSync_ = false;
+    bool lastOverrideStyling_ = false;
+    double lastCalcBpmSync_ = -1.0;
+    float lastSensitivitySync_ = -1.0f;
+    bool lastSensActive_ = false;
+    bool lastQuantizeSync_ = false;
+    bool lastQuantizeActive_ = false;
+    int lastGridSync_ = -1;     // quantize-grid palette index (toolbar dropdown)
+    bool lastGridActive_ = false;
+    float lastFadeInSync_ = -1.0f;   // fade-in ms (toolbar attack slider)
+    float lastFadeOutSync_ = -1.0f;  // fade-out ms (toolbar release slider)
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the
@@ -78,6 +123,10 @@ private:
     bool lastAuditionSync_ = false;    // idle-timer dedup for audition btn
     bool lastSampleSync_  = false;     // idle-timer dedup for sample presence
     std::string lastSamplePath_;        // idle-timer dedup for sample name
+    bool lastLoadPressed_ = false;      // CTextButton press-edge latches
+    bool lastAuditionPressed_ = false;
+    bool lastOverridePressed_ = false;
+    bool lastQuantizePressed_ = false;
 };
 
 } // namespace nedit::plugin

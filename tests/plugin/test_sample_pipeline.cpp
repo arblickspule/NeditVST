@@ -7,6 +7,8 @@
 #include <plugin/WavDecoder.h>
 #include <plugin/WaveformView.h>
 
+#include <engine/Slice.h>
+
 #include <pluginterfaces/vst/ivstprocesscontext.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 
@@ -903,4 +905,154 @@ TEST_CASE ("waveform view: marker hit-testing pads the thin boundary lines")
     CHECK (view.findManualPointNear (midX - 10.0) == midId);
     CHECK (view.findManualPointNear (midX + 11.0) == -1);
     CHECK (view.findAutoPointNear (midX) == -1);   // auto defers to manual
+}
+
+TEST_CASE ("detector sensitivity: 0 => trim-only slice; weights remap")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    const std::size_t baseCount = loaded->slices.size();
+    REQUIRE (baseCount >= 8);
+    processor.setSliceProbability (1, 0.25f);
+
+    // Invariant after every re-run: new slice i inherits the weight of the
+    // old slice that contained its start-frame (1.0 if none).
+    const auto checkRemap =
+        [&] (const std::shared_ptr<const nedit::plugin::LoadedSample>& after,
+             const std::vector<nedit::engine::Slice>& beforeSlices) {
+            for (std::size_t i = 0; i < after->slices.size(); ++i)
+            {
+                float expected = 1.0f;
+                for (std::size_t j = 0; j < beforeSlices.size(); ++j)
+                    if (after->slices[i].startFrame >= beforeSlices[j].startFrame &&
+                        after->slices[i].startFrame <  beforeSlices[j].endFrame)
+                        expected = processor.getSliceProbability (static_cast<int> (j));
+                CHECK (processor.getSliceProbability (static_cast<int> (i))
+                       == Catch::Approx (expected));
+            }
+        };
+
+    // Contract: sensitivity 0 => zero auto onsets => a single trim-span
+    // slice (the trim-start boundary is always the first boundary).
+    processor.setSensitivity (0.0f);
+    CHECK (processor.debugUiState().sample.sensitivity == 0.0f);
+    REQUIRE (processor.debugSliceCount() == 1);
+    CHECK (processor.acquireLoadedSample()->slices[0].startFrame == 0);
+    checkRemap (processor.acquireLoadedSample(), loaded->slices);
+
+    // Ramping back up restores the detected boundaries (higher sensitivity
+    // can only reveal MORE onsets between holdoffs) and remaps weights.
+    processor.setSensitivity (1.0f);
+    CHECK (processor.debugUiState().sample.sensitivity == 1.0f);
+    CHECK (processor.debugSliceCount() >= static_cast<int> (baseCount));
+    const auto restored = processor.acquireLoadedSample();
+    checkRemap (restored, loaded->slices);
+
+    // Out-of-range values are clamped to [0,1].
+    processor.setSensitivity (5.0f);
+    CHECK (processor.debugUiState().sample.sensitivity == 1.0f);
+    processor.setSensitivity (-1.0f);
+    CHECK (processor.debugUiState().sample.sensitivity == 0.0f);
+}
+
+TEST_CASE ("quantize toggle: snaps auto onsets only; manual points never move")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // Manual point at an arbitrary non-grid frame (snap off = exact).
+    const std::int64_t oddFrame = 12345;
+    REQUIRE (processor.addManualPoint (oddFrame, /*snap*/ false) >= 0);
+    auto raw = processor.acquireLoadedSample();
+    REQUIRE (raw != nullptr);
+    const std::size_t rawCount = raw->slices.size();
+
+    processor.setQuantizeTransients (true);
+    CHECK (processor.debugUiState().sample.quantizeTransients);
+
+    auto q = processor.acquireLoadedSample();
+    REQUIRE (q != nullptr);
+    // Quantizing only MERGES auto onsets that land on the same grid line --
+    // it never invents boundaries -- so the count never grows, and trim
+    // start + manual points (never quantized) stay as a floor of 2.
+    CHECK (q->slices.size() <= rawCount);
+    CHECK (q->slices.size() >= 2);
+    bool manualExact = false;
+    for (const auto& s : q->slices)
+        if (s.startFrame == oddFrame) manualExact = true;
+    CHECK (manualExact);
+
+    // Toggling back off restores the exact raw slice list.
+    processor.setQuantizeTransients (false);
+    CHECK_FALSE (processor.debugUiState().sample.quantizeTransients);
+    auto rawAgain = processor.acquireLoadedSample();
+    REQUIRE (rawAgain != nullptr);
+    CHECK (rawAgain->slices.size() == rawCount);
+}
+
+TEST_CASE ("trim-aware playback: slices are clipped to the soft trim")
+{
+    // Synthetic slice list covering [0, 96000) with five boundaries.
+    const std::vector<nedit::engine::Slice> in {
+        {       0,   12000 },
+        {   12000,   24000 },
+        {   24000,   48000 },
+        {   48000,   60000 },
+        {   60000,   96000 },
+    };
+    const std::vector<float> weights { 1.0f, 0.5f, 0.25f, 0.75f, 1.0f };
+
+    std::vector<nedit::engine::Slice> out;
+    std::vector<float> outWeights;
+
+    // Whole-sample trim is the identity (the scheduler's default path --
+    // what the existing audible end-to-end test exercises).
+    nedit::plugin::clipSlicesToTrim (in, 0, 96000, weights, out, outWeights);
+    CHECK (out == in);
+    CHECK (outWeights == weights);
+
+    // Trim [20000, 60000): the slice straddling the START handle is cut at
+    // the handle (weight kept), the middle slices keep full extent, the one
+    // straddling the END handle is cut there, and everything outside is
+    // dropped -- no pick can read audio outside the trim.
+    nedit::plugin::clipSlicesToTrim (in, 20000, 60000, weights, out, outWeights);
+    REQUIRE (out.size() == 3);
+    REQUIRE (outWeights.size() == 3);
+    CHECK (out[0] == nedit::engine::Slice { 20000, 24000 });  // clipped at handle
+    CHECK (outWeights[0] == Catch::Approx (0.5f));            // weight preserved
+    CHECK (out[1] == nedit::engine::Slice { 24000, 48000 });
+    CHECK (outWeights[1] == Catch::Approx (0.25f));
+    CHECK (out[2] == nedit::engine::Slice { 48000, 60000 });  // full-thickness end slice
+    CHECK (outWeights[2] == Catch::Approx (0.75f));
+
+    // A trim entirely inside one slice keeps that slice (trim handles cut
+    // both edges) -- playback still works on partial content.
+    nedit::plugin::clipSlicesToTrim (in, 1000, 11000, weights, out, outWeights);
+    REQUIRE (out.size() == 1);
+    CHECK (out[0] == nedit::engine::Slice { 1000, 11000 });
+    CHECK (outWeights[0] == Catch::Approx (1.0f));
+
+    // Wholly-outside slices vanish: a trim in the silent tail produces no
+    // pickable slices (scheduler would go silent, never sound outside-trim
+    // content).
+    nedit::plugin::clipSlicesToTrim (in, 96000, 96000, weights, out, outWeights);
+    CHECK (out.empty());
+    CHECK (outWeights.empty());
+
+    // Shorter weights than slices: missing ones default to full weight.
+    const std::vector<float> shortW { 0.1f };
+    nedit::plugin::clipSlicesToTrim (in, 0, 96000, shortW, out, outWeights);
+    REQUIRE (out.size() == in.size());
+    CHECK (outWeights[0] == Catch::Approx (0.1f));
+    for (std::size_t i = 1; i < outWeights.size(); ++i)
+        CHECK (outWeights[i] == Catch::Approx (1.0f));
 }

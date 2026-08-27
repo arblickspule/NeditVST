@@ -29,6 +29,19 @@
 
 namespace nedit::plugin {
 
+// Clip a derived slice list to the CURRENT trim, remapping per-slice weights
+// in lockstep so `outSlices`/`outWeights` stay parallel to the input. The
+// view keeps a SOFT trim (slices outside are hidden, never rebuilt), and the
+// audio thread must apply the same rule to what it PLAYS -- this is the
+// engine-side mirror of that: wholly-outside slices are dropped, a slice
+// straddling a trim handle is cut to the trim, and weights are copied
+// positionally. Pure + allocation-free on pre-reserved outputs.
+void clipSlicesToTrim (const std::vector<engine::Slice>& slices,
+                       std::int64_t trimStart, std::int64_t trimEnd,
+                       const std::vector<float>& sliceWeights,
+                       std::vector<engine::Slice>& outSlices,
+                       std::vector<float>& outWeights);
+
 class NeditProcessor : public Steinberg::Vst::SingleComponentEffect
 {
 public:
@@ -82,6 +95,30 @@ public:
     // boundary is never excludable. Returns false when nothing was found
     // (or it was already excluded), leaving no rebuild behind.
     bool excludeNearestAutoPoint (std::int64_t frame);
+
+    // Detection sensitivity (toolbar slider): stores sample.sensitivity and
+    // re-runs detection + slicing at the current trim/holdoff, preserving
+    // painted probabilities. Range [0,1]; no-op without a sample.
+    void setSensitivity (float value);
+
+    // Grid-quantize auto onsets (toolbar toggle): stores
+    // sample.quantizeTransients and re-derives the slice list from the
+    // retained analysis, preserving painted probabilities. Manual points
+    // are never quantized (see SampleState.quantizeTransients). No-op
+    // without a sample.
+    void setQuantizeTransients (bool on);
+
+    // Grid note-value for the transient quantize (toolbar dropdown): stores
+    // sample.quantizeGridIndex (a kNoteValues palette index) and re-runs
+    // slicing at the current trim/holdoff, preserving painted probabilities.
+    // No-op without a sample (the grid only matters once quantize is on).
+    void setQuantizeGrid (int gridIndex);
+
+    // Per-pick declick fades (toolbar sliders): stores render.fadeInMs /
+    // render.fadeOutMs and republishes. Range [0, 100] ms (the original's
+    // slider range); the engine clamps each fade to half the pick length.
+    void setFadeInMs (float ms);
+    void setFadeOutMs (float ms);
 
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);
@@ -158,6 +195,12 @@ private:
     state::PluginState automationScratch_;
     double lastBlockEndPpq_ = 0.0;
     double auditionPosition_ = 0.0;  // read cursor for raw audition loop
+
+    // Audio-thread scratch: the slice list clipped to the CURRENT soft trim
+    // with weights remapped in lockstep (see process()). Pre-reserved in the
+    // ctor so steady-state blocks never allocate.
+    std::vector<engine::Slice> trimSlices_;
+    std::vector<float> trimWeights_;
 
     // Slice audition state (RMB hold-to-loop).
     bool sliceAuditionActive_ = false;

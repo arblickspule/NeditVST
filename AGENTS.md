@@ -344,6 +344,75 @@ included/excluded.
     `std::multimap<double,CColor>` — use `emplace()`, not `operator[]`.
     Two visual states only: normal and highlighted (pressed); no separate
     hover colour.
+  - Toolbar strip (second 48px band under the app bar): document-level
+    controls left-aligned, each a self-contained CControl drawn by us
+    (caption + shell inside its own 48px band; controls are direct frame
+    children so mouse coords are frame-space — subtract getViewSize()).
+    "BARS" stepper (±, 1..16, tag 103 = kParamLoopLengthBars), "BPM"
+    drag-to-scrub field (tag 102 = kParamManualTempoBpm), "OVERRIDE"
+    toggle (tag 101 = kParamManualTempoEnabled), "SENS" sensitivity
+    slider + "QUANTIZE" auto-onsets toggle (editor-local tags 1002/1003 —
+    NOT params: they are structural ANALYSIS edits that re-run detection/
+    slicing, like trim/manual markers). IMPORTANT: don't confuse the two
+    quantizes — `SampleState.quantizeTransients` (this toolbar toggle)
+    snaps DETECTED AUTO onsets onto the note-value grid while slicing;
+    `RenderState.beatQuantizeTimeStretch/Repitch` (Slice Length playback
+    pick-length quantization) is a PLAYBACK thing exposed with the
+    style-param sliders later. Sensitivity 0 → zero onsets by contract
+    (single trim-span slice); quantize only ever MERGES auto onsets onto
+    shared grid lines (never adds boundaries) and never moves manual
+    points. Both route through `NeditProcessor::setSensitivity` /
+    `setQuantizeTransients` → `rebuildSlicesPreservingWeights()`;
+    both repaint the waveform live (draw() re-acquires slices, so
+    `waveformView_->invalid()` suffices — no full refresh needed).
+    Layout decision: STATIC —
+    no widget swapping on toggle; when override is OFF the BPM field is a
+    greyed read-only label showing the derived tempo
+    (engine::tempo::calculatedOriginalBpm); when ON it becomes active and
+    horizontal drag scrubs (one field-width = 80 BPM, Shift = 0.1x, wheel
+    = 1/0.1 BPM, clamped 30..300). Enabling override SEEDS the BPM param
+    to the currently-derived value first — a fresh never-scrubbed
+    manualBpmOverrideValue of 0 means "no tempo" to the engine, so
+    toggling ON must start from something real. All edits route through a
+    new `setParam(id,norm)` (begin/setParamNormalized/performEdit/endEdit)
+    extracted from applyParamFromControl; an idle-timer
+    syncToolBarControls() pushes state → controls on change (host
+    automation / chunk loads surface without user edits). CControl-derived
+    custom controls MUST implement the pure `newCopy()`. CControl members
+    `listener`/`tag` shadow under -Wshadow — rename ctor params.
+  - Quantize-grid dropdown (editor-local tag 1004): a themed COptionMenu
+    next to QUANTIZE listing the kNoteValues palette in order, so its
+    0-based entry index == quantizeGridIndex; getValue() == selected
+    index (COptionMenu raw value is the index, not 0..1; setValue pushes
+    programmatically without a valueChanged echo). Maps to
+    `NeditProcessor::setQuantizeGrid` → rebuildSlicesPreservingWeights().
+    No separators (getValue again = platform result.index); theming via
+    CParamDisplay setters (setBackColor/setFrameColor/setFont/
+    setFontColor/setHoriAlign — drawBack does a flat fill + frame stroke
+    for style 0; entry list is platform-themed).
+  - Fade sliders (editor-local tags 1005/1006): two `ui::FadeSlider` controls
+    right of the quantize dropdown — "ATTACK" = `render.fadeInMs`,
+    "RELEASE" = `render.fadeOutMs`, both 0..100 ms (matches the original's
+    continuous Fade In/Out sliders). Caption row doubles as the ms readout
+    (label left, value right in `kAccentBright`); the box is a SENS-style
+    fill-track slider (drag anywhere = set, wheel = 5 ms, always active —
+    valid without a sample). Route through `NeditProcessor::setFadeInMs /
+    setFadeOutMs` (clamped, publish only — no slice rebuild). The engine
+    reads these into `Scheduler.cpp`'s BlockContext per pick
+    (`state.render.fadeInMs/1000 * sampleRate`), so NEW picks get the new
+    fades; the renderer clamps each to half the pick length (declick
+    guarantee). Not automatable; if that's wanted later the state edits
+    already exist and promotion is trivial.
+    CTextButton defaults to kKickStyle and its `onMouseUp` fires
+    `valueChanged` TWICE per click: once with the flipped value (max —
+    the actionable press), then it resets to min and echoes a second
+    `valueChanged` at 0. Gating on `getValue() > 0.5f` dedupes to one
+    action per press, but a handler that toggles on EVERY valueChanged
+    double-toggles (stuck off), and a handler that always writes
+    `setParam(…, 1.0)` regardless of model state double-applies ON (stuck
+    on). Robust rule: use `pressedEdge(control, latch)` (rising-edge
+    detection on the button value) and derive the new state from the live
+    model, never from the button value.
 - Live DAW testing (Bitwig) round 1 — findings + fixes, all committed:
   - Bundle binary must be named <bundle>.so (lib*.so => "Not a plug-in
     file"); bundle needs Contents/Resources/moduleinfo.json (generated at
@@ -388,11 +457,32 @@ included/excluded.
     metrics). tools/host_harness.cpp drives full lifecycle incl. editor
     attach + XTEST clicks + WAV dump (NEDIT_DUMP_WAV).
 - Next work: Phase 4b polish — style-param controls (21 sliders over
-  ParameterSurface ids 0..20), playhead/step mailbox → UI, sensitivity/
-  trim editing (needs processor UI-edit entry points that re-run
-  analysis), sequencer grid view; then live DAW testing (Phase 5).
+  ParameterSurface ids 0..20), playhead/step mailbox → UI, sequencer grid
+  view; then live DAW testing (Phase 5).
+- BUG FIX (2026-08-27): slice playback ignored the trim while the host was
+  playing. ROOT CAUSE: the view keeps a SOFT trim (trim drags do NOT rebuild
+  the slice list — slices outside are hidden, widening reveals them with
+  weights intact), but `setTrimFrames` was published state-only, so the
+  audio-thread slot still held the pre-trim slice list and the scheduler
+  played it verbatim — outer slices sounded. FIX: the engine mirrors the
+  soft trim. `NeditProcessor::process()` clips the shared slice list to
+  [trimStart,trimEnd) every block via the pure `clipSlicesToTrim(...)`
+  (slices OUTSIDE dropped; a slice straddling a handle cut to the trim;
+  rarely degenerate zero-length overlaps skipped) and remaps
+  `generate.sliceWeights` in lockstep into pre-reserved scratch
+  (`trimSlices_`/`trimWeights_`, reserved in the ctor — no audio-thread
+  allocation in steady state). The scheduler gained an optional
+  `sliceWeightsOverride` param to `process()`/`Run` (nullptr = default
+  `state.generate.sliceWeights` path, so engine tests unchanged); all modes
+  (Slice Length/Clock/Sequenced/Performance/Control) pick from the clipped
+  list since they all use `r.slices`. MIDI Control's availableSlices count
+  is now the trimmed count too. Regression tests: `clipSlicesToTrim` unit
+  cases (identity on full-span trim, handle-straddle cuts, wholly-outside
+  clips to silence, default-weight padding) + scheduler override plumbing
+  (empty override ⇒ zero picks despite full state weights; matching
+  override ⇒ byte-identical pick count as the default path).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 201/201, zero warnings.
+  plugin build 212/212, zero warnings.
 
 ## Rules of engagement
 
