@@ -2,3 +2,7 @@ build/
 build-*/
 .cache/
 compile_commands.json
+
+# Nextcloud Desktop sync artifacts
+docs/.nextcloudsync.log
+docs/.sync_*.db*
