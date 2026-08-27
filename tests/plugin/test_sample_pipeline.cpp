@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <vector>
@@ -123,8 +124,13 @@ struct TempFile
 {
     std::string path;
     explicit TempFile (const char* name, const Bytes& bytes)
-        : path { std::string ("/tmp/opencode/") + name }
     {
+        // OS temp dir (NOT a hard-coded local scratch path -- CI runners
+        // don't have /tmp/opencode). The directory exists by definition,
+        // but create_directories costs nothing if it does.
+        std::filesystem::path dir = std::filesystem::temp_directory_path();
+        std::filesystem::create_directories (dir);
+        path = (dir / name).string();
         std::ofstream f (path, std::ios::binary);
         f.write (reinterpret_cast<const char*> (bytes.data()),
                  static_cast<std::streamsize> (bytes.size()));

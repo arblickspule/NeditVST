@@ -148,6 +148,11 @@ set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # SDK's own plugin cmake helpers define this; we bypass them, so set it
 # ourselves.
 target_compile_definitions(nedit_plugin PRIVATE VSTGUI_NEEDS_INIT_LIB=1)
+if(MSVC)
+    # getenv/strcpy & co. are C4996-deprecated on MSVC's /W4; these are
+    # deliberate ports of POSIX patterns.
+    target_compile_definitions(nedit_plugin PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 # vstguieditor.cpp is SDK code compiled inside OUR target: exempt those SDK
 # TUs from the project warning set.
 set_source_files_properties(
@@ -207,11 +212,15 @@ if(APPLE)
     target_link_libraries(nedit_vst3 PRIVATE
         nedit_plugin "-Wl,-force_load,$<TARGET_FILE:nedit_plugin>")
 elseif(WIN32)
-    target_link_libraries(nedit_vst3 PRIVATE
-        nedit_plugin "/WHOLEARCHIVE:$<TARGET_FILE:nedit_plugin>")
+    target_link_libraries(nedit_vst3 PRIVATE nedit_plugin)
     # Hosts enter via GetPluginFactory on Windows -- force-export it even
-    # though factory.cpp already marks it SMTG_EXPORT_SYMBOL.
-    target_link_options(nedit_vst3 PRIVATE "/EXPORT:GetPluginFactory")
+    # though factory.cpp already marks it SMTG_EXPORT_SYMBOL. The
+    # whole-archive include must go through target_link_options: CMake's
+    # link-LIBRARY path handling rewrites the leading '/' + drive path
+    # into a rooted filename (LNK1104). Link options are emitted raw.
+    target_link_options(nedit_vst3 PRIVATE
+        "/WHOLEARCHIVE:$<TARGET_FILE:nedit_plugin>"
+        "/EXPORT:GetPluginFactory")
 else()
     target_link_libraries(nedit_vst3
         PRIVATE -Wl,--whole-archive nedit_plugin -Wl,--no-whole-archive)
