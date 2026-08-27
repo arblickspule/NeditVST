@@ -47,7 +47,7 @@ jobs:
             libfreetype-dev
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DNEDIT_BUILD_PLUGIN=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DNEDIT_BUILD_PLUGIN=ON -DNEDIT_BUILD_TOOLS=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel
