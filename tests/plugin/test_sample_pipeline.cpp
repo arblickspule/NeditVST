@@ -5,6 +5,7 @@
 #include <plugin/NeditProcessor.h>
 #include <plugin/SampleManager.h>
 #include <plugin/WavDecoder.h>
+#include <plugin/WaveformView.h>
 
 #include <pluginterfaces/vst/ivstprocesscontext.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <numeric>
@@ -540,4 +542,359 @@ TEST_CASE ("shell: host automation reaches the renderer")
     runBlocks (20, &changes, backZcr);
     CHECK (backZcr > fastZcr * 1.5);
     CHECK (backZcr < baseZcr * 1.25);
+}
+
+// ── Manual markers ─────────────────────────────────────────────────────
+
+namespace {
+
+// Load the standard click track into a fresh processor. Returns the temp
+// file (keep it alive for the processor's lifetime) via out-param.
+[[nodiscard]] Bytes clickWav()
+{
+    const auto click = ClickTrack::render();
+    return makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                    static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+}
+
+// The detector's derivative peaks a couple frames INTO each burst, so the
+// derived onsets sit ~2 frames past the 12000-multiple burst starts (e.g.
+// 24002, not 24000). Locate a boundary the robust way: the slice whose
+// start is closest to `about`, within half the spacing.
+const nedit::engine::Slice* boundaryNear (const std::vector<nedit::engine::Slice>& slices,
+                                          std::int64_t about)
+{
+    const nedit::engine::Slice* best = nullptr;
+    std::int64_t bestDist = 6000;
+    for (const auto& s : slices)
+    {
+        if (s.startFrame == 0) continue;   // never the trim-start boundary
+        const std::int64_t d = std::llabs (s.startFrame - about);
+        if (d < bestDist) { bestDist = d; best = &s; }
+    }
+    return best;
+}
+
+} // namespace
+
+TEST_CASE ("manual marker: add (no snap) inserts a boundary, remove restores it")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const int before = processor.debugSliceCount();
+    REQUIRE (before >= 5);
+
+    // Drop a marker in the middle of an interior slice with snapping OFF, so
+    // it lands exactly where we ask and creates a fresh boundary.
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    const auto midSlice = loaded->slices[2];
+    const std::int64_t mid = (midSlice.startFrame + midSlice.endFrame) / 2;
+
+    const std::int32_t id = processor.addManualPoint (mid, /*snap*/ false);
+    CHECK (id >= 0);
+    CHECK (processor.debugSliceCount() == before + 1);
+
+    const auto& mps = processor.debugUiState().sample.manualPoints;
+    REQUIRE (mps.size() == 1);
+    CHECK (mps[0].position == mid);
+
+    bool boundaryAtMid = false;
+    for (const auto& s : processor.acquireLoadedSample()->slices)
+        if (s.startFrame == mid) { boundaryAtMid = true; break; }
+    CHECK (boundaryAtMid);
+
+    // Removing it restores the original slice list.
+    CHECK (processor.removeManualPoint (id));
+    CHECK (processor.debugSliceCount() == before);
+    CHECK (processor.debugUiState().sample.manualPoints.empty());
+
+    // Removing a non-existent id is a no-op.
+    CHECK_FALSE (processor.removeManualPoint (9999));
+}
+
+TEST_CASE ("manual marker: snap pulls the point to the nearest transient")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // A click sits at 24000; aim 1000 frames past it (well within the
+    // 50ms / 2400-frame snap radius at 48 kHz).
+    const std::int64_t clickFrame = 24000;
+    const std::int64_t target = clickFrame + 1000;
+
+    auto positionOf = [&] (std::int32_t id) -> std::int64_t {
+        for (const auto& mp : processor.debugUiState().sample.manualPoints)
+            if (mp.id == id) return mp.position;
+        return -1;
+    };
+
+    // No-snap: the point stays exactly at the target.
+    const std::int32_t idNoSnap = processor.addManualPoint (target, /*snap*/ false);
+    REQUIRE (idNoSnap >= 0);
+    CHECK (positionOf (idNoSnap) == target);
+
+    // Snap: the point is pulled toward the click's onset, and lands closer
+    // to the transient than the raw target was.
+    const std::int32_t idSnap = processor.addManualPoint (target, /*snap*/ true);
+    REQUIRE (idSnap >= 0);
+    const std::int64_t posSnap = positionOf (idSnap);
+    CHECK (posSnap != target);
+    CHECK (std::llabs (posSnap - clickFrame) < std::llabs (target - clickFrame));
+    CHECK (std::llabs (posSnap - clickFrame) < 600);
+}
+
+TEST_CASE ("manual marker: painted probabilities survive a split (child inherits parent)")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    REQUIRE (loaded->slices.size() >= 4);
+
+    // Paint one interior slice and its neighbour to distinct probabilities.
+    const int kIdx = 2;
+    const auto parent = loaded->slices[static_cast<std::size_t> (kIdx)];
+    const std::int64_t neighbourStart =
+        loaded->slices[static_cast<std::size_t> (kIdx + 1)].startFrame;
+
+    processor.setSliceProbability (kIdx, 0.3f);
+    processor.setSliceProbability (kIdx + 1, 0.8f);
+
+    // Split the painted slice in half (no snap => exact boundary at mid).
+    const std::int64_t mid = (parent.startFrame + parent.endFrame) / 2;
+    REQUIRE (processor.addManualPoint (mid, false) >= 0);
+
+    auto after = processor.acquireLoadedSample();
+    REQUIRE (after != nullptr);
+
+    auto probAtStart = [&] (std::int64_t start) -> float {
+        for (std::size_t i = 0; i < after->slices.size(); ++i)
+            if (after->slices[i].startFrame == start)
+                return processor.getSliceProbability (static_cast<int> (i));
+        return -1.0f;
+    };
+
+    CHECK (probAtStart (parent.startFrame) == Catch::Approx (0.3f)); // left half
+    CHECK (probAtStart (mid)               == Catch::Approx (0.3f)); // right half inherits
+    CHECK (probAtStart (neighbourStart)    == Catch::Approx (0.8f)); // neighbour intact
+}
+
+TEST_CASE ("manual marker: drag moves the boundary, snaps on release, preserves weights")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    REQUIRE (loaded->slices.size() >= 4);
+    const auto host = loaded->slices[2];
+    const std::int64_t startPos = (host.startFrame + host.endFrame) / 2;
+
+    const std::int32_t id = processor.addManualPoint (startPos, /*snap*/ false);
+    REQUIRE (id >= 0);
+
+    auto posOf = [&] () -> std::int64_t {
+        for (const auto& mp : processor.debugUiState().sample.manualPoints)
+            if (mp.id == id) return mp.position;
+        return -1;
+    };
+    auto idxOf = [&] (std::int64_t start) -> int {
+        auto s = processor.acquireLoadedSample();
+        for (std::size_t i = 0; i < s->slices.size(); ++i)
+            if (s->slices[i].startFrame == start) return static_cast<int> (i);
+        return -1;
+    };
+    auto probAtStart = [&] (std::int64_t start) -> float {
+        const int idx = idxOf (start);
+        return idx >= 0 ? processor.getSliceProbability (idx) : -1.0f;
+    };
+
+    CHECK (posOf() == startPos);
+
+    // Paint the two halves the marker created (left starts at host.start,
+    // right starts at the marker).
+    processor.setSliceProbability (idxOf (host.startFrame), 0.25f);
+    processor.setSliceProbability (idxOf (startPos), 0.75f);
+
+    // Free move (no snap) lands exactly, and the boundary + weights follow.
+    const std::int64_t movedPos = startPos + 800;
+    processor.moveManualPoint (id, movedPos, /*snap*/ false);
+    CHECK (posOf() == movedPos);
+
+    bool boundaryAtMoved = false;
+    for (const auto& s : processor.acquireLoadedSample()->slices)
+        if (s.startFrame == movedPos) { boundaryAtMoved = true; break; }
+    CHECK (boundaryAtMoved);
+
+    CHECK (probAtStart (host.startFrame) == Catch::Approx (0.25f));
+    CHECK (probAtStart (movedPos)        == Catch::Approx (0.75f));
+
+    // Release-snap near the click at 24000 pulls the marker onto the onset.
+    processor.moveManualPoint (id, 24000 + 900, /*snap*/ true);
+    CHECK (std::llabs (posOf() - 24000) < 600);
+
+    // Moving a non-existent id is a harmless no-op.
+    const std::int64_t keep = posOf();
+    processor.moveManualPoint (9999, 100, /*snap*/ false);
+    CHECK (posOf() == keep);
+}
+
+// ── Auto-onset exclusion ───────────────────────────────────────────────
+
+TEST_CASE ("auto onset: exclusion removes the boundary, targets the raw onset, keeps the left slice's weight")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    REQUIRE (loaded->slices.size() >= 8);
+
+    // The auto boundary near 24000 (sits ~2 frames past the burst start).
+    const auto* target = boundaryNear (loaded->slices, 24000);
+    REQUIRE (target != nullptr);
+    const std::int64_t targetStart = target->startFrame;
+    const std::size_t beforeCount = loaded->slices.size();
+
+    // The slice immediately LEFT of the boundary keeps its weight across the
+    // exclusion (its end == the boundary that gets removed).
+    const nedit::engine::Slice* leftSlice = nullptr;
+    for (const auto& s : loaded->slices)
+        if (s.endFrame == targetStart) { leftSlice = &s; break; }
+    REQUIRE (leftSlice != nullptr);
+    const std::int64_t leftStart = leftSlice->startFrame;
+    const int leftIdx = static_cast<int> (leftSlice - loaded->slices.data());
+    processor.setSliceProbability (leftIdx, 0.35f);
+
+    // Double-click gesture: exclude the nearest raw onset to the boundary.
+    const bool excluded = processor.excludeNearestAutoPoint (targetStart + 800);
+    REQUIRE (excluded);
+
+    const auto& eps = processor.debugUiState().sample.excludedPoints;
+    REQUIRE (eps.size() == 1);
+    CHECK (std::llabs (eps[0].position - 24000) < 600);
+
+    auto after = processor.acquireLoadedSample();
+    REQUIRE (after != nullptr);
+    CHECK (after->slices.size() + 1 == beforeCount);
+
+    // The boundary is gone; the merged slice starts where the left slice did
+    // and inherits its painted weight; the trim-start stays put.
+    bool boundaryGone = true;
+    bool trimStartPresent = false;
+    for (const auto& s : after->slices)
+    {
+        if (s.startFrame == targetStart) boundaryGone = false;
+        if (s.startFrame == 0)          trimStartPresent = true;
+    }
+    CHECK (boundaryGone);
+    CHECK (trimStartPresent);
+
+    for (std::size_t i = 0; i < after->slices.size(); ++i)
+        if (after->slices[i].startFrame == leftStart)
+            CHECK (processor.getSliceProbability (static_cast<int> (i)) == Catch::Approx (0.35f));
+}
+
+TEST_CASE ("auto onset: re-exclusion is a no-op; the trim start can't be excluded")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    REQUIRE (loaded->slices.size() >= 8);
+
+    const auto* target = boundaryNear (loaded->slices, 24000);
+    REQUIRE (target != nullptr);
+
+    REQUIRE (processor.excludeNearestAutoPoint (target->startFrame));
+    const int afterFirst = processor.debugSliceCount();
+
+    // The same onset again: defensive dedup, no rebuild, no duplicate entry.
+    CHECK_FALSE (processor.excludeNearestAutoPoint (target->startFrame));
+    CHECK (processor.debugSliceCount() == afterFirst);
+    CHECK (processor.debugUiState().sample.excludedPoints.size() == 1);
+
+    // Excluding near the very start skips the trim-start boundary (never
+    // excludable) and lands on the FIRST real onset (~2, the first burst's
+    // derivative peak) -- never on 0.
+    REQUIRE (processor.excludeNearestAutoPoint (0));
+    const auto& eps = processor.debugUiState().sample.excludedPoints;
+    REQUIRE (eps.size() == 2);
+    CHECK (eps[1].position != 0);
+    CHECK (eps[1].position > 0);
+
+    bool trimStartPresent = false;
+    for (const auto& s : processor.acquireLoadedSample()->slices)
+        if (s.startFrame == 0) trimStartPresent = true;
+    CHECK (trimStartPresent);
+}
+
+TEST_CASE ("waveform view: marker hit-testing pads the thin boundary lines")
+{
+    const TempFile file ("nedit_test_click.wav", clickWav());
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    nedit::plugin::WaveformView view (processor, nullptr);
+    view.setViewSize (VSTGUI::CRect (0, 0, 400, 144));
+    view.refresh();
+
+    // Full-zoom mapping: boundary B sits at x = B/96000*400 px (the visible
+    // range is [0, total) on first load).
+    const double kTotal = static_cast<double> (ClickTrack::kFrames);
+    const auto toX = [&] (std::int64_t frame) -> VSTGUI::CCoord {
+        return static_cast<double> (frame) / kTotal * 400.0;
+    };
+
+    const auto* autoBoundary = boundaryNear (processor.acquireLoadedSample()->slices, 24000);
+    REQUIRE (autoBoundary != nullptr);
+    const std::int64_t autoBoundaryFrame = autoBoundary->startFrame;
+    const VSTGUI::CCoord autoX = toX (autoBoundaryFrame);
+
+    // The padded radius (10px) makes the 1px line far easier to hit.
+    CHECK (view.findAutoPointNear (autoX) == autoBoundaryFrame);
+    CHECK (view.findAutoPointNear (autoX - 9.0) == autoBoundaryFrame);
+    CHECK (view.findAutoPointNear (autoX + 10.0) == autoBoundaryFrame);
+    CHECK (view.findAutoPointNear (autoX + 11.0) == -1);   // just past the pad
+
+    // A manual marker placed EXACTLY on an existing auto boundary; same
+    // padding applies, and the manual wins the coincident boundary (the auto
+    // one stops being a hit target). Snap=false is deliberate here: snapped
+    // adds land on the raw derivative peak (48003) while detection picks the
+    // onset 1 frame earlier (48002), so only an unsnapped add can coincide.
+    const auto* manualTarget = boundaryNear (processor.acquireLoadedSample()->slices, 48000);
+    REQUIRE (manualTarget != nullptr);
+    const std::int64_t manualFrame = manualTarget->startFrame;
+    const std::int32_t midId = processor.addManualPoint (manualFrame, /*snap*/ false);
+    REQUIRE (midId >= 0);
+    const VSTGUI::CCoord midX = toX (manualFrame);
+
+    CHECK (view.findManualPointNear (midX) == midId);
+    CHECK (view.findManualPointNear (midX - 10.0) == midId);
+    CHECK (view.findManualPointNear (midX + 11.0) == -1);
+    CHECK (view.findAutoPointNear (midX) == -1);   // auto defers to manual
 }

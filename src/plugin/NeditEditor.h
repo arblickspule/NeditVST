@@ -21,6 +21,7 @@ namespace VSTGUI { class CTextLabel; class CTextButton; }
 namespace nedit::plugin {
 
 class NeditProcessor;
+class WaveformView;
 
 class NeditEditor : public Steinberg::Vst::VSTGUIEditor,
                     public VSTGUI::IControlListener
@@ -55,6 +56,7 @@ private:
     void styleAuditionButton();
 
     NeditProcessor* owner_ = nullptr;
+    WaveformView* waveformView_ = nullptr;
     VSTGUI::CTextLabel* sampleNameLabel_ = nullptr; // app-bar sample pill
     VSTGUI::CTextButton* auditionBtn_ = nullptr;    // app-bar audition toggle
     VSTGUI::CTextButton* loadBtn_ = nullptr;         // app-bar load button

@@ -16,6 +16,7 @@
 
 #include <engine/Slice.h>
 #include <engine/SliceBuilder.h>
+#include <engine/TransientDetector.h>
 #include <state/SampleState.h>
 
 #include <atomic>
@@ -27,9 +28,15 @@
 
 namespace nedit::plugin {
 
+// The immutable per-load bundle shared with the audio thread. The decoded
+// audio and the transient analysis are BOTH immutable once built, so they
+// are held by shared_ptr and shared across slice-only edits (adding or
+// removing a manual marker rebuilds only the `slices` vector -- the large
+// audio buffer and the analysis are never re-cloned or re-run).
 struct LoadedSample
 {
-    DecodedAudio audio;
+    std::shared_ptr<const DecodedAudio> audio;
+    std::shared_ptr<const engine::TransientDetector> analysis;
     std::vector<engine::Slice> slices;
 };
 
@@ -78,19 +85,22 @@ public:
         updated.trimStartFrame = 0;
         updated.trimEndFrame = audio->frames;
 
-        auto loaded = std::make_shared<LoadedSample>();
-        loaded->audio = std::move (*audio);
+        auto audioPtr = std::make_shared<const DecodedAudio> (std::move (*audio));
 
-        engine::TransientDetector detector;
-        const int numChannels = loaded->audio.channelCount();
+        auto detector = std::make_shared<engine::TransientDetector>();
+        const int numChannels = audioPtr->channelCount();
         std::vector<const float*> channelPointers (static_cast<std::size_t> (numChannels));
         for (int c = 0; c < numChannels; ++c)
             channelPointers[static_cast<std::size_t> (c)] =
-                loaded->audio.channels[static_cast<std::size_t> (c)].data();
+                audioPtr->channels[static_cast<std::size_t> (c)].data();
 
-        detector.analyze (channelPointers.data(), numChannels, loaded->audio.frames,
-                          loaded->audio.sampleRate);
-        loaded->slices = engine::buildSlices (detector, updated);
+        detector->analyze (channelPointers.data(), numChannels, audioPtr->frames,
+                           audioPtr->sampleRate);
+
+        auto loaded = std::make_shared<LoadedSample>();
+        loaded->audio = audioPtr;
+        loaded->analysis = detector;
+        loaded->slices = engine::buildSlices (*detector, updated);
 
         slot_.store (loaded, std::memory_order_release);
 
@@ -98,6 +108,42 @@ public:
         result.sample = std::move (loaded);
         result.updated = std::move (updated);
         return result;
+    }
+
+    // Rebuild ONLY the slice list from the retained analysis + the given
+    // sample state (manual points / exclusions / trim / sensitivity). The
+    // audio and analysis are shared with the previous LoadedSample, so this
+    // is cheap and safe to call on the UI thread for a marker edit. Returns
+    // the new sample (or the current one unchanged if nothing is loaded).
+    std::shared_ptr<const LoadedSample> rebuildSlices (const state::SampleState& sample)
+    {
+        auto cur = acquire();
+        if (cur == nullptr || cur->analysis == nullptr)
+            return cur;
+
+        auto next = std::make_shared<LoadedSample>();
+        next->audio = cur->audio;         // share (immutable)
+        next->analysis = cur->analysis;   // share (immutable)
+        next->slices = engine::buildSlices (*cur->analysis, sample);
+
+        slot_.store (next, std::memory_order_release);
+        return next;
+    }
+
+    // Snap a frame to the strongest transient within +/- radiusFrames,
+    // confined to [rangeStart, rangeEnd). Backed by the retained analysis's
+    // raw derivative peak search (no sensitivity threshold -- matches the
+    // original's findNearestPeak). Returns the input unchanged if there is
+    // no analysis.
+    [[nodiscard]] std::int64_t snapToTransient (std::int64_t frame,
+                                                std::int64_t radiusFrames,
+                                                std::int64_t rangeStart,
+                                                std::int64_t rangeEnd) const
+    {
+        auto cur = acquire();
+        if (cur == nullptr || cur->analysis == nullptr)
+            return frame;
+        return cur->analysis->findNearestPeak (frame, radiusFrames, rangeStart, rangeEnd);
     }
 
 private:

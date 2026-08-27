@@ -11,9 +11,13 @@
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 
+#include <engine/Tempo.h>
+
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace nedit::plugin {
 
@@ -239,6 +243,188 @@ void NeditProcessor::setVisibleWindow (double startNorm, double endNorm)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setTrimFrames (std::int64_t startFrame, std::int64_t endFrame)
+{
+    uiState_.sample.trimStartFrame = startFrame;
+    uiState_.sample.trimEndFrame = endFrame;
+    uiState_.sample.sanitize();
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+float NeditProcessor::getSliceProbability (int sliceIndex) const
+{
+    const auto& w = uiState_.generate.sliceWeights;
+    if (sliceIndex < 0 || sliceIndex >= static_cast<int> (w.size()))
+        return 1.0f;
+    return w[static_cast<std::size_t> (sliceIndex)];
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setSliceProbability (int sliceIndex, float weight)
+{
+    auto& w = uiState_.generate.sliceWeights;
+    if (sliceIndex < 0 || sliceIndex >= static_cast<int> (w.size()))
+        return;
+    w[static_cast<std::size_t> (sliceIndex)] = std::clamp (weight, 0.0f, 1.0f);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+std::int64_t NeditProcessor::resolveManualFrame (std::int64_t frame, bool snap) const
+{
+    const auto& sample = uiState_.sample;
+    const std::int64_t trimStart = sample.trimStartFrame;
+    const std::int64_t trimEnd = sample.trimEndFrame;
+    std::int64_t pos = std::clamp (frame, trimStart, std::max (trimStart, trimEnd - 1));
+
+    if (snap)
+    {
+        const auto radius = static_cast<std::int64_t> (
+            static_cast<double> (engine::kManualSnapRadiusMs) / 1000.0 * sample.sampleSampleRate);
+        pos = sampleManager_.snapToTransient (pos, radius, trimStart, trimEnd);
+    }
+
+    return pos;
+}
+
+//------------------------------------------------------------------------
+std::int32_t NeditProcessor::addManualPoint (std::int64_t frame, bool snap)
+{
+    auto& sample = uiState_.sample;
+    if (! sample.hasSample() || sample.sampleLengthFrames <= 0)
+        return -1;
+
+    const std::int64_t pos = resolveManualFrame (frame, snap);
+    const std::int32_t id = sample.nextManualPointId++;
+    sample.manualPoints.push_back ({ id, pos });
+
+    rebuildSlicesPreservingWeights();
+    return id;
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::moveManualPoint (std::int32_t id, std::int64_t frame, bool snap)
+{
+    auto& sample = uiState_.sample;
+    if (! sample.hasSample() || sample.sampleLengthFrames <= 0)
+        return;
+
+    auto it = std::find_if (sample.manualPoints.begin(), sample.manualPoints.end(),
+                            [id] (const state::SamplePoint& mp) { return mp.id == id; });
+    if (it == sample.manualPoints.end())
+        return;
+
+    const std::int64_t pos = resolveManualFrame (frame, snap);
+    if (it->position == pos)
+        return;   // unchanged -> skip the rebuild + publish
+
+    it->position = pos;
+    rebuildSlicesPreservingWeights();
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::removeManualPoint (std::int32_t id)
+{
+    auto& mps = uiState_.sample.manualPoints;
+    const auto before = mps.size();
+    mps.erase (std::remove_if (mps.begin(), mps.end(),
+                               [id] (const state::SamplePoint& mp) { return mp.id == id; }),
+               mps.end());
+
+    if (mps.size() == before)
+        return false;   // nothing removed
+
+    rebuildSlicesPreservingWeights();
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::excludeNearestAutoPoint (std::int64_t frame)
+{
+    auto& sample = uiState_.sample;
+    if (! sample.hasSample() || sample.sampleLengthFrames <= 0)
+        return false;
+
+    const auto loaded = sampleManager_.acquire();
+    if (loaded == nullptr || loaded->analysis == nullptr)
+        return false;
+
+    // Re-run detection at the CURRENT sensitivity+holdoff (exclusions are
+    // applied later during the merge, so this still lists already-excluded
+    // onsets -- the visible boundary disappears after the first exclusion,
+    // so it can't normally be re-clicked).
+    const auto autoSlices = loaded->analysis->detectSlices (
+        sample.sensitivity, engine::tempo::minimumHoldoffMs (sample),
+        sample.trimStartFrame, sample.trimEndFrame);
+
+    std::int64_t nearest = -1;
+    std::int64_t bestDist = std::numeric_limits<std::int64_t>::max();
+    for (const auto& s : autoSlices)
+    {
+        if (s.startFrame == sample.trimStartFrame)
+            continue;   // the trim start is never excludable
+        const std::int64_t d = std::llabs (s.startFrame - frame);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            nearest = s.startFrame;
+        }
+    }
+    if (nearest < 0)
+        return false;
+
+    // Defensive dedup: if this raw onset already matches an exclusion, leave
+    // state untouched (no rebuild, no duplicate exclusion points).
+    const auto matchToleranceFrames = static_cast<std::int64_t> (
+        static_cast<double> (engine::kManualSnapRadiusMs) / 1000.0 * sample.sampleSampleRate);
+    for (const auto& ep : sample.excludedPoints)
+        if (std::llabs (ep.position - nearest) <= matchToleranceFrames)
+            return false;
+
+    sample.excludedPoints.push_back ({ sample.nextExcludedPointId++, nearest });
+    rebuildSlicesPreservingWeights();
+    return true;
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::rebuildSlicesPreservingWeights()
+{
+    // Snapshot the OLD slices + their painted weights (kept parallel).
+    std::vector<engine::Slice> oldSlices;
+    if (const auto cur = sampleManager_.acquire())
+        oldSlices = cur->slices;
+
+    std::vector<float> oldWeights = uiState_.generate.sliceWeights;
+    oldWeights.resize (oldSlices.size(), 1.0f);
+
+    // Rebuild from the retained analysis + current sample state.
+    const auto next = sampleManager_.rebuildSlices (uiState_.sample);
+    const auto& newSlices = (next != nullptr) ? next->slices : oldSlices;
+
+    // Remap: each new slice inherits the weight of the OLD slice that
+    // contained its start-frame (an unchanged boundary matches exactly; a
+    // split inherits its parent's value; a merge keeps the surviving
+    // boundary's value). Defaults to 1.0 for genuinely new regions.
+    std::vector<float> newWeights (newSlices.size(), 1.0f);
+    for (std::size_t j = 0; j < newSlices.size(); ++j)
+    {
+        const std::int64_t s = newSlices[j].startFrame;
+        for (std::size_t k = 0; k < oldSlices.size(); ++k)
+        {
+            if (s >= oldSlices[k].startFrame && s < oldSlices[k].endFrame)
+            {
+                newWeights[j] = oldWeights[k];
+                break;
+            }
+        }
+    }
+
+    uiState_.generate.sliceWeights = std::move (newWeights);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 void NeditProcessor::setAuditionEnabled (bool enabled)
 {
     if (enabled)
@@ -246,6 +432,21 @@ void NeditProcessor::setAuditionEnabled (bool enabled)
 
     uiState_.ui.auditionEnabled = enabled;
     provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::startSliceAudition (int64_t startFrame, int64_t endFrame)
+{
+    sliceAuditionActive_ = true;
+    sliceAuditionStart_ = startFrame;
+    sliceAuditionEnd_ = endFrame;
+    sliceAuditionPosition_ = static_cast<double> (startFrame);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::stopSliceAudition()
+{
+    sliceAuditionActive_ = false;
 }
 
 //------------------------------------------------------------------------
@@ -327,7 +528,27 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
     const auto loaded = sampleManager_.acquire();
     static const std::vector<engine::Slice> kNoSlices;
     const auto& slices = (loaded != nullptr && ! loaded->slices.empty()) ? loaded->slices
-                                                                        : kNoSlices;
+                                                                         : kNoSlices;
+
+    // Slice audition (RMB hold): raw loop of a single slice region,
+    // bypasses everything. No host-transport auto-stop — the user is
+    // manually previewing a region.
+    if (sliceAuditionActive_ && loaded != nullptr)
+    {
+        auto& outBus = data.outputs[0];
+        outBus.silenceFlags = 0;
+        for (Steinberg::int32 ch = 0; ch < outBus.numChannels; ++ch)
+            if (outBus.channelBuffers32[ch] != nullptr)
+                std::memset (outBus.channelBuffers32[ch], 0,
+                             sizeof (float) * static_cast<std::size_t> (data.numSamples));
+
+        renderSliceAudition (outBus.channelBuffers32,
+                             outBus.numChannels < 1 ? 1 : outBus.numChannels,
+                             data.numSamples,
+                             processSetup.sampleRate > 0 ? processSetup.sampleRate
+                                                         : 44100.0);
+        return kOk;
+    }
 
     // --- MIDI ---------------------------------------------------------------
     if (data.inputEvents != nullptr)
@@ -362,18 +583,18 @@ tresult PLUGIN_API NeditProcessor::process (Vst::ProcessData& data)
     ctx_.hostSampleRate = processSetup.sampleRate > 0 ? processSetup.sampleRate : 44100.0;
     ctx_.sourceSampleRate = st->sample.sampleSampleRate;
 
-    if (loaded != nullptr && loaded->audio.channelCount() > 0)
+    if (loaded != nullptr && loaded->audio != nullptr && loaded->audio->channelCount() > 0)
     {
         // Refresh the per-channel pointer table. Fixed capacity: no
         // audio-thread allocation; channels beyond the cap are ignored.
-        const int chans = std::min (loaded->audio.channelCount(), kMaxSourceChannels);
+        const int chans = std::min (loaded->audio->channelCount(), kMaxSourceChannels);
         for (int c = 0; c < chans; ++c)
             sourceChannelPointers_[static_cast<std::size_t> (c)] =
-                loaded->audio.channels[static_cast<std::size_t> (c)].data();
+                loaded->audio->channels[static_cast<std::size_t> (c)].data();
 
         ctx_.source = sourceChannelPointers_.data();
         ctx_.sourceChannels = chans;
-        ctx_.sourceFrames = loaded->audio.frames;
+        ctx_.sourceFrames = loaded->audio->frames;
     }
     else
     {
@@ -429,10 +650,10 @@ void NeditProcessor::renderAudition (float* const* outAdd, int numOutChannels,
                                      int numSamples, double hostSampleRate)
 {
     const auto loaded = sampleManager_.acquire();
-    if (loaded == nullptr)
+    if (loaded == nullptr || loaded->audio == nullptr)
         return;
 
-    const auto& audio = loaded->audio;
+    const auto& audio = *loaded->audio;
     const auto& sample = uiState_.sample;
     const int sourceChannels = audio.channelCount();
     const int64_t sourceFrames = audio.frames;
@@ -477,6 +698,56 @@ void NeditProcessor::renderAudition (float* const* outAdd, int numOutChannels,
         }
 
         auditionPosition_ += auditionRate;
+    }
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::renderSliceAudition (float* const* outAdd, int numOutChannels,
+                                          int numSamples, double hostSampleRate)
+{
+    const auto loaded = sampleManager_.acquire();
+    if (loaded == nullptr || loaded->audio == nullptr)
+        return;
+
+    const auto& audio = *loaded->audio;
+    const auto& sample = uiState_.sample;
+    const int sourceChannels = audio.channelCount();
+    const int64_t sourceFrames = audio.frames;
+
+    const int64_t start = sliceAuditionStart_;
+    const int64_t end = sliceAuditionEnd_;
+
+    if (sourceFrames == 0 || sourceChannels == 0 || numSamples <= 0 || end <= start)
+        return;
+
+    const double auditionRate = (sample.sampleSampleRate > 0.0 && hostSampleRate > 0.0)
+                                    ? sample.sampleSampleRate / hostSampleRate
+                                    : 1.0;
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        if (sliceAuditionPosition_ < static_cast<double> (start)
+            || sliceAuditionPosition_ >= static_cast<double> (end))
+            sliceAuditionPosition_ = static_cast<double> (start);
+
+        const int64_t idx0 = static_cast<int64_t> (sliceAuditionPosition_);
+        const int64_t idx1 = idx0 + 1;
+        const float frac = static_cast<float> (sliceAuditionPosition_ - static_cast<double> (idx0));
+
+        const int64_t idx0c = std::min (idx0, sourceFrames - 1);
+        const int64_t idx1c = std::min (idx1, sourceFrames - 1);
+
+        for (int ch = 0; ch < numOutChannels; ++ch)
+        {
+            const int srcCh = std::min (ch, sourceChannels - 1);
+            const float s0 = audio.channels[static_cast<std::size_t> (srcCh)]
+                                 [static_cast<std::size_t> (idx0c)];
+            const float s1 = audio.channels[static_cast<std::size_t> (srcCh)]
+                                 [static_cast<std::size_t> (idx1c)];
+            outAdd[ch][i] += s0 + frac * (s1 - s0);
+        }
+
+        sliceAuditionPosition_ += auditionRate;
     }
 }
 

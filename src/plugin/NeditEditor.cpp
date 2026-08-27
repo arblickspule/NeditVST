@@ -4,6 +4,7 @@
 
 #include "NeditProcessor.h"
 #include "ParameterSurface.h"
+#include "WaveformView.h"
 
 #include "vstgui/lib/ccolor.h"
 #include "vstgui/lib/cdrawcontext.h"
@@ -244,6 +245,13 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     frame->addView (loadBtn);
     loadBtn_ = loadBtn;
 
+    // ── Waveform display (below app bar) ──────────────────────────────
+    constexpr int kWaveformH = 144;
+    auto* wave = new WaveformView (*owner_, this, kWaveformH);
+    wave->setViewSize (CRect (0, kAppBarHeight, kEditorWidth, kAppBarHeight + kWaveformH));
+    frame->addView (wave);
+    waveformView_ = wave;
+
     setIdleRate (60);
     return true;
 }
@@ -254,6 +262,7 @@ void PLUGIN_API NeditEditor::close()
     sampleNameLabel_ = nullptr;
     auditionBtn_ = nullptr;
     loadBtn_ = nullptr;
+    waveformView_ = nullptr;
     if (frame != nullptr)
     {
         frame->close();
@@ -451,6 +460,10 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
                 }
             }
         }
+
+        // Refresh waveform view when sample changes.
+        if (sampleChanged && waveformView_)
+            waveformView_->refresh();
     }
     return VSTGUIEditor::notify (sender, message);
 }

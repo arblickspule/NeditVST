@@ -100,6 +100,7 @@ set_target_properties(vstgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(nedit_plugin STATIC
     NeditProcessor.cpp
     NeditEditor.cpp
+    WaveformView.cpp
     WavDecoder.cpp
     # SDK's VSTGUI editor base + the Linux runloop bridge; compiled here
     # (not in nedit_vst3_sdk) because they need VSTGUI headers.

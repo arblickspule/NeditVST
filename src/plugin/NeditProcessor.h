@@ -54,8 +54,42 @@ public:
     // Waveform zoom/pan writes (UiState owns view state; pitfall #6).
     void setVisibleWindow (double startNorm, double endNorm);
 
+    // Trim: direct frame-based write from the waveform view's trim handles.
+    void setTrimFrames (std::int64_t startFrame, std::int64_t endFrame);
+
+    // Per-slice probability weight (UI concept: 0 = never picked,
+    // 1 = full weight). Stored in generate.sliceWeights.
+    [[nodiscard]] float getSliceProbability (int sliceIndex) const;
+    void setSliceProbability (int sliceIndex, float weight);
+
+    // Manual slice markers (double-click on the waveform). addManualPoint
+    // clamps to the trim and, when snap is true, snaps to the nearest
+    // transient (raw derivative peak within ~50ms -- the original's
+    // findNearestPeak, NOT a re-detect). moveManualPoint repositions an
+    // existing marker (used for click-drag; snap applied on release). All
+    // three rebuild the slice list from the retained analysis and preserve
+    // painted probabilities by mapping weights across the rebuild by slice
+    // start-frame. Returns the new point's id (addManualPoint) / true if a
+    // point was removed.
+    std::int32_t addManualPoint (std::int64_t frame, bool snap);
+    void moveManualPoint (std::int32_t id, std::int64_t frame, bool snap);
+    bool removeManualPoint (std::int32_t id);
+    // Suppress the auto-detected onset nearest to `frame` (double-click on an
+    // auto marker). Re-runs detection at the CURRENT sensitivity+holdoff to
+    // find the nearest raw onset != trim start -- the same approach as the
+    // original's excludeNearestAutoPoint -- and records it in
+    // sample.excludedPoints, then rebuilds weights-preserving. The trim-start
+    // boundary is never excludable. Returns false when nothing was found
+    // (or it was already excluded), leaving no rebuild behind.
+    bool excludeNearestAutoPoint (std::int64_t frame);
+
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);
+
+    // Slice audition — loops a specific slice region. Called on RMB
+    // down, cleared on RMB up. Bypasses the scheduler entirely.
+    void startSliceAudition (int64_t startFrame, int64_t endFrame);
+    void stopSliceAudition();
 
     // Sample presence query (editor uses this to disable the audition
     // button when nothing is loaded).
@@ -96,8 +130,19 @@ public:
 private:
     void registerParameters();
     void syncParameterObjectsFromState();
+    // Rebuild the slice list from the retained analysis after a marker/trim
+    // edit, remapping generate.sliceWeights across the rebuild by slice
+    // start-frame so painted probabilities survive (unchanged boundaries
+    // keep their value; a split inherits its parent slice's value). Then
+    // publishes the new state snapshot.
+    void rebuildSlicesPreservingWeights();
+    // Clamp a requested marker frame into the trim and, when snap is true,
+    // pull it to the nearest transient (shared by add + move).
+    [[nodiscard]] std::int64_t resolveManualFrame (std::int64_t frame, bool snap) const;
     void renderAudition (float* const* outAdd, int numOutChannels,
                          int numSamples, double hostSampleRate);
+    void renderSliceAudition (float* const* outAdd, int numOutChannels,
+                              int numSamples, double hostSampleRate);
 
     // Controller-side authoritative live state.
     state::PluginState uiState_;
@@ -113,6 +158,12 @@ private:
     state::PluginState automationScratch_;
     double lastBlockEndPpq_ = 0.0;
     double auditionPosition_ = 0.0;  // read cursor for raw audition loop
+
+    // Slice audition state (RMB hold-to-loop).
+    bool sliceAuditionActive_ = false;
+    int64_t sliceAuditionStart_ = 0;
+    int64_t sliceAuditionEnd_ = 0;
+    double sliceAuditionPosition_ = 0.0;
 
     NeditProcessor (const NeditProcessor&) = delete;
     NeditProcessor& operator= (const NeditProcessor&) = delete;
