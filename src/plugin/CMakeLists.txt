@@ -239,8 +239,12 @@ if(APPLE)
         BUNDLE_EXTENSION vst3
         # CMake would otherwise put the bundle in the target's own binary
         # dir (build/src/plugin/nedit.vst3) so the artifact upload / deploy
-        # path would not match Linux/Windows. Xcode is multi-config, so pin
-        # the Release config explicitly to the shared bundle dir.
+        # path would not match Linux/Windows. A MODULE+bundle wrapper is
+        # placed via LIBRARY_OUTPUT_DIRECTORY (BUNDLE_OUTPUT_DIRECTORY only
+        # governs true MACOSX_BUNDLE executables), so pin both to the
+        # shared bundle dir; the _RELEASE forms cover multi-config Xcode.
+        LIBRARY_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
         BUNDLE_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
         BUNDLE_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
     )

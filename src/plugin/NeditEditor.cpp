@@ -47,6 +47,7 @@ namespace {
 constexpr int kEditorWidth  = 960;
 constexpr int kEditorHeight = 800;
 constexpr int kAppBarHeight = 48;
+constexpr int kToolBarHeight = 48;   // second strip: bar length / BPM / etc.
 
 // ── Colour tokens (design-language.md "Graphite & Salmon") ─────────────
 const CColor kWindowBase    {  20,  22,  26, 255 }; // graphite-900
@@ -102,6 +103,31 @@ public:
         dc->drawString ("NEDIT", CPoint (r.left + 38, r.top + 32));
 
         // Hairline divider at bottom edge.
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawLine (CPoint (r.left, r.bottom - 1),
+                      CPoint (r.right, r.bottom - 1));
+
+        setDirty (false);
+    }
+};
+
+// ── ToolBar: second 48px strip between the app bar and the waveform. ───
+// Holds the document-level controls (bar length, BPM override, ...); the
+// background band matches the app bar so the two rows read as one header
+// unit over the graphite-900 work area.
+class ToolBarView : public CView
+{
+public:
+    using CView::CView;
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+
+        // Full-fill graphite-800, hairline divider at the bottom edge.
+        dc->setFillColor (kSurface1);
+        dc->drawRect (r, kDrawFilled);
         dc->setFrameColor (kOutline);
         dc->setLineWidth (1);
         dc->drawLine (CPoint (r.left, r.bottom - 1),
@@ -249,10 +275,17 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     frame->addView (loadBtn);
     loadBtn_ = loadBtn;
 
-    // ── Waveform display (below app bar) ──────────────────────────────
+    // ── Tool bar (second strip, h48): bar length / BPM override / other
+    //    document-level controls land here. ──────────────────────────────
+    auto* toolbar = new ToolBarView (
+        CRect (0, kAppBarHeight, kEditorWidth, kAppBarHeight + kToolBarHeight));
+    frame->addView (toolbar);
+
+    // ── Waveform display (below the tool bar) ──────────────────────────
     constexpr int kWaveformH = 144;
+    constexpr int kWaveTop  = kAppBarHeight + kToolBarHeight;
     auto* wave = new WaveformView (*owner_, this, kWaveformH);
-    wave->setViewSize (CRect (0, kAppBarHeight, kEditorWidth, kAppBarHeight + kWaveformH));
+    wave->setViewSize (CRect (0, kWaveTop, kEditorWidth, kWaveTop + kWaveformH));
     frame->addView (wave);
     waveformView_ = wave;
 
