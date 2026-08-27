@@ -209,7 +209,8 @@ TEST_CASE ("shell: createView produces the editor (headless-safe checks only)")
     CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeHWND)
            == Steinberg::kResultTrue);
 #else
-    CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeHIView)
+    // macOS embeds via an NSView.
+    CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeNSView)
            == Steinberg::kResultTrue);
 #endif
 
