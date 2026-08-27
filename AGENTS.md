@@ -206,11 +206,17 @@ included/excluded.
   stretch3/filterDown4/filterUp5/bitcrush6/scratch7/flanger8.
 - Audio-thread state-snapshot / message-passing mechanism DONE
   (header-only, `src/engine/`): `SnapshotProvider.h` — immutable
-  per-block state views via `std::atomic<std::shared_ptr<const
-  PluginState>>`; UI publishes clones (allocation stays off the audio
-  thread), audio acquires a shared_ptr per block so mid-block publishes
+  per-block state views via `engine::AtomicSharedPtr<const PluginState>`
+  (see `AtomicSharedPtr.h`); UI publishes clones (allocation stays off the
+  audio thread), audio acquires a shared_ptr per block so mid-block publishes
   can't mutate the rendering view; successive reads never regress
-  (modification order, stress-tested). `CommandQueue.h` — lock-free SPSC
+  (modification order, stress-tested). PORTABILITY GOTCHA: `std::atomic<
+  std::shared_ptr<T>>` is a libstdc++/MS-STL extension that libc++ rejects
+  (shared_ptr not trivially copyable — the "atomic smart pointers" C++20
+  proposal was removed from the standard). `AtomicSharedPtr` hides the
+  standard `atomic_load_explicit`/`atomic_store_explicit` free-function
+  fallback (with the C++20 deprecation notice silenced) under `_LIBCPP_VERSION`;
+  macOS CI lane depends on it. `CommandQueue.h` — lock-free SPSC
   ring of trivially-copyable `EngineCommand`s (power-of-two capacity,
   free-running cursors, drop-on-full by caller's choice; advisory pokes
   only — sampleSlotReplaced / invalidateAnalysis / quit). `MidiDispatch.h`
@@ -284,7 +290,7 @@ included/excluded.
     GOTCHA: fmt payload offsets are format(0) channels(2) rate(4)
     byteRate(8) blockAlign(12) bits(14) — byteRate is at 8, easy to misread
     as blockAlign.
-  - `SampleManager.h` — header-only. Atomic shared_ptr<const LoadedSample>
+  - `SampleManager.h` — header-only. AtomicSharedPtr<const LoadedSample>
     slot ({DecodedAudio audio, vector<Slice> slices}); loadFile/
     loadFromMemory run decode + TransientDetector.analyze +
     buildSlices on the CALLER thread and publish immutably. Returns

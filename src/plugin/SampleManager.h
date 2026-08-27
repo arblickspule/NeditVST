@@ -14,12 +14,12 @@
 
 #include "WavDecoder.h"
 
+#include <engine/AtomicSharedPtr.h>
 #include <engine/Slice.h>
 #include <engine/SliceBuilder.h>
 #include <engine/TransientDetector.h>
 #include <state/SampleState.h>
 
-#include <atomic>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -147,7 +147,7 @@ public:
     }
 
 private:
-    std::atomic<std::shared_ptr<const LoadedSample>> slot_;
+    engine::AtomicSharedPtr<const LoadedSample> slot_;
 };
 
 } // namespace nedit::plugin

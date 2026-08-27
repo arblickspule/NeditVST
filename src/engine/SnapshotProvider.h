@@ -14,14 +14,11 @@
 //   feet; the block simply keeps rendering the older coherent view.
 //
 // No locks are taken by this class beyond the (very short) internal
-// critical section of std::atomic<std::shared_ptr>; there is no allocation
-// on the reader path after construction.
+// critical section of the atomic shared_ptr; there is no allocation on the
+// reader path after construction.
 
+#include "engine/AtomicSharedPtr.h"
 #include "state/PluginState.h"
-
-#include <atomic>
-#include <memory>
-#include <utility>
 
 namespace nedit::engine
 {
@@ -55,7 +52,7 @@ public:
     }
 
 private:
-    std::atomic<std::shared_ptr<const state::PluginState>> current_;
+    AtomicSharedPtr<const state::PluginState> current_;
 };
 
 } // namespace nedit::engine
