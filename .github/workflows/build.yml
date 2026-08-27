@@ -1,0 +1,50 @@
+name: Build native VST3 plugin
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Native rewrite: no JUCE. VSTGUI (the editor toolkit) is the only
+      # component with system prerequisites -- X11 + XCB + Wayland graphics
+      # backends, Cairo/Pango/Fontconfig text, GLib, Freetype. Everything
+      # else (VST3 SDK, VSTGUI sources, Catch2, nlohmann) is fetched by
+      # CMake at configure time.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwayland-dev wayland-protocols \
+            libx11-dev \
+            libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libglib2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DNEDIT_BUILD_PLUGIN=ON
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Upload VST3 bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NeditVST3-Linux
+          path: build/nedit.vst3
+          if-no-files-found: error
