@@ -250,6 +250,31 @@ included/excluded.
     pointers); CMAKE_POSITION_INDEPENDENT_CODE ON globally.
   - Bundle assembled to build/nedit.vst3/Contents/x86_64-linux/
     libnedit.vst.so via POST_BUILD copy.
+- Cross-platform CI + CMake (Windows/macOS builds work):
+  - Platform SDK TUs selected per-OS (systemclipboard/threadchecker linux/
+    mac(.mm)/win32), module entry linuxmain/dllmain(AU)/macmain(CFBundle —
+    links CoreFoundation), VSTGUI Linux runloop bridge compiled Linux-only
+    (Cocoa/GDI backends hook the host loop themselves).
+  - Whole-archive linkage per platform: GNU `-Wl,--whole-archive`,
+    Apple `-Wl,-force_load,$<TARGET_FILE:...>`, MSVC
+    `/WHOLEARCHIVE:...` + `/EXPORT:GetPluginFactory`.
+  - Bundle assembly per platform: Linux x86_64-linux/nedit.so (+ moduleinfo
+    via the Linux-only nedit_moduleinfotool + strip); Windows
+    Contents/x86_64-win/nedit.vst3 (copy, no strip); macOS uses CMake's
+    MODULE+BUNDLE wrapper (nedit.vst3/Contents/MacOS/nedit) then ad-hoc
+    codesigns (`--force --deep --sign -` — unsigned MH_BUNDLE won't dlopen
+    on Apple Silicon). moduleinfo.json is deliberately Linux-only (SMTG
+    behaviour; Windows/macOS hosts don't read it).
+  - MSVC gets `/w` where GCC/Clang get `-w` (NEDIT_SILENCE_WARNINGS);
+    `enable_language(OBJCXX)` for the .mm SDK TUs.
+  - Editor file dialog: Linux keeps the detached zenity/kdialog thread (a
+    blocking CNewFileSelector on the embedded X11 thread froze the desktop);
+    Windows/macOS use CNewFileSelector synchronously — those backends pump
+    their own event loop. `unistd.h`/popen guarded `#if __linux__`.
+  - nedit_moduleinfotool + the `deploy` target are Linux-gated.
+  - CI build.yml matrix: ubuntu-latest + macos-latest (arm64) +
+    windows-latest (MSVC), VSTGUI system deps installed only on Linux,
+    `--config Release` + `ctest -C Release`, bundles uploaded as artifacts.
 - Known Phase-3 boundary RESOLVED in Phase 4a: the shell now renders real
   audio end-to-end (decode → analysis → slices → scheduler → output).
 - Phase 4a (sample pipeline) DONE:

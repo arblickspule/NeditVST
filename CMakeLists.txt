@@ -42,7 +42,10 @@ if(NEDIT_BUILD_PLUGIN)
     # Phase 4: VST3 SDK + VSTGUI via FetchContent. See AGENTS.md roadmap.
     # Added BEFORE tests/ so test targets can reference the entry objects.
     add_subdirectory(src/plugin)
-    add_subdirectory(tools)
+    # host_harness drives a real X11 plugin window (xcb/xtst) -- Linux only.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_subdirectory(tools)
+    endif()
 endif()
 
 if(NEDIT_BUILD_TESTS)

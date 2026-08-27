@@ -8,6 +8,7 @@
 
 #include "vstgui/lib/ccolor.h"
 #include "vstgui/lib/cdrawcontext.h"
+#include "vstgui/lib/cfileselector.h"
 #include "vstgui/lib/cfont.h"
 #include "vstgui/lib/cframe.h"
 #include "vstgui/lib/cgradient.h"
@@ -19,7 +20,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+
+#if __linux__
 #include <unistd.h>
+#endif
 
 #if SMTG_OS_LINUX
 #include "public.sdk/source/vst/vstgui_linux_runloop_support.h"
@@ -342,6 +346,12 @@ void NeditEditor::endEdit (VSTGUI_INT32 index)
 
 namespace {
 
+#if __linux__
+// Linux-only: spawn zenity/kdialog and read its stdout on a pipe. This is
+// deliberately threaded -- VSTGUI's Linux fileselector blocks the UI
+// run-loop thread on a pipe read while zenity runs, wedging the embedded
+// X11 window. The Windows/macOS backends run their own message loops and
+// don't have this pathology, so they use the selector directly.
 [[nodiscard]] std::string runNativeFileDialog()
 {
     if (const char* forced = std::getenv ("NEDIT_TEST_FILE"))
@@ -373,12 +383,14 @@ namespace {
         out.pop_back();
     return out;
 }
+#endif
 
 } // namespace
 
 //------------------------------------------------------------------------
 void NeditEditor::runFileSelector()
 {
+#if __linux__
     if (! fileDialog_)
         fileDialog_ = std::make_shared<FileDialogState>();
 
@@ -397,6 +409,22 @@ void NeditEditor::runFileSelector()
         state->ready.store (true);
         state->running.store (false);
     }).detach();
+#else
+    // Windows/macOS: the native detector pumps its own event loop, so it
+    // can run synchronously on the UI thread.
+    auto* selector = CNewFileSelector::create (frame, CNewFileSelector::kSelectFile);
+    if (selector == nullptr)
+        return;
+
+    selector->setTitle ("Load Sample");
+    selector->addFileExtension (CFileExtension ("WAV audio", "wav"));
+
+    selector->run ([this] (CNewFileSelector* s) {
+        if (s->getNumSelectedFiles() > 0)
+            owner_->requestSampleLoad (s->getSelectedFile (0));
+    });
+    selector->forget();
+#endif
 }
 
 //------------------------------------------------------------------------
