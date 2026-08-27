@@ -200,9 +200,18 @@ TEST_CASE ("shell: createView produces the editor (headless-safe checks only)")
     auto* view = fx.processor.createView (Steinberg::Vst::ViewType::kEditor);
     REQUIRE (view != nullptr);
 
-    // Linux editors must embed via X11 window IDs.
+    // Editors must embed via a platform window ID; X11 on Linux, HWND on
+    // Windows, Cocoa on macOS.
+#if defined(__linux__)
     CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeX11EmbedWindowID)
            == Steinberg::kResultTrue);
+#elif defined(_WIN32)
+    CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeHWND)
+           == Steinberg::kResultTrue);
+#else
+    CHECK (view->isPlatformTypeSupported (Steinberg::kPlatformTypeHIView)
+           == Steinberg::kResultTrue);
+#endif
 
     Steinberg::ViewRect size {};
     CHECK (view->getSize (&size) == Steinberg::kResultTrue);
