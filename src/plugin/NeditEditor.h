@@ -69,6 +69,17 @@ public:
     VSTGUI::CMessageResult notify (VSTGUI::CBaseObject* sender,
                                    VSTGUI::IdStringPtr message) override;
 
+    //--- Style-probability paint overlay -------------------------------------
+    // Pressing off the thin vertical track in a probability column enters a
+    // full-width paint overlay: every column draws a column-width slider and
+    // dragging across columns paints each one the pointer crosses at the
+    // pointer's height; mouse-up hides the overlay. These are driven by the
+    // StyleProbSlider that captured the gesture (it keeps all moves).
+    void setStylePaintActive (bool on);
+    [[nodiscard]] bool stylePaintActive() const noexcept { return stylePaintActive_; }
+    [[nodiscard]] int stylePaintColumn() const noexcept { return stylePaintColumn_; }
+    void stylePaintTo (int column, float value);
+
 private:
 void runFileSelector();
     void applyParamFromControl (VSTGUI::CControl& control);
@@ -120,6 +131,10 @@ void runFileSelector();
                state::kNumPlaybackStyles> paramMiniSliders_ {};
     std::array<std::array<ui::ParamMiniMenu*, kParamMiniRowCount>,
                state::kNumPlaybackStyles> paramMiniMenus_ {};
+
+    // Paint-overlay gesture state (see the accessors above).
+    bool stylePaintActive_ = false;
+    int stylePaintColumn_ = 0;
 
     // Idle-timer dedup for the toolbar control-value sync (host automation
     // can change the state any time; only push to the controls on change).

@@ -53,6 +53,7 @@ if(NEDIT_BUILD_PLUGIN)
     add_executable(nedit_plugin_tests
         plugin/test_parameter_surface.cpp
         plugin/test_nedit_processor.cpp
+        plugin/test_prob_band_geometry.cpp
         plugin/test_sample_pipeline.cpp
         $<TARGET_OBJECTS:nedit_plugin_entry>
     )

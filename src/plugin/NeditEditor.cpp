@@ -4,6 +4,7 @@
 
 #include "NeditProcessor.h"
 #include "ParameterSurface.h"
+#include "ProbBandGeometry.h"
 #include "WaveformView.h"
 
 #include "state/StyleParameters.h"
@@ -1016,7 +1017,8 @@ class StyleProbSlider : public CControl
 public:
     StyleProbSlider (const CRect& size, IControlListener* l, int32_t t, int styleIndex)
         : CControl (size, l, t), styleIndex_ (styleIndex),
-          rows_ (columnParamsFor (static_cast<state::PlaybackStyle> (styleIndex)))
+          rows_ (columnParamsFor (static_cast<state::PlaybackStyle> (styleIndex))),
+          owner_ (static_cast<NeditEditor*> (l))
     {
     }
 
@@ -1082,46 +1084,75 @@ public:
                                r.top + kProbChipH + kProbChipReadoutGap + kProbReadoutH),
                         kRightText);
 
-        // ── Vertical slider, aligned left, spanning the remaining height.
-        // Track = surface, fill = the style colour, tick at the value.
+        // ── Vertical slider ──. Normally a narrow left-aligned track with
+        // an accent fill + tick; while the paint overlay is active every
+        // column draws a FULL-WIDTH track instead (the whole style section
+        // reads as a painted bar) and the column under the pointer gets a
+        // bright outline.
         const double top = sliderTop (r);
         const double bottom = r.bottom - kProbBottomPad;
-        const CRect track (r.left + kProbTrackX, top,
-                           r.left + kProbTrackX + kProbTrackW, bottom);
-        dc->setFillColor (kSurface2);
-        dc->drawRect (track, kDrawFilled);
-        if (v > 0.0)
+        if (owner_->stylePaintActive())
         {
-            const double fillH = (bottom - top) * v;
-            dc->setFillColor (accent);
-            dc->drawRect (CRect (track.left, bottom - fillH, track.right, bottom),
-                          kDrawFilled);
-        }
-        const double tickY = bottom - (bottom - top) * v;
-        dc->setFillColor (kAccentBright);
-        dc->drawRect (CRect (track.left - 1, tickY, track.right + 1, tickY + 2.0),
-                      kDrawFilled);
-
-        // ── Param controls: every column hosts its style's params in the ──
-        // space under the % and right of the slider. Subdivide is dropped
-        // (a SEQUENCER retrigger function, not a style effect). Continuous
-        // params get a 12px caption row here + a ParamMiniSlider (drawn on
-        // top) in the 10px row beneath; discrete params' rows are owned
-        // entirely by their ParamMiniMenu on top (caption + current value).
-        if (! rows_.empty())
-        {
-            dc->setFont (kNormalFontSmaller);
-            dc->setFontColor (mixColor (accent, kTextPrimary, 0.45));
-            const double listX = track.right + 4.0;
-            const double listW = r.right - 2.0 - listX;
-            for (std::size_t i = 0; i < rows_.size(); ++i)
+            const CRect wide (r.left + 2, top, r.right - 2, bottom);
+            dc->setFillColor (kSurface2);
+            dc->drawRect (wide, kDrawFilled);
+            if (v > 0.0)
             {
-                if (! rows_[i].continuous)
-                    continue;   // owned by the mini dropdown overlay
-                const double labelY = r.top + captionRowLocalY (i);
-                dc->drawString (state::styleParamInfo (rows_[i].id).name,
-                                CRect (listX, labelY, listX + listW, labelY + kProbRowH),
-                                kLeftText);
+                const double fillH = (bottom - top) * v;
+                dc->setFillColor (accent);
+                dc->drawRect (CRect (wide.left, bottom - fillH, wide.right, bottom),
+                              kDrawFilled);
+            }
+            // The parametres are not painted over -- every column is full
+            // width live, so the gesture reads as one continuous paint.
+            if (owner_->stylePaintColumn() == styleIndex_)
+            {
+                dc->setFrameColor (kAccentBright);
+                dc->drawRect (wide, kDrawStroked);
+            }
+        }
+        else
+        {
+            const CRect track (r.left + kProbTrackX, top,
+                               r.left + kProbTrackX + kProbTrackW, bottom);
+            dc->setFillColor (kSurface2);
+            dc->drawRect (track, kDrawFilled);
+            if (v > 0.0)
+            {
+                const double fillH = (bottom - top) * v;
+                dc->setFillColor (accent);
+                dc->drawRect (CRect (track.left, bottom - fillH, track.right, bottom),
+                              kDrawFilled);
+            }
+            const double tickY = bottom - (bottom - top) * v;
+            dc->setFillColor (kAccentBright);
+            dc->drawRect (CRect (track.left - 1, tickY, track.right + 1, tickY + 2.0),
+                          kDrawFilled);
+
+            // ── Param controls: every column hosts its style's params in
+            // the space under the % and right of the slider. Subdivide is
+            // dropped (a SEQUENCER retrigger function, not a style effect).
+            // Continuous params get a 12px caption row here + a
+            // ParamMiniSlider (drawn on top) in the 10px row beneath;
+            // discrete params' rows are owned entirely by their
+            // ParamMiniMenu on top (caption + current value). Skipped in
+            // paint mode so the wide bars stay uncluttered.
+            if (! rows_.empty())
+            {
+                dc->setFont (kNormalFontSmaller);
+                dc->setFontColor (mixColor (accent, kTextPrimary, 0.45));
+                const double listX = track.right + 4.0;
+                const double listW = r.right - 2.0 - listX;
+                for (std::size_t i = 0; i < rows_.size(); ++i)
+                {
+                    if (! rows_[i].continuous)
+                        continue;   // owned by the mini dropdown overlay
+                    const double labelY = r.top + captionRowLocalY (i);
+                    dc->drawString (state::styleParamInfo (rows_[i].id).name,
+                                    CRect (listX, labelY, listX + listW,
+                                           labelY + kProbRowH),
+                                    kLeftText);
+                }
             }
         }
 
@@ -1133,12 +1164,18 @@ public:
         if (! buttons.isLeftButton())
             return kMouseEventNotHandled;
         // Hit-test only the actual slider track (a narrow vertical bar at
-        // the column's left); clicks on the chip / % / parameter list fall
-        // through to the views behind. Once grabbed, the drag adjusts on
-        // any x so the pointer can leave the few-pixel track.
+        // the column's left). A press ON the track is a precise single-
+        // column adjust; a press anywhere else in the column enters the
+        // paint overlay -- this view keeps every subsequent move, so it can
+        // paint whichever column the pointer crosses.
         const double x = where.x - getViewSize().left;
         if (x < kProbTrackX || x > kProbTrackX + kProbTrackW)
-            return kMouseEventNotHandled;
+        {
+            paintOwner_ = true;
+            owner_->setStylePaintActive (true);
+            paintAt (where);
+            return kMouseEventHandled;
+        }
         dragging_ = true;
         applyFromY (where.y - getViewSize().top);
         return kMouseEventHandled;
@@ -1146,6 +1183,11 @@ public:
 
     CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
     {
+        if (paintOwner_)
+        {
+            paintAt (where);
+            return kMouseEventHandled;
+        }
         if (! dragging_)
             return kMouseEventNotHandled;
         applyFromY (where.y - getViewSize().top);
@@ -1154,6 +1196,13 @@ public:
 
     CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
     {
+        if (paintOwner_)
+        {
+            paintAt (where);
+            paintOwner_ = false;
+            owner_->setStylePaintActive (false);
+            return kMouseEventHandled;
+        }
         onMouseMoved (where, buttons);
         dragging_ = false;
         return kMouseEventHandled;
@@ -1161,6 +1210,12 @@ public:
 
     CMouseEventResult onMouseCancel () override
     {
+        if (paintOwner_)
+        {
+            paintOwner_ = false;
+            owner_->setStylePaintActive (false);
+            return kMouseEventHandled;
+        }
         dragging_ = false;
         return kMouseEventHandled;
     }
@@ -1188,6 +1243,25 @@ private:
         return kProbChipH + kProbChipReadoutGap + kProbReadoutH + kProbReadoutSliderGap;
     }
 
+    // Paint the column currently under the pointer at the pointer's height.
+    // `where` is frame-space; the columns are contiguous, each colW wide,
+    // so the whole band is recoverable from this column's own rect (its
+    // left = bandLeft + styleIndex_ * colW). Cross out of the band and the
+    // geometry clamps to the edge columns.
+    void paintAt (const CPoint& where)
+    {
+        const double colW = getViewSize().getWidth();
+        const double bandLeft = getViewSize().left
+                              - static_cast<double> (styleIndex_) * colW;
+        const int col = ui::probColumnFromX (where.x, bandLeft, colW);
+        // All columns share the band's top, so any column's local offset
+        // works; the paint value maps from the pointer's height in the
+        // same slider band the vertical bars use.
+        const double top = sliderBandTopLocal();
+        const double bottom = getViewSize().getHeight() - kProbBottomPad;
+        owner_->stylePaintTo (col, probValueFromY (where.y - getViewSize().top, top, bottom));
+    }
+
     void applyFromY (double localY)
     {
         // localY arrived in the column's OWN coordinate space (already
@@ -1196,13 +1270,7 @@ private:
         // absolute-ized sliderTop() used for drawing.
         const double top = sliderBandTopLocal();
         const double bottom = getViewSize().getHeight() - kProbBottomPad;
-        const double span = bottom - top;
-        double v = span > 0.0 ? 1.0 - (localY - top) / span : 0.0;
-        if (v < 0.0)
-            v = 0.0;
-        if (v > 1.0)
-            v = 1.0;
-        setValueNormalized (static_cast<float> (v));
+        setValueNormalized (probValueFromY (localY, top, bottom));
         invalid();
         valueChanged();
     }
@@ -1220,7 +1288,9 @@ private:
 
     int styleIndex_ = 0;
     bool dragging_ = false;
+    bool paintOwner_ = false;   // this column captured the paint gesture
     std::vector<StyleParamRow> rows_;
+    NeditEditor* owner_ = nullptr;
 };
 
 // ── Horizontal mini-slider for ONE continuous style param, sitting in ──
@@ -2092,6 +2162,51 @@ void NeditEditor::syncStyleProbs()
                 menu->invalid();
             }
         }
+}
+
+//------------------------------------------------------------------------
+void NeditEditor::setStylePaintActive (bool on)
+{
+    stylePaintActive_ = on;
+
+    // While painting, the full-width bars replace the param mini-controls:
+    // step them aside and restore their band-visibility on exit.
+    const bool showParams = on ? false
+                               : (panelView_ != nullptr && panelView_->showsStyleProbs());
+    for (auto& column : paramMiniSliders_)
+        for (auto* sl : column)
+        {
+            if (sl != nullptr)
+                sl->setVisible (showParams);
+        }
+    for (auto& column : paramMiniMenus_)
+        for (auto* menu : column)
+        {
+            if (menu != nullptr)
+                menu->setVisible (showParams);
+        }
+    for (auto* sl : styleProbSliders_)
+        if (sl != nullptr)
+            sl->invalid();
+}
+
+//------------------------------------------------------------------------
+void NeditEditor::stylePaintTo (int column, float value)
+{
+    if (column < 0 || column >= state::kNumPlaybackStyles)
+        return;
+    stylePaintColumn_ = column;
+    auto* sl = styleProbSliders_[static_cast<std::size_t> (column)];
+    if (sl != nullptr)
+    {
+        sl->setValueNormalized (value);
+        sl->invalid();
+        sl->valueChanged();   // -> setStyleWeight -> state publish
+    }
+    // The under-pointer highlight moved; neighbours repaint.
+    for (auto* s : styleProbSliders_)
+        if (s != nullptr && s != sl)
+            s->invalid();
 }
 
 //------------------------------------------------------------------------

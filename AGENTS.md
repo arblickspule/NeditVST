@@ -522,6 +522,21 @@ included/excluded.
   hit-test keeps them disjoint). Note for lead-dev: Volume currently does
   nothing on this tab (SL/Clock modes — static volume is Sequenced-only),
   so it may get dropped from the layout; decided at the user's word.
+  PAINT OVERLAY (2026-08-28): a left-drag in a probability column ANYWHERE
+  off the thin vertical track starts a paint gesture — every column draws
+  a COLUMN-WIDTH bar (overlay in the manner of the waveform layers; the
+  param mini-controls step aside until release) and the column under the
+  pointer gets a kAccentBright outline. The pointer stays captured by the
+  column that took the press, so crossing columns paints each at the
+  pointer's height as you go; values fall through stylePaintTo ->
+  valueChanged -> setStyleWeight (same publish path as the track drag);
+  release hides the overlay and restores the mini-controls. Track presses
+  keep the precise single-column drag. Geometry is pure and tested:
+  `ProbBandGeometry.h` (`probColumnFromX` clamps to the 9 columns,
+  `probValueFromY` = top→1.0/bottom→0.0 clamp, degenerate band/width
+  safe) shared by the columns' applyFromY and the paint mapping; the
+  paint col is recovered from the captured column's own rect (bandLeft =
+  column left − ordinal × colW).
 - Per-style colours: `kStyleColours` mirrors the original's
   PlaybackStylePalette::getStyleColour (forward orange, pingPong purple,
   tapeStop dodgerblue, stretch teal, filterDown red, filterUp gold,
