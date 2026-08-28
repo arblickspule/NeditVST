@@ -338,6 +338,11 @@ included/excluded.
     `drawEllipse` call that needs AA (logo dots, arcs, custom shapes).
     The backend supports it — the flag is just not set. Restore
     `kAliasing` after to avoid AA on subsequent rect fills.
+  - Active toolbar CHROME is deliberately muted: `kAccentMuted` (active
+    outlines) and `kAccentMutedHi` (active value readouts) are desaturated
+    salmons, softer than the full `kAccent`/`kAccentBright`. The full
+    accent stays for FILLS (button fills, slider track fills) and the
+    playhead; only 1px frames and small readout labels use the muted pair.
   - CTextButton has no `setBackColor` — background is controlled via
     `setGradient(CGradient*)`. A single-stop gradient (same color at 0
     and 1) acts as a solid fill. `GradientColorStopMap` is
@@ -403,6 +408,37 @@ included/excluded.
     fades; the renderer clamps each to half the pick length (declick
     guarantee). Not automatable; if that's wanted later the state edits
     already exist and promotion is trivial.
+  - Repitch/time-stretch toggle (editor-local tag 1007): CTextButton
+    "TIMESTRETCH" right of the fades — accent-filled when
+    `render.pitchMode == timeStretch`, graphite outlined when repitch; the
+    caption ALWAYS shows the current mode (REPITCH vs TIMESTRETCH) via
+    `CTextButton::setTitle` in `stylePitchButton()` (the title mirrors the
+    model, never the button value).
+    `pressedEdge` latch → `NeditProcessor::setPitchMode` (publish only).
+    `Scheduler.cpp` folds pitchMode into `BlockContext::timeStretchMode`
+    per pick, so NEW picks get the new mode; PickRenderer branches on it
+    (granular vs repitch-rate). Layout note: BARS bar-stepper is 0.75x
+    (66px), BPM field and quantize-grid dropdown are halved (56/55px), and
+    the two FadeSliders stack vertically — each a ~20px band with the
+    label + ms readout on the top line and a thin accent track along the
+    bottom (whole-control drag sets the value; wheels ±1 ms).
+  - Grain size/speed sliders (editor-local tags 1008/1009): two compact
+    `ui::GrainSlider`s (FadeSlider layout, parameterized min/max/format/
+    wheel-step + an `active_` gate) stacked to the RIGHT of the pitch
+    toggle — SIZE (20..150 ms, wheel 5) above SPEED (1..8 x, wheel 0.25).
+    ENABLED ONLY in time-stretch mode (`pitchMode == timeStretch`); in
+    repitch they are dimmed and reject mouse input (`setActive(false)` →
+    `setMouseEnabled(false)`, dashed-outline grey draw). Publish-only
+    setters `NeditProcessor::setGrainSizeMs` / `setGrainSpeed` (no slice
+    rebuild). Engine wiring: `RenderState.grainSpeed` (NEW state field,
+    serialized v2 — the format version bumped 1→2; v1 chunks keep the
+    default) flows to `BlockContext::grainSpeed`, and PickRenderer's
+    timestretch branch divides the rate-matching source hop by it
+    (`grainSourceHop = <rate-matching hop> / grainSpeed`). Default 1.0 is
+    IDENTITY — bit-identical to the pre-grainSpeed render — higher speeds
+    re-granulate the same source region more times (choppier character).
+    Tape-stop keeps its own decel and the Stretch style overwrites with
+    its own grain speed; neither is affected.
     CTextButton defaults to kKickStyle and its `onMouseUp` fires
     `valueChanged` TWICE per click: once with the flipped value (max —
     the actionable press), then it resets to min and echoes a second
@@ -413,6 +449,24 @@ included/excluded.
     on). Robust rule: use `pressedEdge(control, latch)` (rising-edge
     detection on the button value) and derive the new state from the live
     model, never from the button value.
+`NeditProcessor::setGrainSizeMs` / `setGrainSpeed` (publish-only — no
+    slice rebuild, but changing them mid-play needs a fresh pick).
+- Tab bar (performance pages): 48px-tall strip (spec deviation from the
+  design-language default of 32) below the waveform (y 192..240), four
+  container-less underline tabs GENERATE/SEQUENCER/CONTROL/PERFORMANCE in
+  `UiTab` ordinal order (generate=0..perform=3, matches user order so
+  value = ordinal/(kTabCount-1)); active = kAccent label + 2px kAccent
+  indicator, inactive kTextSecondary, hover kSurface2 pill, click selects
+  via tag 1010 → `NeditProcessor::setActiveTab` (publish-only, clamps >3);
+  `PanelView` card below (x 24..936, y 248..792, surface-1 rounded rect
+  via a `drawRoundedRect` CGraphicsPath helper — CDrawContext has NO
+  drawRoundRect, and rounded shadow needs kAntiAliasing like the logo
+  dot) re-renders per page from `uiStateView().ui.activeTab`; currently a
+  placeholder skeleton, per-mode panels (style params / sequencer grid /
+  keyswitch map / slot bank) to follow. VSTGUI facts: onMouseEntered/
+  Exited return CMouseEventResult (kMouseEventNotHandled); CView has no
+  default ctor — pass a zero CRect. Host state restores + user clicks both
+  converge: syncTabBar() pushes state→bar on change (dedup lastTabSync_).
 - Live DAW testing (Bitwig) round 1 — findings + fixes, all committed:
   - Bundle binary must be named <bundle>.so (lib*.so => "Not a plug-in
     file"); bundle needs Contents/Resources/moduleinfo.json (generated at
@@ -482,7 +536,8 @@ included/excluded.
   (empty override ⇒ zero picks despite full state weights; matching
   override ⇒ byte-identical pick count as the default path).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 212/212, zero warnings.
+  plugin build 215/215 (state round-trip gained a v1 forward-compat case
+  and the editor gained an active-tab persistence case), zero warnings.
 
 ## Rules of engagement
 

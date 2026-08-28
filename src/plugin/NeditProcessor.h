@@ -67,6 +67,10 @@ public:
     // Waveform zoom/pan writes (UiState owns view state; pitfall #6).
     void setVisibleWindow (double startNorm, double endNorm);
 
+    // Performance-page tab (UiState.activeTab). Publish only; the panel
+    // below the tab bar re-renders from state.
+    void setActiveTab (state::UiTab tab);
+
     // Trim: direct frame-based write from the waveform view's trim handles.
     void setTrimFrames (std::int64_t startFrame, std::int64_t endFrame);
 
@@ -115,10 +119,21 @@ public:
     void setQuantizeGrid (int gridIndex);
 
     // Per-pick declick fades (toolbar sliders): stores render.fadeInMs /
-    // render.fadeOutMs and republishes. Range [0, 100] ms (the original's
-    // slider range); the engine clamps each fade to half the pick length.
+    // render.fadeOutMs and republishes. Range [0, 10] ms; the engine clamps
+    // each fade to half the pick length.
     void setFadeInMs (float ms);
     void setFadeOutMs (float ms);
+
+    // Repitch vs granular time-stretch (toolbar toggle): stores
+    // render.pitchMode and republishes. Rendering-only -- no slice rebuild;
+    // NEW picks get the new mode.
+    void setPitchMode (state::PitchMode mode);
+
+    // Time-Stretch granular character (toolbar sliders, enabled only while
+    // pitchMode == timeStretch): stores and republishes. Rendering-only;
+    // NEW picks get the new values.
+    void setGrainSizeMs (float ms);
+    void setGrainSpeed (float speed);
 
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);

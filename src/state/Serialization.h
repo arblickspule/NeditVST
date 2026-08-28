@@ -26,7 +26,7 @@
 
 namespace nedit::state {
 
-inline constexpr std::uint32_t kStateFormatVersion = 1;
+inline constexpr std::uint32_t kStateFormatVersion = 2;
 
 // Serialize the full state to a binary chunk.
 [[nodiscard]] std::vector<std::uint8_t> serialize (const PluginState& state);

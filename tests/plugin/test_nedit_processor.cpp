@@ -237,3 +237,16 @@ TEST_CASE ("shell: visible-window writes persist in UiState and sanitize")
     CHECK (fx.processor.debugUiState().ui.visibleStartNorm == 0.0);
     CHECK (fx.processor.debugUiState().ui.visibleEndNorm == 1.0);
 }
+
+TEST_CASE ("shell: active-tab writes persist in UiState")
+{
+    RunningPlugin fx;
+
+    CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);
+
+    fx.processor.setActiveTab (state::UiTab::perform);
+    CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::perform);
+
+    fx.processor.setActiveTab (static_cast<state::UiTab> (state::UiTab::generate));
+    CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);
+}

@@ -79,6 +79,8 @@ const CColor kTextSecondary { 154, 160, 166, 255 }; // labels, inactive
 const CColor kTextDisabled  {  95,  99, 104, 255 }; // disabled
 const CColor kAccent        { 250, 128, 114, 255 }; // salmon-400
 const CColor kAccentBright  { 255, 154, 140, 255 }; // salmon-300  playhead
+const CColor kAccentMuted   { 168, 108, 102, 255 }; // muted salmon   active outlines
+const CColor kAccentMutedHi { 198, 124, 117, 255 }; // muted salmon+  active value labels
 const CColor kAccentOn      {  32,  16,  13, 255 }; // on-salmon   text on accent fill
 const CColor kAccentHover   { 224, 104,  90, 255 }; // salmon-500  hover
 const CColor kAccentPressed { 194,  85,  72, 255 }; // salmon-600  pressed
@@ -90,6 +92,10 @@ constexpr auto kTagQuantize   = static_cast<VSTGUI_INT32> (1003);
 constexpr auto kTagQuantizeGrid = static_cast<VSTGUI_INT32> (1004);
 constexpr auto kTagFadeIn   = static_cast<VSTGUI_INT32> (1005);
 constexpr auto kTagFadeOut  = static_cast<VSTGUI_INT32> (1006);
+constexpr auto kTagPitchMode = static_cast<VSTGUI_INT32> (1007);
+constexpr auto kTagGrainSize = static_cast<VSTGUI_INT32> (1008);
+constexpr auto kTagGrainSpeed = static_cast<VSTGUI_INT32> (1009);
+constexpr auto kTagTabBar = static_cast<VSTGUI_INT32> (1010);
 
 Steinberg::ViewRect kEditorRect (0, 0, kEditorWidth, kEditorHeight);
 
@@ -160,6 +166,31 @@ public:
         setDirty (false);
     }
 };
+
+// VSTGUI's CDrawContext has no drawRoundRect; route rounded corners through
+// a CGraphicsPath (needs kAntiAliasing on the backend, like the logo dot).
+void drawRoundedRect (CDrawContext* dc, const CRect& r, CCoord radius,
+                      const CColor& fill, const CColor& frame)
+{
+    auto* path = dc->createGraphicsPath();
+    if (path == nullptr)
+        return;
+    path->addRoundRect (r, radius);
+    dc->setDrawMode (kAntiAliasing);
+    if (fill.alpha > 0)
+    {
+        dc->setFillColor (fill);
+        dc->drawGraphicsPath (path, CDrawContext::kPathFilled);
+    }
+    if (frame.alpha > 0)
+    {
+        dc->setFrameColor (frame);
+        dc->setLineWidth (1);
+        dc->drawGraphicsPath (path, CDrawContext::kPathStroked);
+    }
+    path->forget();
+    dc->setDrawMode (kAliasing);
+}
 
 } // namespace
 
@@ -347,7 +378,7 @@ public:
         dc->setFontColor (active_ ? kTextPrimary : kTextDisabled);
         dc->drawString (buf, box, kCenterText);
 
-        dc->setFrameColor (active_ ? kAccent : kOutline);
+        dc->setFrameColor (active_ ? kAccentMuted : kOutline);
         dc->setLineWidth (1);
         dc->drawRect (box, kDrawStroked);
 
@@ -479,9 +510,9 @@ public:
         const float v = getValueNormalized();
 
         char buf[24];
-        std::snprintf (buf, sizeof (buf), "%d%%",
-                       static_cast<int> (std::lround (v * 100.0f)));
-        dc->setFontColor (active_ ? kAccentBright : kTextDisabled);
+std::snprintf (buf, sizeof (buf), "%d%%",
+                   static_cast<int> (std::lround (v * 100.0f)));
+        dc->setFontColor (active_ ? kAccentMutedHi : kTextDisabled);
         dc->drawString (buf, CRect (r.right - 52, r.top + 2, r.right, r.top + 12), kRightText);
 
         dc->setFillColor (kSurface2);
@@ -497,7 +528,7 @@ public:
             dc->drawRect (fill, kDrawFilled);
         }
 
-        dc->setFrameColor (active_ ? kAccent : kOutline);
+        dc->setFrameColor (active_ ? kAccentMuted : kOutline);
         dc->setLineWidth (1);
         dc->drawRect (box, kDrawStroked);
 
@@ -574,12 +605,12 @@ private:
     bool dragging_ = false;
 };
 
-// ── Fade slider: per-pick declick fade in ms, 0..100. ─────────────────────
+// ── Fade slider: per-pick declick fade in ms, 0..10. ──────────────────────
 // (editor-local tags 1005/1006, NOT host params -- attack = render.fadeInMs,
-// release = render.fadeOutMs, a global play-feel setting like the original's
-// continuous Fade In/Out sliders). The caption row doubles as the ms readout:
-// label left, current value right. Track fill + frame mirror the SENS slider;
-// always active (valid without a sample). Wheel nudges by 5 ms.
+// release = render.fadeOutMs, a global play-feel setting). Compact stacked
+// form: the whole rect is the box -- label left + ms readout right on the
+// top line, thin accent track along the bottom. Always active (valid
+// without a sample). Wheel nudges by 1 ms.
 class FadeSlider : public CControl
 {
 public:
@@ -596,37 +627,39 @@ public:
     void draw (CDrawContext* dc) override
     {
         const CRect r = getViewSize();
-        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
-
         dc->setDrawMode (kAliasing);
-        dc->setFont (kNormalFontSmall);
         const float v = getValueNormalized();
-        dc->setFontColor (kTextSecondary);
-        dc->drawString (label_.c_str(),
-                        CRect (r.left, r.top + 2, r.right - 52, r.top + 12), kLeftText);
-
-        char buf[24];
-        std::snprintf (buf, sizeof (buf), "%dms",
-                       static_cast<int> (std::lround (msFromValue (v))));
-        dc->setFontColor (kAccentBright);
-        dc->drawString (buf, CRect (r.right - 52, r.top + 2, r.right, r.top + 12), kRightText);
 
         dc->setFillColor (kSurface2);
-        dc->drawRect (box, kDrawFilled);
+        dc->drawRect (r, kDrawFilled);
 
+        // Thin proportional track along the bottom of the box.
+        constexpr double kTrackH = 6.0;
+        const CRect track (r.left + 2, r.bottom - 2 - kTrackH, r.right - 2, r.bottom - 2);
+        dc->setFillColor (kSurface3);
+        dc->drawRect (track, kDrawFilled);
         if (v > 0.0f)
         {
-            const double inset = 2.0;
-            const double fillW = (box.right - box.left - 2.0 * inset) * v;
-            const CRect fill (box.left + inset, box.top + inset,
-                              box.left + inset + fillW, box.bottom - inset);
+            const double fillW = (track.right - track.left) * v;
+            const CRect fill (track.left, track.top, track.left + fillW, track.bottom);
             dc->setFillColor (kAccent);
             dc->drawRect (fill, kDrawFilled);
         }
 
-        dc->setFrameColor (kAccent);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString (label_.c_str(),
+                        CRect (r.left + 4, r.top + 1, r.right - 4, r.top + 13), kLeftText);
+
+        char buf[24];
+std::snprintf (buf, sizeof (buf), "%dms",
+                   static_cast<int> (std::lround (msFromValue (v))));
+        dc->setFontColor (kAccentMutedHi);
+        dc->drawString (buf, CRect (r.left + 4, r.top + 1, r.right - 4, r.top + 13), kRightText);
+
+        dc->setFrameColor (kAccentMuted);
         dc->setLineWidth (1);
-        dc->drawRect (box, kDrawStroked);
+        dc->drawRect (r, kDrawStroked);
 
         setDirty (false);
     }
@@ -637,8 +670,7 @@ public:
             return kMouseEventNotHandled;
 
         const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
-        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
-        if (! box.pointInside (local))
+        if (local.x < 0 || local.x > getViewSize().getWidth())
             return kMouseEventNotHandled;
 
         dragging_ = true;
@@ -674,13 +706,13 @@ public:
         if (event.deltaY == 0.0)
             return;
 
-        applyValue (msFromValue (getValueNormalized()) + event.deltaY * 5.0);
+        applyValue (msFromValue (getValueNormalized()) + event.deltaY * 1.0);
         event.consumed = true;
     }
 
 private:
     static constexpr double kMinMs = 0.0;
-    static constexpr double kMaxMs = 100.0;
+    static constexpr double kMaxMs = 10.0;
 
     double msFromValue (float normalized) const noexcept
     {
@@ -706,6 +738,347 @@ private:
 
     std::string label_;
     bool dragging_ = false;
+};
+
+// Time-Stretch granular-character slider (grain size in ms / grain speed in
+// x). Same compact stacked layout as FadeSlider but parameterized over a
+// [min,max] range and only ENABLED while the render pitch mode is
+// time-stretch; disabled sliders are dimmed and reject mouse input.
+class GrainSlider : public CControl
+{
+public:
+    GrainSlider (const CRect& size, IControlListener* l, int32_t t, const char* label,
+                 double min, double max, const char* fmt, double wheelStep)
+        : CControl (size, l, t),
+          label_ (label != nullptr ? label : ""),
+          min_ (min), max_ (max),
+          fmt_ (fmt != nullptr ? fmt : "%.1f"),
+          wheelStep_ (wheelStep)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new GrainSlider (getViewSize(), getListener(), getTag(), label_.c_str(),
+                                min_, max_, fmt_.c_str(), wheelStep_);
+    }
+
+    void setActive (bool active)
+    {
+        if (active == active_)
+            return;
+        active_ = active;
+        setMouseEnabled (active);
+        invalid();
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+        const float v = getValueNormalized();
+
+        dc->setFillColor (active_ ? kSurface2 : kSurface1);
+        dc->drawRect (r, kDrawFilled);
+
+        // Thin proportional track along the bottom of the box.
+        constexpr double kTrackH = 6.0;
+        const CRect track (r.left + 2, r.bottom - 2 - kTrackH, r.right - 2, r.bottom - 2);
+        dc->setFillColor (active_ ? kSurface3 : kOutline);
+        dc->drawRect (track, kDrawFilled);
+        if (active_ && v > 0.0f)
+        {
+            const double fillW = (track.right - track.left) * v;
+            const CRect fill (track.left, track.top, track.left + fillW, track.bottom);
+            dc->setFillColor (kAccent);
+            dc->drawRect (fill, kDrawFilled);
+        }
+
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (active_ ? kTextSecondary : kTextDisabled);
+        dc->drawString (label_.c_str(),
+                        CRect (r.left + 4, r.top + 1, r.right - 4, r.top + 13), kLeftText);
+
+        char buf[24];
+        std::snprintf (buf, sizeof (buf), fmt_.c_str(), valueFromNorm (v));
+        dc->setFontColor (active_ ? kAccentMutedHi : kTextDisabled);
+        dc->drawString (buf, CRect (r.left + 4, r.top + 1, r.right - 4, r.top + 13), kRightText);
+
+        dc->setFrameColor (active_ ? kAccentMuted : kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (r, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! active_ || ! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        if (local.x < 0 || local.x > getViewSize().getWidth())
+            return kMouseEventNotHandled;
+
+        dragging_ = true;
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (! active_ || event.deltaY == 0.0)
+            return;
+
+        applyValue (valueFromNorm (getValueNormalized()) + event.deltaY * wheelStep_);
+        event.consumed = true;
+    }
+
+private:
+    double valueFromNorm (float normalized) const noexcept
+    {
+        return min_ + static_cast<double> (normalized) * (max_ - min_);
+    }
+
+    void applyFromX (double localX)
+    {
+        const double width = getViewSize().getWidth();
+        applyValue (valueFromNorm (static_cast<float> (localX / width)));
+    }
+
+    void applyValue (double newValue)
+    {
+        if (newValue < min_)
+            newValue = min_;
+        if (newValue > max_)
+            newValue = max_;
+        setValueNormalized (static_cast<float> ((newValue - min_) / (max_ - min_)));
+        invalid();
+        valueChanged();
+    }
+
+    std::string label_;
+    double min_ = 0.0;
+    double max_ = 1.0;
+    std::string fmt_;
+    double wheelStep_ = 1.0;
+    bool active_ = true;
+    bool dragging_ = false;
+};
+
+// ── Performance-page tab strip (GENERATE / SEQUENCER / CONTROL / ───────
+// PERFORMANCE). 48px tall per spec deviation in AGENTS. Container-less
+// underline tabs (design-language.md §6): active = salmon label + 2px
+// salmon indicator, inactive = text-secondary, hover = subtle surface-
+// 2 pill. The value is the selected tab ordinal normalized over the range
+// [0, 3]; tag kTagTabBar routes clicks through valueChanged.
+class TabBar : public CControl
+{
+public:
+    static constexpr int kTabCount = 4;
+
+    TabBar (const CRect& size, IControlListener* l, int32_t t)
+        : CControl (size, l, t)
+    {
+        setValueNormalized (0.0f);
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new TabBar (getViewSize(), getListener(), getTag());
+    }
+
+    [[nodiscard]] static const char* labelForOrdinal (int ordinal)
+    {
+        static const char* const kLabels[kTabCount] = {
+            "GENERATE", "SEQUENCER", "CONTROL", "PERFORMANCE"
+        };
+        return kLabels[ordinal < 0 ? 0 : (ordinal > kTabCount - 1 ? kTabCount - 1 : ordinal)];
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+
+        const int selected = ordinalFromValue (getValueNormalized());
+
+        for (int i = 0; i < kTabCount; ++i)
+        {
+            const CRect seg = segmentForTab (r, i);
+
+            // Hover surface (subtle lighter pill on the base).
+            if (i == hoveredTab_)
+            {
+                const double pad = 8.0;
+                drawRoundedRect (dc, CRect (seg.left + 4, seg.top + pad,
+                                            seg.right - 4, seg.bottom - pad),
+                                 CCoord (4), kSurface2, CColor (0, 0, 0, 0));
+            }
+
+            dc->setFont (kNormalFontSmall);
+            const bool active = (i == selected);
+            dc->setFontColor (active ? kAccent : kTextSecondary);
+            dc->drawString (labelForOrdinal (i), seg, kCenterText);
+        }
+
+        // 2px salmon underline indicator on the selected tab.
+        const CRect sel = segmentForTab (r, selected);
+        const CCoord indH = 2.0;
+        dc->setFillColor (kAccent);
+        dc->drawRect (CRect (sel.left, sel.bottom - indH, sel.right, sel.bottom), kDrawFilled);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+        selectTabFromPoint (where);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        const int hovered = tabFromPoint (where);
+        if (hovered != hoveredTab_)
+        {
+            hoveredTab_ = hovered;
+            invalid();
+        }
+        return kMouseEventNotHandled;
+    }
+
+    CMouseEventResult onMouseEntered (CPoint& where, const CButtonState&) override
+    {
+        hoveredTab_ = tabFromPoint (where);
+        invalid();
+        return kMouseEventNotHandled;
+    }
+
+    CMouseEventResult onMouseExited (CPoint&, const CButtonState&) override
+    {
+        hoveredTab_ = -1;
+        invalid();
+        return kMouseEventNotHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        event.consumed = true;
+    }
+
+private:
+    [[nodiscard]] static CRect segmentForTab (const CRect& bar, int index)
+    {
+        // Equal-width segments spanning the full strip — the click target
+        // and the underline indicator fill the entire bar.
+        const double segW = bar.getWidth() / static_cast<double> (kTabCount);
+        const double left = bar.left + static_cast<double> (index) * segW;
+        return CRect (left, bar.top, left + segW, bar.bottom);
+    }
+
+    [[nodiscard]] static int ordinalFromValue (float normalized)
+    {
+        const int ord = static_cast<int> (std::lround (normalized * static_cast<float> (kTabCount - 1)));
+        return ord < 0 ? 0 : (ord > kTabCount - 1 ? kTabCount - 1 : ord);
+    }
+
+    [[nodiscard]] int tabFromPoint (const CPoint& where) const
+    {
+        const CRect r = getViewSize();
+        for (int i = 0; i < kTabCount; ++i)
+            if (segmentForTab (r, i).pointInside (where))
+                return i;
+        return -1;
+    }
+
+    void selectTabFromPoint (const CPoint& where)
+    {
+        const int tab = tabFromPoint (where);
+        if (tab < 0 || tab == ordinalFromValue (getValueNormalized()))
+            return;
+        setValueNormalized (static_cast<float> (tab) / static_cast<float> (kTabCount - 1));
+        invalid();
+        valueChanged();
+    }
+
+    int hoveredTab_ = -1;
+};
+
+// ── Panel area below the tab bar. One card-set per performance page      ──
+// (§6: tabs swap only the panel area; cross-tab persistence comes from
+// UiState.activeTab). Stateless renderer over the processor's live state;
+// each page currently shows a placeholder skeleton that the per-mode
+// panel builds (style params, sequencer grid, ...) will replace.
+class PanelView : public CView
+{
+public:
+    explicit PanelView (NeditProcessor* owner) : CView (CRect (0, 0, 0, 0)), owner_ (owner) {}
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+
+        // Card: graphite-800 fill, hairline outline, radius-s (4) per the
+        // panel containers in design-language.md.
+        drawRoundedRect (dc, r, CCoord (4), kSurface1, kOutline);
+
+        const auto tab = owner_->uiStateView().ui.activeTab;
+        const char* name = TabBar::labelForOrdinal (static_cast<int> (tab));
+
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString (name, CRect (r.left + 12, r.top + 10, r.right - 12, r.top + 22),
+                        kLeftText);
+
+        dc->setFont (kNormalFontSmaller);
+        dc->setFontColor (kTextDisabled);
+        const char* hint = hintForTab (tab);
+        dc->drawString (hint, CRect (r.left + 12, r.top + 26, r.right - 12, r.top + 38),
+                        kLeftText);
+
+        setDirty (false);
+    }
+
+private:
+    [[nodiscard]] static const char* hintForTab (state::UiTab tab)
+    {
+        switch (tab)
+        {
+            case state::UiTab::generate: return "style weights · style parameters · probabilities";
+            case state::UiTab::sequence: return "step grid · pattern controls";
+            case state::UiTab::control:  return "keyswitch mapping · gate · velocity";
+            case state::UiTab::perform:  return "slot bank · snapshots · quantized recall";
+        }
+        return "";
+    }
+
+    NeditProcessor* owner_ = nullptr;
 };
 
 }; // namespace ui
@@ -858,16 +1231,76 @@ void NeditEditor::styleQuantizeButton()
 }
 
 //------------------------------------------------------------------------
+// Apply the render pitch-mode state to the toolbar toggle's appearance:
+// salmon filled when time-stretching (granular, pitch preserved), graphite
+// outlined when repitching.
+void NeditEditor::stylePitchButton()
+{
+    if (! pitchBtn_)
+        return;
+
+    const bool stretch = owner_->uiStateView().render.pitchMode
+                         == state::PitchMode::timeStretch;
+
+    if (stretch)
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        pitchBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        pitchBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        pitchBtn_->setTextColor (kAccentOn);
+        pitchBtn_->setTextColorHighlighted (kAccentOn);
+        pitchBtn_->setFrameColor (kAccent);
+        pitchBtn_->setFrameColorHighlighted (kAccentPressed);
+    }
+    else
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kSurface2);
+        stops.emplace (1., kSurface2);
+        pitchBtn_->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kSurface3);
+        hlStops.emplace (1., kSurface3);
+        pitchBtn_->setGradientHighlighted (CGradient::create (hlStops));
+        pitchBtn_->setTextColor (kTextSecondary);
+        pitchBtn_->setTextColorHighlighted (kTextPrimary);
+        pitchBtn_->setFrameColor (kOutline);
+        pitchBtn_->setFrameColorHighlighted (kOutline);
+    }
+    pitchBtn_->setRoundRadius (2);
+    // The caption always shows the mode that will apply AFTER the next
+    // press -- the model state is authoritative, never the button value.
+    pitchBtn_->setTitle (stretch ? "TIMESTRETCH" : "REPITCH");
+}
+
+//------------------------------------------------------------------------
+// Grain size/speed sliders are only meaningful while rendering with the
+// granular time-stretch engine; otherwise they are dimmed and inert.
+void NeditEditor::setGrainEnabled (bool enabled)
+{
+    if (grainSizeSlider_ != nullptr)
+        grainSizeSlider_->setActive (enabled);
+    if (grainSpeedSlider_ != nullptr)
+        grainSpeedSlider_->setActive (enabled);
+}
+
+//------------------------------------------------------------------------
 // Push the live model state into the toolbar controls. Runs on the idle
 // timer and after local edits so host automation / state loads / box-tool
 // changes all surface. Only pushes on change; the controls repaint lazily.
 void NeditEditor::syncToolBarControls()
 {
     if (! barsStepper_ || ! bpmField_ || ! quantizeMenu_ || ! fadeInSlider_
-        || ! fadeOutSlider_)
+        || ! fadeOutSlider_ || ! pitchBtn_ || ! grainSizeSlider_ || ! grainSpeedSlider_)
         return;
 
-    const auto& sample = owner_->uiStateView().sample;
+    const auto& state = owner_->uiStateView();
+    const auto& sample = state.sample;
 
     const int bars = sample.loopLengthBars < 1 ? 1 : sample.loopLengthBars;
     if (bars != lastBarsSync_)
@@ -931,21 +1364,69 @@ void NeditEditor::syncToolBarControls()
         quantizeMenu_->invalid();
     }
 
-    const float fadeInMs = owner_->uiStateView().render.fadeInMs;
+    const float fadeInMs = state.render.fadeInMs;
     if (fadeInMs != lastFadeInSync_)
     {
         lastFadeInSync_ = fadeInMs;
-        fadeInSlider_->setValueNormalized (fadeInMs / 100.0f);
+        fadeInSlider_->setValueNormalized (fadeInMs / 10.0f);
         fadeInSlider_->invalid();
     }
 
-    const float fadeOutMs = owner_->uiStateView().render.fadeOutMs;
+    const float fadeOutMs = state.render.fadeOutMs;
     if (fadeOutMs != lastFadeOutSync_)
     {
         lastFadeOutSync_ = fadeOutMs;
-        fadeOutSlider_->setValueNormalized (fadeOutMs / 100.0f);
+        fadeOutSlider_->setValueNormalized (fadeOutMs / 10.0f);
         fadeOutSlider_->invalid();
     }
+
+    const float grainNorm = (state.render.grainSizeMs
+                             - state::RenderState::kMinGrainSizeMs)
+                          / (state::RenderState::kMaxGrainSizeMs
+                             - state::RenderState::kMinGrainSizeMs);
+    if (grainNorm != lastGrainSizeSync_)
+    {
+        lastGrainSizeSync_ = grainNorm;
+        grainSizeSlider_->setValueNormalized (grainNorm);
+        grainSizeSlider_->invalid();
+    }
+
+    const float grainSpeedNorm = (state.render.grainSpeed
+                                  - state::RenderState::kMinGrainSpeed)
+                               / (state::RenderState::kMaxGrainSpeed
+                                  - state::RenderState::kMinGrainSpeed);
+    if (grainSpeedNorm != lastGrainSpeedSync_)
+    {
+        lastGrainSpeedSync_ = grainSpeedNorm;
+        grainSpeedSlider_->setValueNormalized (grainSpeedNorm);
+        grainSpeedSlider_->invalid();
+    }
+
+    const bool stretching = state.render.pitchMode
+                            == state::PitchMode::timeStretch;
+    if (stretching != lastPitchSync_)
+    {
+        lastPitchSync_ = stretching;
+        stylePitchButton();
+        setGrainEnabled (stretching);
+    }
+}
+
+//------------------------------------------------------------------------
+// Push the active performance-page tab from state to the bar + panel.
+void NeditEditor::syncTabBar()
+{
+    if (! tabBar_ || ! panelView_)
+        return;
+
+    const int tab = static_cast<int> (owner_->uiStateView().ui.activeTab);
+    if (tab == lastTabSync_)
+        return;
+    lastTabSync_ = tab;
+    tabBar_->setValueNormalized (static_cast<float> (tab)
+                                 / static_cast<float> (ui::TabBar::kTabCount - 1));
+    tabBar_->invalid();
+    panelView_->invalid();
 }
 
 //------------------------------------------------------------------------
@@ -1036,13 +1517,15 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     // control draws its own caption + box within the full 48px band; all
     // route value edits through the param IDs (101/102/103) so host
     // automation and the state stay in lockstep.
-    constexpr int kBarsW = 88;
-    constexpr int kBpmW = 112;
-    constexpr int kOverrideW = 88;
+    constexpr int kBarsW = 66;   // shrunk 0.75x to free room for the
+    constexpr int kBpmW = 56;    // pitch-mode toggle; BPM field halved, quantize
+    constexpr int kOverrideW = 88;   // grid dropdown halved, fades stacked.
     constexpr int kSensW = 110;
     constexpr int kQuantW = 88;
-    constexpr int kGridW = 110;
-    constexpr int kFadeW = 110;
+    constexpr int kGridW = 55;
+    constexpr int kFadeW = 108;
+    constexpr int kPitchW = 110;
+    constexpr int kGrainW = 104;
     constexpr int kX0 = 16;
     constexpr int kGap = 18;
 
@@ -1052,8 +1535,9 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     const int sensX = overX + kOverrideW + kGap;
     const int quantX = sensX + kSensW + kGap;
     const int gridX = quantX + kQuantW + kGap;
-    const int fadeInX  = gridX + kGridW + kGap;
-    const int fadeOutX = fadeInX + kFadeW + kGap;
+    const int fadeX  = gridX + kGridW + kGap;
+    const int pitchX = fadeX + kFadeW + kGap;
+    const int grainX = pitchX + kPitchW + kGap;
     const CRect strip (0, kAppBarHeight, 0, kAppBarHeight + kToolBarHeight);
 
     auto* bars = new ui::BarsStepper (
@@ -1125,28 +1609,86 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
 
     // Per-pick declick fades (global play feel, always active). Attack =
     // fade-in, release = fade-out; each clamped by the engine to half the
-    // pick length during rendering.
+    // pick length during rendering. Stacked vertically to save row space --
+    // each occupies a ~20px-high band within the 48px strip.
+    const int fadeTop = static_cast<int> (std::lround (strip.top)) + 3;
+    const int fadeMid = static_cast<int> (std::lround (strip.top)) + 25;
     auto* fadeIn = new ui::FadeSlider (
-        CRect (fadeInX, strip.top, fadeInX + kFadeW, strip.bottom), this,
-        kTagFadeIn, "ATTACK");
+        CRect (fadeX, fadeTop, fadeX + kFadeW, fadeTop + 20), this,
+        kTagFadeIn, "FADE IN");
     frame->addView (fadeIn);
     fadeInSlider_ = fadeIn;
 
     auto* fadeOut = new ui::FadeSlider (
-        CRect (fadeOutX, strip.top, fadeOutX + kFadeW, strip.bottom), this,
-        kTagFadeOut, "RELEASE");
+        CRect (fadeX, fadeMid, fadeX + kFadeW, fadeMid + 20), this,
+        kTagFadeOut, "FADE OUT");
     frame->addView (fadeOut);
     fadeOutSlider_ = fadeOut;
+
+    // Repitch vs time-stretch render mode toggle. Lit = time-stretching
+    // (granular, pitch preserved); unlit = repitch. Renders RenderState
+    // only -- no slice rebuild. Sits INSIDE the box band like OVERRIDE.
+    auto* pitch = new CTextButton (
+        CRect (pitchX, strip.top + static_cast<int> (std::lround (kBoxTop)),
+               pitchX + kPitchW,
+               strip.top + static_cast<int> (std::lround (kBoxTop + kBoxH))),
+        this, kTagPitchMode, "TIMESTRETCH");
+    frame->addView (pitch);
+    pitchBtn_ = pitch;
+    stylePitchButton();
+
+    // Time-Stretch granular character. Enabled only while pitchMode is
+    // time-stretch (the granular engine); dimmed + inert when repitching,
+    // where grain size/speed have no effect. Stacked like the fades:
+    // SIZE (20..150 ms) above SPEED (1..8 x), each a ~20px band.
+    auto* grainSize = new ui::GrainSlider (
+        CRect (grainX, fadeTop, grainX + kGrainW, fadeTop + 20), this,
+        kTagGrainSize, "SIZE", 20.0, 150.0, "%.0fms", 5.0);
+    grainSize->setActive (false);
+    frame->addView (grainSize);
+    grainSizeSlider_ = grainSize;
+
+    auto* grainSpeed = new ui::GrainSlider (
+        CRect (grainX, fadeMid, grainX + kGrainW, fadeMid + 20), this,
+        kTagGrainSpeed, "SPEED", 1.0, 8.0, "%.1fx", 0.25);
+    grainSpeed->setActive (false);
+    frame->addView (grainSpeed);
+    grainSpeedSlider_ = grainSpeed;
+    setGrainEnabled (false);
 
     syncToolBarControls();
 
     // ── Waveform display (below the tool bar) ──────────────────────────
-    constexpr int kWaveformH = 144;
+    constexpr int kWaveformH = 96;
     constexpr int kWaveTop  = kAppBarHeight + kToolBarHeight;
     auto* wave = new WaveformView (*owner_, this, kWaveformH);
     wave->setViewSize (CRect (0, kWaveTop, kEditorWidth, kWaveTop + kWaveformH));
     frame->addView (wave);
     waveformView_ = wave;
+
+    // ── Performance-page tab bar (48px total, per spec) ────────────────
+    // Container-less underline tabs (design-language.md §6): the strip sits
+    // on the window base below the sample-level areas and swaps only the
+    // panel area beneath it.
+    constexpr int kTabBarH = 48;
+    constexpr int kTabTop  = kWaveTop + kWaveformH;
+    auto* tabBar = new ui::TabBar (
+        CRect (0, kTabTop, kEditorWidth, kTabTop + kTabBarH), this, kTagTabBar);
+    frame->addView (tabBar);
+    tabBar_ = tabBar;
+
+    // ── Panel area below the tab bar (one card-set per page) ───────────
+    constexpr int kPanelGutter = 8;     // gutter under the tab strip
+    constexpr int kPanelMarginX = 24;   // window margins (design guide)
+    constexpr int kPanelTop = kTabTop + kTabBarH + kPanelGutter;
+    auto* panel = new ui::PanelView (owner_);
+    panel->setViewSize (CRect (kPanelMarginX, kPanelTop,
+                               kEditorWidth - kPanelMarginX,
+                               kEditorHeight - kPanelGutter));
+    frame->addView (panel);
+    panelView_ = panel;
+
+    syncTabBar();   // seed the strip + panel from the restored activeTab
 
     setIdleRate (60);
     return true;
@@ -1164,8 +1706,13 @@ void PLUGIN_API NeditEditor::close()
     sensSlider_ = nullptr;
     quantizeBtn_ = nullptr;
     quantizeMenu_ = nullptr;
+    pitchBtn_ = nullptr;
     fadeInSlider_ = nullptr;
     fadeOutSlider_ = nullptr;
+    grainSizeSlider_ = nullptr;
+    grainSpeedSlider_ = nullptr;
+    tabBar_ = nullptr;
+    panelView_ = nullptr;
     waveformView_ = nullptr;
     if (frame != nullptr)
     {
@@ -1266,13 +1813,58 @@ void NeditEditor::valueChanged (CControl* control)
 
     if (control->getTag() == kTagFadeIn)
     {
-        owner_->setFadeInMs (100.0f * control->getValueNormalized());
+        owner_->setFadeInMs (10.0f * control->getValueNormalized());
         return;
     }
 
     if (control->getTag() == kTagFadeOut)
     {
-        owner_->setFadeOutMs (100.0f * control->getValueNormalized());
+        owner_->setFadeOutMs (10.0f * control->getValueNormalized());
+        return;
+    }
+
+    if (control->getTag() == kTagPitchMode)
+    {
+        if (pressedEdge (*control, lastPitchPressed_))
+        {
+            const bool stretch = owner_->uiStateView().render.pitchMode
+                                 == state::PitchMode::timeStretch;
+            owner_->setPitchMode (stretch ? state::PitchMode::repitch
+                                          : state::PitchMode::timeStretch);
+            stylePitchButton();
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagGrainSize)
+    {
+        owner_->setGrainSizeMs (
+            20.0f + (state::RenderState::kMaxGrainSizeMs
+                     - state::RenderState::kMinGrainSizeMs)
+                * control->getValueNormalized());
+        return;
+    }
+
+    if (control->getTag() == kTagGrainSpeed)
+    {
+        owner_->setGrainSpeed (
+            state::RenderState::kMinGrainSpeed
+            + (state::RenderState::kMaxGrainSpeed
+               - state::RenderState::kMinGrainSpeed)
+                * control->getValueNormalized());
+        return;
+    }
+
+    if (control->getTag() == kTagTabBar)
+    {
+        const int ord = static_cast<int> (
+            std::lround (control->getValueNormalized()
+                         * static_cast<float> (ui::TabBar::kTabCount - 1)));
+        if (ord < 0 || ord >= ui::TabBar::kTabCount)
+            return;
+        owner_->setActiveTab (static_cast<state::UiTab> (ord));
+        if (panelView_)
+            panelView_->invalid();   // the panel area re-renders per page
         return;
     }
 
@@ -1460,6 +2052,7 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         // host automation and state restores surface without waiting for a
         // user edit.
         syncToolBarControls();
+        syncTabBar();
 
         if (sampleChanged && loadBtn_)
         {

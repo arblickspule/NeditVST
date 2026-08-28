@@ -37,8 +37,9 @@ constexpr auto kFalse = Steinberg::kResultFalse;
 // in steady state instead of allocating.
 constexpr std::size_t kReservedSamplePoints = 1024;
 
-// Fade slider range (ms) -- matches the original's Fade In/Out sliders.
-constexpr float kMaxFadeMs = 100.0f;
+// Declick fade slider range (ms). Small by design: attack/release are
+// only ever a declick utility, so the range is 0..10 ms for fine control.
+constexpr float kMaxFadeMs = 10.0f;
 
 } // namespace
 
@@ -274,6 +275,15 @@ void NeditProcessor::setVisibleWindow (double startNorm, double endNorm)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setActiveTab (state::UiTab tab)
+{
+    if (static_cast<unsigned> (tab) > 3)
+        return;
+    uiState_.ui.activeTab = tab;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 void NeditProcessor::setTrimFrames (std::int64_t startFrame, std::int64_t endFrame)
 {
     uiState_.sample.trimStartFrame = startFrame;
@@ -458,6 +468,33 @@ void NeditProcessor::setFadeInMs (float ms)
 void NeditProcessor::setFadeOutMs (float ms)
 {
     uiState_.render.fadeOutMs = ms < 0.0f ? 0.0f : (ms > kMaxFadeMs ? kMaxFadeMs : ms);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setPitchMode (state::PitchMode mode)
+{
+    if (mode < state::PitchMode::repitch || mode > state::PitchMode::timeStretch)
+        return;
+    uiState_.render.pitchMode = mode;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setGrainSizeMs (float ms)
+{
+    constexpr float kMin = state::RenderState::kMinGrainSizeMs;
+    constexpr float kMax = state::RenderState::kMaxGrainSizeMs;
+    uiState_.render.grainSizeMs = ms < kMin ? kMin : (ms > kMax ? kMax : ms);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setGrainSpeed (float speed)
+{
+    constexpr float kMin = state::RenderState::kMinGrainSpeed;
+    constexpr float kMax = state::RenderState::kMaxGrainSpeed;
+    uiState_.render.grainSpeed = speed < kMin ? kMin : (speed > kMax ? kMax : speed);
     provider_.publish (uiState_);
 }
 

@@ -287,18 +287,21 @@ namespace {
         out.writeF32 (render.fadeOutMs);
         out.writeU8 (static_cast<std::uint8_t> (render.pitchMode));
         out.writeF32 (render.grainSizeMs);
+        out.writeF32 (render.grainSpeed);
         out.writeU8 (static_cast<std::uint8_t> (render.grainWindowShape));
         out.writeF32 (render.pitchShiftSemitones);
         out.writeBool (render.beatQuantizeTimeStretch);
         out.writeBool (render.beatQuantizeRepitch);
     }
 
-    [[nodiscard]] bool readRender (StreamReader& in, RenderState& render)
+    [[nodiscard]] bool readRender (StreamReader& in, RenderState& render, std::uint32_t version)
     {
         render.fadeInMs = in.readF32();
         render.fadeOutMs = in.readF32();
         render.pitchMode = static_cast<PitchMode> (in.readU8() != 0 ? 1 : 0);
         render.grainSizeMs = in.readF32();
+        if (version >= 2)
+            render.grainSpeed = in.readF32();
         render.grainWindowShape = static_cast<GrainWindowShape> (in.readU8() != 0 ? 1 : 0);
         render.pitchShiftSemitones = in.readF32();
         render.beatQuantizeTimeStretch = in.readBool();
@@ -668,7 +671,7 @@ std::optional<PluginState> deserialize (const std::uint8_t* data, std::size_t si
         {
             case kTagGlobal:      sectionOk = readGlobal (section, state); break;
             case kTagSample:      sectionOk = readSample (section, state.sample); break;
-            case kTagRender:      sectionOk = readRender (section, state.render); break;
+            case kTagRender:      sectionOk = readRender (section, state.render, version); break;
             case kTagGenerate:    sectionOk = readGenerate (section, state.generate); break;
             case kTagSequencer:   sectionOk = readSequencer (section, state.sequencer); break;
             case kTagPerformance: sectionOk = readPerformance (section, state.performance); break;

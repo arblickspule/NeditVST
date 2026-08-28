@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 using namespace nedit::engine;
@@ -80,6 +81,23 @@ struct Fixture
     void play (int numSamples)
     {
         run ({ true, 120.0, ppqCursor }, numSamples);
+        ppqCursor += static_cast<double> (numSamples) * ((120.0 / 60.0) / kRate);
+        totalProcessed += numSamples;
+    }
+
+    // Play while rendering into an explicit output buffer, so tests can
+    // inspect the actual waveform (envelope tails, fades) rather than just
+    // the pick counter.
+    void playInto (const TransportFrame& transport, int numSamples, std::vector<float>& sink)
+    {
+        sink.assign (static_cast<std::size_t> (numSamples), 0.0f);
+        const float* channels[] = { source.data() };
+        ctx.source = channels;
+        ctx.sourceChannels = 1;
+        ctx.sourceFrames = static_cast<std::int64_t> (source.size());
+
+        float* outs[] = { sink.data() };
+        scheduler.process (state, slices, ctx, transport, outs, 1, numSamples);
         ppqCursor += static_cast<double> (numSamples) * ((120.0 / 60.0) / kRate);
         totalProcessed += numSamples;
     }
@@ -255,6 +273,61 @@ TEST_CASE ("slice length: reset boundary cuts with anticipated fade", "[schedule
 
     fx.playQuiet (88196);          // quiet through ~88198
     fx.advanceToPicks (2, 6);      // boundary cut + rechain by 88201
+}
+
+TEST_CASE ("slice length: fade-out engages at slice end even with a decaying source", "[scheduler][sl][fade]")
+{
+    // A single-slice forward pick through the REAL trigger path, with a
+    // decaying source (the "natural envelope" that can mask a fade-out).
+    // Source ramps 1.0 -> 0.4 across the slice, so the slice's own end
+    // amplitude is audibly nonzero (0.4). A long fade-out must nevertheless
+    // pull the tail toward silence.
+    constexpr std::int64_t kLen = 44100;
+    constexpr std::int64_t kFadeWin = 4410;   // 100 ms @ 44.1 kHz
+
+    std::vector<float> sink;
+
+    // ----- control: no fade-out. The tail stays at the source's natural
+    // value (~0.4) until the pick ends. --------------------------------------
+    {
+        Fixture fx ({ Slice { 0, kLen } });
+        for (std::int64_t i = 0; i < kLen; ++i)
+            fx.source[static_cast<std::size_t> (i)] =
+                static_cast<float> (1.0 - 0.6 * (static_cast<double> (i) / static_cast<double> (kLen)));
+        fx.state.render.fadeInMs = 0.0f;
+        fx.state.render.fadeOutMs = 0.0f;
+
+        // The last sample that still belongs to pick 1 (the pick ends at
+        // position kLen-1, so its final rendered sample is at index kLen-2;
+        // the very next sample already chains pick 2 from the slice top).
+        const auto lastPick1 = static_cast<std::size_t> (kLen) - 2;
+
+        fx.playInto ({ true, 120.0, 0.0 }, static_cast<int> (kLen), sink);
+        const float tailValue = std::fabs (sink[lastPick1]);
+        CHECK_THAT (static_cast<double> (tailValue), WithinAbs (0.4, 0.02));
+
+        // ----- with a 100 ms fade-out: the tail ramps to ~0. ---------------
+        Fixture fx2 ({ Slice { 0, kLen } });
+        for (std::int64_t i = 0; i < kLen; ++i)
+            fx2.source[static_cast<std::size_t> (i)] =
+                static_cast<float> (1.0 - 0.6 * (static_cast<double> (i) / static_cast<double> (kLen)));
+        fx2.state.render.fadeInMs = 0.0f;
+        fx2.state.render.fadeOutMs = 100.0f;
+
+        fx2.playInto ({ true, 120.0, 0.0 }, static_cast<int> (kLen), sink);
+
+        const float fadedTail = std::fabs (sink[lastPick1]);
+
+        // The fade-out clearly engages: the tail is pulled far below the
+        // source's natural end amplitude (0.4) and below the no-fade control.
+        CHECK (fadedTail < 0.03f);
+        CHECK (fadedTail < tailValue * 0.1f);
+
+        // And the ramp is progressive across the fade window: the midpoint of
+        // the fade sits between the natural level and silence.
+        const auto halfWay = static_cast<std::size_t> (kLen) - static_cast<std::size_t> (kFadeWin / 2);
+        CHECK_THAT (static_cast<double> (std::fabs (sink[halfWay])), WithinAbs (0.2, 0.03));
+    }
 }
 
 TEST_CASE ("slice length: reset bars change takes effect at next boundary", "[scheduler][sl]")

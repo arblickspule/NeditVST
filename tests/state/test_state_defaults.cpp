@@ -37,7 +37,7 @@ TEST_CASE ("render defaults", "[defaults]")
     const RenderState render;
 
     CHECK (render.fadeInMs == 5.0f);
-    CHECK (render.fadeOutMs == 15.0f);
+    CHECK (render.fadeOutMs == 10.0f);
     CHECK (render.pitchMode == PitchMode::repitch);
     CHECK (render.grainSizeMs == 60.0f);
     CHECK (render.grainWindowShape == GrainWindowShape::hann);

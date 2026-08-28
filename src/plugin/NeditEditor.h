@@ -29,6 +29,9 @@ class BarsStepper;
 class BpmScrubField;
 class SensitivitySlider;
 class FadeSlider;
+class GrainSlider;
+class TabBar;
+class PanelView;
 
 } // namespace ui
 
@@ -65,6 +68,9 @@ void runFileSelector();
     void styleAuditionButton();
     void styleOverrideButton();
     void styleQuantizeButton();
+    void stylePitchButton();
+    void setGrainEnabled (bool enabled);
+    void syncTabBar();
     void syncToolBarControls();
     // Returns true only on the RISING EDGE of a CTextButton press. The
     // default kKickStyle fires valueChanged once with the flipped value
@@ -89,6 +95,11 @@ void runFileSelector();
     VSTGUI::COptionMenu* quantizeMenu_ = nullptr;   // toolbar quantize-grid dropdown
     ui::FadeSlider* fadeInSlider_ = nullptr;    // toolbar fade-in (attack)
     ui::FadeSlider* fadeOutSlider_ = nullptr;   // toolbar fade-out (release)
+    VSTGUI::CTextButton* pitchBtn_ = nullptr;   // toolbar repitch/timestretch toggle
+    ui::GrainSlider* grainSizeSlider_ = nullptr;  // toolbar grain size (stretch only)
+    ui::GrainSlider* grainSpeedSlider_ = nullptr; // toolbar grain speed (stretch only)
+    ui::TabBar* tabBar_ = nullptr;         // performance-page tab strip
+    ui::PanelView* panelView_ = nullptr;   // panel area below the tab bar
 
     // Idle-timer dedup for the toolbar control-value sync (host automation
     // can change the state any time; only push to the controls on change).
@@ -105,6 +116,11 @@ void runFileSelector();
     bool lastGridActive_ = false;
     float lastFadeInSync_ = -1.0f;   // fade-in ms (toolbar attack slider)
     float lastFadeOutSync_ = -1.0f;  // fade-out ms (toolbar release slider)
+    float lastGrainSizeSync_ = -1.0f;   // grain size (toolbar, stretch only)
+    float lastGrainSpeedSync_ = -1.0f;  // grain speed (toolbar, stretch only)
+    bool lastPitchSync_ = false;     // pitch-mode toggle (timestretch on)
+    bool lastPitchPressed_ = false;  // CTextButton press-edge latch
+    int lastTabSync_ = -1;           // performance-page tab (state -> bar)
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the

@@ -221,6 +221,7 @@ void VoiceScheduler::process (const state::PluginState& state,
     ctx.timeStretchMode = state.render.pitchMode == state::PitchMode::timeStretch;
     ctx.grainSizeHostSamples = static_cast<double> (state.render.grainSizeMs) / 1000.0
                              * hostSampleRate;
+    ctx.grainSpeed = static_cast<double> (state.render.grainSpeed);
     ctx.outputHopSamples = ctx.grainSizeHostSamples * 0.5;  // fixed 50% overlap
     ctx.sourceHopSamples = ctx.outputHopSamples * srConversion * repitch;
     ctx.grainWindowShape = state.render.grainWindowShape == state::GrainWindowShape::hann
