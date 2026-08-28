@@ -467,6 +467,65 @@ included/excluded.
   Exited return CMouseEventResult (kMouseEventNotHandled); CView has no
   default ctor — pass a zero CRect. Host state restores + user clicks both
   converge: syncTabBar() pushes state→bar on change (dedup lastTabSync_).
+- Style-probability band (Generate + Sequence tabs, shared): a 208px band
+  across the panel card's inner area divided into 9 columns
+  (`kStyleBandH=208`, column width = bandW/9). Each column is a
+  `ui::StyleProbSlider` (tags kTagStyleProbBase 1011 + PlaybackStyle
+  ordinal) drawn as a top-centred label chip (background = the style's
+  palette colour dimmed toward the card surface, text brightened) + a
+  vertical weight slider ALIGNED LEFT spanning the remaining height.
+  Value = raw `GenerateState.styleWeights[i]` weight in [0,1], fill
+  upward, `kAccentBright` tick at the value, % readout right of the bar.
+  Only the 8px slider track is a hit target for drags (chip/% /param-list
+  clicks fall through; a grabbed drag keeps adjusting off-track), wheel
+  ±0.05; routes through
+  `NeditProcessor::setStyleWeight` (publish-only, clamps). Sliders are
+  frame siblings layered over PanelView (which draws the card + divider
+  + a "pending" hint below the band) and setVisible(false) on the other
+  two tabs; syncStyleProbs() dedup-pushes state→controls.
+  Per-style param layout (generalized from the Flanger probe, 2026-08-28):
+  EVERY column hosts its style's applicable params right of the vertical
+  weight slider, under the % readout. Rows come from `columnParamsFor`
+  (derived at runtime from `applicableStyleParams`): **Subdivide dropped
+  everywhere** (a sequencer retrigger, not a style effect) and **Volume
+  Mode kept out** (Volume is a bare slider in every column); each `swept`
+  base param gets its paired `*Mode` sibling (info.swept => next id)
+  inserted DIRECTLY UNDER it (Base slider, then Base Mode menu). Derived
+  lists: forward 1 (Volume), pingPong/tapeStop 2 (Curve Shape menu +
+  Volume), stretch 3, filterDown/up 3, bitcrush 5 (SR Res + mode, Bit
+  Depth + mode, Volume), scratch 4 (3 easing/note-value menus + Volume),
+  flanger 7 (max — Delay/Mix/Feedback + modes + Volume). Continuous params
+  get a 12px caption row drawn by the column + a horizontal
+  `ui::ParamMiniSlider` under it; discrete params are `ui::ParamMiniMenu`
+  dropdowns owning their caption row entirely (column draw SKIPS them).
+  Layout geometry: shared file-scope `kProb*` constants + per-style
+  `StyleParamRow` entries; `StyleProbSlider::captionRowLocalY(i)/
+  sliderRowLocalY(i)` step the rows (caption 12 + 1px gap + slider 10 +
+  5px inter-entry padding) and BOTH the column's caption draw and the
+  editor's control placement call them — they can NEVER drift. The editor
+  keeps 2D arrays `paramMiniSliders_/paramMiniMenus_[style][row]`
+  (`kParamMiniRowCount = 7` = the flanger max), tags = StyleParamIds
+  (< 1000, ParameterSurface ids), so user edits flow through the host edit
+  protocol (applyParamFromControl -> setParam) and host automation
+  converges via `toNormalized` in syncStyleProbs (dedup against control
+  value). Mini-slider readouts: raw value via styleParamInfo
+  (Delay `%.1f ms`, Grain Size `%.0f ms`, Grain Speed `%.1f x`, else
+  `%.2f`); drag maps to the TRACK width only (the 32px value readout is
+  not part of the fill, so 100% stays at the track's right edge), wheel
+  ±0.05. No thumb — the accent track fill IS the indicator, so slider rows
+  are thinner (10px) than the 12px captions. `ParamMiniMenu` = a 12px
+  COptionMenu subclass: option text as the row's only label in
+  kAccentMutedHi + drawn caret triangle + hairline underline, no 19px menu
+  chrome; popup publishes entry index through the same host-edit protocol.
+  Both control types are frame siblings layered over the prob column
+  (added later => on top for hit-testing; the column's x-gated track
+  hit-test keeps them disjoint). Note for lead-dev: Volume currently does
+  nothing on this tab (SL/Clock modes — static volume is Sequenced-only),
+  so it may get dropped from the layout; decided at the user's word.
+- Per-style colours: `kStyleColours` mirrors the original's
+  PlaybackStylePalette::getStyleColour (forward orange, pingPong purple,
+  tapeStop dodgerblue, stretch teal, filterDown red, filterUp gold,
+  bitcrush limegreen, scratch hotpink, flanger cyan).
 - Live DAW testing (Bitwig) round 1 — findings + fixes, all committed:
   - Bundle binary must be named <bundle>.so (lib*.so => "Not a plug-in
     file"); bundle needs Contents/Resources/moduleinfo.json (generated at
@@ -536,8 +595,9 @@ included/excluded.
   (empty override ⇒ zero picks despite full state weights; matching
   override ⇒ byte-identical pick count as the default path).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 215/215 (state round-trip gained a v1 forward-compat case
-  and the editor gained an active-tab persistence case), zero warnings.
+  plugin build 216/216 (state round-trip gained a v1 forward-compat case
+  and the editor gained active-tab + style-weight persistence cases), zero
+  warnings.
 
 ## Rules of engagement
 

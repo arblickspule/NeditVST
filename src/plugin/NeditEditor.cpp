@@ -6,6 +6,8 @@
 #include "ParameterSurface.h"
 #include "WaveformView.h"
 
+#include "state/StyleParameters.h"
+
 #include "engine/Tempo.h"
 
 #include "vstgui/lib/ccolor.h"
@@ -23,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
+#include <vector>
 
 #if __linux__
 #include <unistd.h>
@@ -85,6 +88,116 @@ const CColor kAccentOn      {  32,  16,  13, 255 }; // on-salmon   text on accen
 const CColor kAccentHover   { 224, 104,  90, 255 }; // salmon-500  hover
 const CColor kAccentPressed { 194,  85,  72, 255 }; // salmon-600  pressed
 
+// Per-playback-style accents (same mapping as the original's
+// PlaybackStylePalette::getStyleColour, ordered by PlaybackStyle ordinal).
+const CColor kStyleColours[static_cast<std::size_t> (state::PlaybackStyle::flanger) + 1] {
+    { 255, 165,   0, 255 }, // forward     orange
+    { 128,   0, 130, 255 }, // ping-pong   purple
+    {  30, 144, 255, 255 }, // tape-stop   dodgerblue
+    {   0, 128, 128, 255 }, // stretch     teal
+    { 255,  64,  64, 255 }, // filter-down red
+    { 255, 200,  40, 255 }, // filter-up   gold
+    {  70, 200,  80, 255 }, // bitcrush    limegreen
+    { 255, 105, 180, 255 }, // scratch     hotpink
+    {  60, 210, 220, 255 }  // flanger     cyan
+};
+
+// Linear blend of two colours, `t` in [0,1] (0 = a, 1 = b).
+constexpr CColor mixColor (const CColor& a, const CColor& b, double t) noexcept
+{
+    const auto m = [&] (uint8_t ka, uint8_t kb) {
+        return static_cast<std::uint8_t> (
+            static_cast<double> (ka) + (static_cast<double> (kb) - static_cast<double> (ka)) * t);
+    };
+    return CColor (m (a.red, b.red), m (a.green, b.green), m (a.blue, b.blue), 255);
+}
+
+// Panel layout: card padding and the height of the style-probability band
+// shown on the Generate and Sequence tabs (spec: 208px, 9 columns).
+constexpr double kCardPad = 12.0;
+constexpr double kStyleBandH = 208.0;
+
+// ── Style-probability column geometry ──────────────────────────────────
+// The header block above the vertical weight slider -- chip + % readout +
+// gaps -- and the slider track offsets feed BOTH the column's own
+// drawing/hit-testing and the Flanger mini-slider row placement, so they
+// live here (not private to StyleProbSlider).
+constexpr double kProbChipH = 18.0;            // style label chip
+constexpr double kProbReadoutH = 12.0;         // % readout row
+constexpr double kProbChipReadoutGap = 2.0;    // chip -> readout
+constexpr double kProbReadoutSliderGap = 4.0;  // readout -> slider top
+constexpr double kProbTrackW = 8.0;            // vertical slider thickness
+constexpr double kProbTrackX = 2.0;            // vertical slider left offset
+constexpr double kProbBottomPad = 4.0;
+constexpr double kProbRowH = 12.0;             // one caption / mini-slider row
+constexpr double kProbSliderRowH = 10.0;       // mini-slider row (thinner: no thumb)
+constexpr double kProbCaptionSliderGap = 1.0;  // caption -> its slider
+constexpr double kProbRowGap = 5.0;            // inter-entry breathing room
+
+// Column param row: one parameter shown in a style column's space under
+// the % readout and right of the vertical weight slider, following the
+// Flanger pilot recipe. Continuous params get a horizontal mini-slider
+// under their caption; discrete params are mini dropdowns whose caption
+// IS the current option. Volume rides last in every column.
+struct StyleParamRow
+{
+    state::StyleParamId id;
+    bool continuous;
+};
+
+// Derived from applicableStyleParams: Subdivide is dropped everywhere (it
+// is a sequencer retrigger, not a style effect) and Volume Mode is kept
+// out (Volume is a bare slider in every column, per the Flanger pilot);
+// each swept base param gets its paired *Mode sibling (info.swept => next
+// id) inserted right beneath it so e.g. Delay Time / Delay Time Mode ride
+// together. Forward's column comes out as a lone Volume slider.
+[[nodiscard]] std::vector<StyleParamRow> columnParamsFor (state::PlaybackStyle style)
+{
+    const auto applicable = state::applicableStyleParams (style);
+    std::vector<StyleParamRow> rows;
+    rows.reserve (static_cast<std::size_t> (applicable.count) + 4);
+    for (int i = 0; i < applicable.count; ++i)
+    {
+        const auto id = applicable.ids[static_cast<std::size_t> (i)];
+        if (id == state::StyleParamId::subdivide
+            || id == state::StyleParamId::volumeMode)
+            continue;
+        const auto& info = state::styleParamInfo (id);
+        rows.push_back ({ id, ! info.discrete });
+        if (info.swept)
+        {
+            const auto mode = static_cast<state::StyleParamId> (
+                static_cast<int> (id) + 1);
+            if (mode != state::StyleParamId::volumeMode)
+                rows.push_back ({ mode, false });
+        }
+    }
+    return rows;
+}
+
+// Height one entry consumes in the column list. Continuous entries take a
+// caption row + its slider + both gaps; discrete entries a caption row +
+// the trailing gap (the list pads out to fill the 208px band).
+[[nodiscard]] constexpr double paramEntrySpan (const StyleParamRow& row) noexcept
+{
+    return row.continuous ? kProbRowH + kProbCaptionSliderGap + kProbSliderRowH
+                                + kProbRowGap
+                          : kProbRowH + kProbRowGap;
+}
+
+// Readout format for a continuous mini-slider's raw value (ms for temps
+// that read best in milliseconds, x for a multiplier, plain otherwise).
+[[nodiscard]] const char* paramReadoutFormat (state::StyleParamId id) noexcept
+{
+    switch (id)
+    {
+        case state::StyleParamId::flangerDelayMs: return "%.1f ms";
+        case state::StyleParamId::grainSizeMs:    return "%.0f ms";
+        case state::StyleParamId::grainSpeed:     return "%.1f x";
+        default:                                  return "%.2f";
+    }
+}
+
 // ── Control tags ───────────────────────────────────────────────────────
 constexpr auto kTagAudition   = static_cast<VSTGUI_INT32> (1001);
 constexpr auto kTagSensitivity = static_cast<VSTGUI_INT32> (1002);
@@ -96,6 +209,7 @@ constexpr auto kTagPitchMode = static_cast<VSTGUI_INT32> (1007);
 constexpr auto kTagGrainSize = static_cast<VSTGUI_INT32> (1008);
 constexpr auto kTagGrainSpeed = static_cast<VSTGUI_INT32> (1009);
 constexpr auto kTagTabBar = static_cast<VSTGUI_INT32> (1010);
+constexpr auto kTagStyleProbBase = static_cast<VSTGUI_INT32> (1011); // + style index
 
 Steinberg::ViewRect kEditorRect (0, 0, kEditorWidth, kEditorHeight);
 
@@ -889,6 +1003,435 @@ private:
     bool dragging_ = false;
 };
 
+// ── Style-probability slider: one per playback style, the vertical	  ──
+// probability bar aligned to the LEFT edge of its column inside the
+// Generate/Sequence panel band. Each control is one column: a label chip
+// at the top (centred, background tinted from the style's palette colour)
+// plus the slider spanning the remaining height, filled upward from the
+// bottom. Value = the style's draw weight in [0,1]; tags are
+// kTagStyleProbBase + style ordinal. Only the slider track itself is the
+// hit target for drags; once grabbed, the pointer can leave the track.
+class StyleProbSlider : public CControl
+{
+public:
+    StyleProbSlider (const CRect& size, IControlListener* l, int32_t t, int styleIndex)
+        : CControl (size, l, t), styleIndex_ (styleIndex),
+          rows_ (columnParamsFor (static_cast<state::PlaybackStyle> (styleIndex)))
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new StyleProbSlider (getViewSize(), getListener(), getTag(), styleIndex_);
+    }
+
+    // The style's param layout rows (see columnParamsFor); the editor lays
+    // the mini-slider/menu controls on top of this column from here.
+    [[nodiscard]] const std::vector<StyleParamRow>& paramRows() const noexcept
+    {
+        return rows_;
+    }
+
+    // Local (column-relative) Y of entry i's caption row / of the
+    // mini-slider row directly under a continuous caption. The header
+    // block above the list is included, plus 1px leading.
+    [[nodiscard]] double captionRowLocalY (std::size_t i) const noexcept
+    {
+        double y = kProbChipH + kProbChipReadoutGap + kProbReadoutH
+                 + kProbReadoutSliderGap + 1.0;
+        for (std::size_t j = 0; j < i; ++j)
+            y += paramEntrySpan (rows_[j]);
+        return y;
+    }
+
+    [[nodiscard]] double sliderRowLocalY (std::size_t i) const noexcept
+    {
+        return captionRowLocalY (i) + kProbRowH + kProbCaptionSliderGap;
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+
+        const double v = getValueNormalized();
+        const CColor& accent = kStyleColours[static_cast<std::size_t> (styleIndex_)];
+
+        // ── Label chip: top-centred, background = the style colour dimmed
+        // toward the card surface; text = brightened style colour so the
+        // graphite theme holds while each style stays identifiable.
+        const CRect chip (r.left + 2, r.top, r.right - 2, r.top + kProbChipH);
+        dc->setFillColor (mixColor (accent, kSurface1, 0.78));
+        dc->drawRect (chip, kDrawFilled);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (mixColor (accent, kTextPrimary, 0.35));
+        dc->drawString (state::playbackStyleName (
+                            static_cast<state::PlaybackStyle> (styleIndex_)),
+                        chip, kCenterText);
+
+        // ── Percent readout, top row under the chip, right-aligned so it
+        // clears the left-aligned slider below. ──
+        char buf[16];
+        std::snprintf (buf, sizeof (buf), "%d%%",
+                       static_cast<int> (std::lround (v * 100.0)));
+        dc->setFont (kNormalFontSmaller);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString (buf,
+                        CRect (r.left + 2, r.top + kProbChipH + kProbChipReadoutGap,
+                               r.right - 2,
+                               r.top + kProbChipH + kProbChipReadoutGap + kProbReadoutH),
+                        kRightText);
+
+        // ── Vertical slider, aligned left, spanning the remaining height.
+        // Track = surface, fill = the style colour, tick at the value.
+        const double top = sliderTop (r);
+        const double bottom = r.bottom - kProbBottomPad;
+        const CRect track (r.left + kProbTrackX, top,
+                           r.left + kProbTrackX + kProbTrackW, bottom);
+        dc->setFillColor (kSurface2);
+        dc->drawRect (track, kDrawFilled);
+        if (v > 0.0)
+        {
+            const double fillH = (bottom - top) * v;
+            dc->setFillColor (accent);
+            dc->drawRect (CRect (track.left, bottom - fillH, track.right, bottom),
+                          kDrawFilled);
+        }
+        const double tickY = bottom - (bottom - top) * v;
+        dc->setFillColor (kAccentBright);
+        dc->drawRect (CRect (track.left - 1, tickY, track.right + 1, tickY + 2.0),
+                      kDrawFilled);
+
+        // ── Param controls: every column hosts its style's params in the ──
+        // space under the % and right of the slider. Subdivide is dropped
+        // (a SEQUENCER retrigger function, not a style effect). Continuous
+        // params get a 12px caption row here + a ParamMiniSlider (drawn on
+        // top) in the 10px row beneath; discrete params' rows are owned
+        // entirely by their ParamMiniMenu on top (caption + current value).
+        if (! rows_.empty())
+        {
+            dc->setFont (kNormalFontSmaller);
+            dc->setFontColor (mixColor (accent, kTextPrimary, 0.45));
+            const double listX = track.right + 4.0;
+            const double listW = r.right - 2.0 - listX;
+            for (std::size_t i = 0; i < rows_.size(); ++i)
+            {
+                if (! rows_[i].continuous)
+                    continue;   // owned by the mini dropdown overlay
+                const double labelY = r.top + captionRowLocalY (i);
+                dc->drawString (state::styleParamInfo (rows_[i].id).name,
+                                CRect (listX, labelY, listX + listW, labelY + kProbRowH),
+                                kLeftText);
+            }
+        }
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+        // Hit-test only the actual slider track (a narrow vertical bar at
+        // the column's left); clicks on the chip / % / parameter list fall
+        // through to the views behind. Once grabbed, the drag adjusts on
+        // any x so the pointer can leave the few-pixel track.
+        const double x = where.x - getViewSize().left;
+        if (x < kProbTrackX || x > kProbTrackX + kProbTrackW)
+            return kMouseEventNotHandled;
+        dragging_ = true;
+        applyFromY (where.y - getViewSize().top);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+        applyFromY (where.y - getViewSize().top);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (event.deltaY == 0.0)
+            return;
+        applyValue (getValueNormalized() + static_cast<double> (event.deltaY) * 0.05);
+        event.consumed = true;
+    }
+
+private:
+    // Absolute (frame-space) top of the slider band, for drawing.
+    [[nodiscard]] double sliderTop (const CRect& r) const noexcept
+    {
+        return r.top + sliderBandTopLocal();
+    }
+
+    // Local-header height above the slider (same value feeds drawing rects
+    // and the hit->value mapping in applyFromY). kProb* geometry lives at
+    // file scope so the Flanger mini-slider rows line up with it.
+    [[nodiscard]] static constexpr double sliderBandTopLocal() noexcept
+    {
+        return kProbChipH + kProbChipReadoutGap + kProbReadoutH + kProbReadoutSliderGap;
+    }
+
+    void applyFromY (double localY)
+    {
+        // localY arrived in the column's OWN coordinate space (already
+        // offset by getViewSize().top in onMouseDown/Moved), so the slider
+        // band must be described in the same local space -- NOT the
+        // absolute-ized sliderTop() used for drawing.
+        const double top = sliderBandTopLocal();
+        const double bottom = getViewSize().getHeight() - kProbBottomPad;
+        const double span = bottom - top;
+        double v = span > 0.0 ? 1.0 - (localY - top) / span : 0.0;
+        if (v < 0.0)
+            v = 0.0;
+        if (v > 1.0)
+            v = 1.0;
+        setValueNormalized (static_cast<float> (v));
+        invalid();
+        valueChanged();
+    }
+
+    void applyValue (double v)
+    {
+        if (v < 0.0)
+            v = 0.0;
+        if (v > 1.0)
+            v = 1.0;
+        setValueNormalized (static_cast<float> (v));
+        invalid();
+        valueChanged();
+    }
+
+    int styleIndex_ = 0;
+    bool dragging_ = false;
+    std::vector<StyleParamRow> rows_;
+};
+
+// ── Horizontal mini-slider for ONE continuous style param, sitting in ──
+// the 12px row directly under its caption in the Flanger column. The tag
+// IS the StyleParamId (== a ParameterSurface id below 1000), so user edits
+// flow through the default host-edit protocol (applyParamFromControl ->
+// setParam) instead of a publisher-only setter. Value = normalized param;
+// the right-hand readout shows the raw value via styleParamInfo.
+class ParamMiniSlider : public CControl
+{
+public:
+    ParamMiniSlider (const CRect& size, IControlListener* l, int32_t t,
+                     int styleIndex, const char* fmt)
+        : CControl (size, l, t), styleIndex_ (styleIndex),
+          fmt_ (fmt != nullptr ? fmt : "%.2f")
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new ParamMiniSlider (getViewSize(), getListener(), getTag(),
+                                    styleIndex_, fmt_.c_str());
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+        const float v = getValueNormalized();
+        const CColor& accent = kStyleColours[static_cast<std::size_t> (styleIndex_)];
+
+        constexpr double kTrackH = 4.0;
+        const double trackTop = r.top + (r.getHeight() - kTrackH) / 2.0;
+        const CRect track (r.left + 2.0, trackTop, r.right - kValueW - 2.0,
+                           trackTop + kTrackH);
+        dc->setFillColor (kSurface2);
+        dc->drawRect (track, kDrawFilled);
+        if (v > 0.0f)
+        {
+            const double fillW = (track.right - track.left) * v;
+            dc->setFillColor (accent);
+            dc->drawRect (CRect (track.left, track.top, track.left + fillW, track.bottom),
+                          kDrawFilled);
+        }
+
+        char buf[24];
+        std::snprintf (buf, sizeof (buf), fmt_.c_str(), valueFromNorm (v));
+        dc->setFont (kNormalFontSmaller);
+        dc->setFontColor (kAccentMutedHi);
+        dc->drawString (buf,
+                        CRect (r.right - kValueW, r.top, r.right - 2.0, r.bottom),
+                        kRightText);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        if (local.x < 0 || local.x > getViewSize().getWidth())
+            return kMouseEventNotHandled;
+
+        dragging_ = true;
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        applyFromX (local.x);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (event.deltaY == 0.0)
+            return;
+        applyValue (getValueNormalized() + static_cast<double> (event.deltaY) * 0.05);
+        event.consumed = true;
+    }
+
+private:
+    // Raw display value (for the readout): normalized -> styleParamInfo
+    // range keyed by the control's tag (the StyleParamId).
+    double valueFromNorm (float normalized) const noexcept
+    {
+        const auto& info = state::styleParamInfo (
+            static_cast<state::StyleParamId> (getTag()));
+        return info.minValue + static_cast<double> (normalized)
+                                   * (info.maxValue - info.minValue);
+    }
+
+    void applyFromX (double localX)
+    {
+        // Map against the TRACK width only -- the 32px value readout on the
+        // right is not part of the fill, so clamps keep 100% at the track's
+        // right edge (the readout slot would otherwise offset the drag).
+        const double trackLeft = 2.0;
+        const double trackRight = getViewSize().getWidth() - kValueW - 2.0;
+        const double span = trackRight - trackLeft;
+        double v = span > 0.0 ? (localX - trackLeft) / span : 0.0;
+        if (v < 0.0)
+            v = 0.0;
+        if (v > 1.0)
+            v = 1.0;
+        applyValue (v);
+    }
+
+    void applyValue (double v)
+    {
+        if (v < 0.0)
+            v = 0.0;
+        if (v > 1.0)
+            v = 1.0;
+        setValueNormalized (static_cast<float> (v));
+        invalid();
+        valueChanged();
+    }
+
+    int styleIndex_ = 0;
+    bool dragging_ = false;
+    static constexpr double kValueW = 32.0;   // right slot for the raw readout
+    std::string fmt_;
+};
+
+// ── Mini dropdown for ONE discrete style param, occupying the 12px ──
+// caption row of the Flanger column (the current option IS the row's
+// label). Subclassed from COptionMenu so the click publishes its own
+// popup (platform list, anchored at this row) and the value stays an
+// entry index routed straight through the host-edit protocol like the
+// mini-sliders; draw() keeps the row as slim and quiet as the captions
+// (no 19px menu chrome). Tag = the StyleParamId (< 1000).
+class ParamMiniMenu : public COptionMenu
+{
+public:
+    ParamMiniMenu (const CRect& size, IControlListener* l, int32_t t, int styleIndex)
+        : COptionMenu (size, l, t), styleIndex_ (styleIndex)
+    {
+        const auto param = static_cast<state::StyleParamId> (t);
+        const auto& info = state::styleParamInfo (param);
+        for (int i = 0; i < info.numOptions; ++i)
+            addEntry (state::styleParamOptionName (param, i));
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        auto* copy = new ParamMiniMenu (getViewSize(), getListener(), getTag(), styleIndex_);
+        copy->setValue (getValue());
+        return copy;
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+
+        const auto param = static_cast<state::StyleParamId> (getTag());
+        const auto idx = static_cast<int> (getValue());
+
+        // The current option is the row's only text, tinted like a value
+        // readout (interactive, unlike the muted caption rows).
+        dc->setFont (kNormalFontSmaller);
+        dc->setFontColor (kAccentMutedHi);
+        dc->drawString (state::styleParamOptionName (param, idx),
+                        CRect (r.left + 2, r.top, r.right - 12, r.bottom), kLeftText);
+
+        // Caret triangle, drawn (the default font's glyph set is not
+        // guaranteed to include ▾), antialiased for the small size.
+        const double cx = r.right - 7.0;
+        const double cy = r.top + r.getHeight() / 2.0;
+        dc->setDrawMode (kAntiAliasing);
+        dc->setFillColor (kTextSecondary);
+        const std::vector<CPoint> tri {
+            { cx - 3.0, cy - 1.5 }, { cx + 3.0, cy - 1.5 }, { cx, cy + 2.0 }
+        };
+        dc->drawPolygon (tri, kDrawFilled);
+        dc->setDrawMode (kAliasing);
+
+        // Hairline underline = the input affordance (matches the quiet
+        // read of the mini-slider rows above).
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1.0);
+        dc->drawLine (CPoint (r.left + 2, r.bottom - 1), CPoint (r.right - 2, r.bottom - 1));
+
+        setDirty (false);
+    }
+
+private:
+    int styleIndex_ = 0;
+};
+
 // ── Performance-page tab strip (GENERATE / SEQUENCER / CONTROL / ───────
 // PERFORMANCE). 48px tall per spec deviation in AGENTS. Container-less
 // underline tabs (design-language.md §6): active = salmon label + 2px
@@ -1040,6 +1583,12 @@ class PanelView : public CView
 public:
     explicit PanelView (NeditProcessor* owner) : CView (CRect (0, 0, 0, 0)), owner_ (owner) {}
 
+    // Whether the currently selected page uses the style-probability band.
+    [[nodiscard]] bool showsStyleProbs () const noexcept
+    {
+        return showsStyleProbsFor (owner_->uiStateView().ui.activeTab);
+    }
+
     void draw (CDrawContext* dc) override
     {
         const CRect r = getViewSize();
@@ -1049,23 +1598,57 @@ public:
         drawRoundedRect (dc, r, CCoord (4), kSurface1, kOutline);
 
         const auto tab = owner_->uiStateView().ui.activeTab;
-        const char* name = TabBar::labelForOrdinal (static_cast<int> (tab));
 
-        dc->setFont (kNormalFontSmall);
-        dc->setFontColor (kTextSecondary);
-        dc->drawString (name, CRect (r.left + 12, r.top + 10, r.right - 12, r.top + 22),
-                        kLeftText);
+        if (showsStyleProbsFor (tab))
+        {
+            // The Generate/Sequence band is drawn by the 9 sibling
+            // StyleProbSlider columns layered over this card; here we only
+            // mark the band's bottom edge and hint at what sits below.
+            const double bandBottom = r.top + kCardPad + kStyleBandH;
+            dc->setDrawMode (kAliasing);
+            dc->setFrameColor (kOutline);
+            dc->setLineWidth (1);
+            dc->drawLine (CPoint (r.left + kCardPad, bandBottom),
+                          CPoint (r.right - kCardPad, bandBottom));
 
-        dc->setFont (kNormalFontSmaller);
-        dc->setFontColor (kTextDisabled);
-        const char* hint = hintForTab (tab);
-        dc->drawString (hint, CRect (r.left + 12, r.top + 26, r.right - 12, r.top + 38),
-                        kLeftText);
+            dc->setFont (kNormalFontSmaller);
+            dc->setFontColor (kTextDisabled);
+            dc->drawString (hintBelow (tab),
+                            CRect (r.left + kCardPad, r.bottom - 18,
+                                   r.right - kCardPad, r.bottom - 8),
+                            kLeftText);
+        }
+        else
+        {
+            // Skeleton placeholder for the remaining pages.
+            const char* name = TabBar::labelForOrdinal (static_cast<int> (tab));
+            dc->setFont (kNormalFontSmall);
+            dc->setFontColor (kTextSecondary);
+            dc->drawString (name, CRect (r.left + 12, r.top + 10, r.right - 12, r.top + 22),
+                            kLeftText);
+            dc->setFont (kNormalFontSmaller);
+            dc->setFontColor (kTextDisabled);
+            dc->drawString (hintForTab (tab),
+                            CRect (r.left + 12, r.top + 26, r.right - 12, r.top + 38),
+                            kLeftText);
+        }
 
         setDirty (false);
     }
 
 private:
+    [[nodiscard]] static bool showsStyleProbsFor (state::UiTab tab) noexcept
+    {
+        return tab == state::UiTab::generate || tab == state::UiTab::sequence;
+    }
+
+    [[nodiscard]] static const char* hintBelow (state::UiTab tab)
+    {
+        return tab == state::UiTab::generate
+                   ? "style parameters (pending)"
+                   : "step grid · pattern controls (pending)";
+    }
+
     [[nodiscard]] static const char* hintForTab (state::UiTab tab)
     {
         switch (tab)
@@ -1427,6 +2010,88 @@ void NeditEditor::syncTabBar()
                                  / static_cast<float> (ui::TabBar::kTabCount - 1));
     tabBar_->invalid();
     panelView_->invalid();
+
+    // The style-probability band is shared by the Generate and Sequence
+    // pages; show its sliders there and align them to the state.
+    const bool showProbs = panelView_->showsStyleProbs ();
+    for (auto* sl : styleProbSliders_)
+    {
+        if (sl != nullptr)
+            sl->setVisible (showProbs);
+    }
+    // Param mini-sliders AND mini dropdowns ride with the band.
+    for (auto& column : paramMiniSliders_)
+        for (auto* sl : column)
+        {
+            if (sl != nullptr)
+                sl->setVisible (showProbs);
+        }
+    for (auto& column : paramMiniMenus_)
+        for (auto* menu : column)
+        {
+            if (menu != nullptr)
+                menu->setVisible (showProbs);
+        }
+    if (showProbs)
+        syncStyleProbs();
+}
+
+//------------------------------------------------------------------------
+// Push the per-style draw weights into the probability sliders and the
+// Flanger param mini-sliders (deduped -- only push on real change so a
+// dragged slider isn't fought; the last values ARE the control values).
+void NeditEditor::syncStyleProbs()
+{
+    const auto& weights = owner_->uiStateView().generate.styleWeights;
+    for (std::size_t i = 0; i < weights.size(); ++i)
+    {
+        auto* sl = styleProbSliders_[i];
+        if (sl == nullptr)
+            continue;
+        const float w = weights[i];
+        if (std::abs (w - lastStyleWeightsSync_[i]) > 1e-3f)
+        {
+            lastStyleWeightsSync_[i] = w;
+            sl->setValueNormalized (w);
+            sl->invalid();
+        }
+    }
+
+    // Mini-sliders bind to Generate's style params (the automatable
+    // surface 0..20); normalize via ParameterSurface so host automation
+    // and UI edits converge on the same mapping.
+    for (auto& column : paramMiniSliders_)
+        for (auto* sl : column)
+        {
+            if (sl == nullptr)
+                continue;
+            const float norm = toNormalized (owner_->uiStateView(),
+                                             static_cast<std::uint32_t> (sl->getTag()));
+            if (std::abs (norm - sl->getValueNormalized()) > 1e-3f)
+            {
+                sl->setValueNormalized (norm);
+                sl->invalid();
+            }
+        }
+
+    // Mini dropdowns: same normalized mapping (a discrete value sits
+    // exactly on index/(numOptions-1)), pushed as the raw entry index via
+    // COptionMenu::setValue so the valueChanged echo stays silent.
+    for (auto& column : paramMiniMenus_)
+        for (auto* menu : column)
+        {
+            if (menu == nullptr)
+                continue;
+            const float norm = toNormalized (owner_->uiStateView(),
+                                             static_cast<std::uint32_t> (menu->getTag()));
+            if (std::abs (norm - menu->getValueNormalized()) > 1e-3f)
+            {
+                const int index = static_cast<int> (
+                    std::lround (norm * static_cast<float> (menu->getNbEntries() - 1)));
+                menu->setValue (static_cast<float> (index));
+                menu->invalid();
+            }
+        }
 }
 
 //------------------------------------------------------------------------
@@ -1688,6 +2353,78 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     frame->addView (panel);
     panelView_ = panel;
 
+    // ── Style-probability band (Generate/Sequence tabs): a 208px band    ──
+    // across the card's inner area, divided into 9 columns. Each column is
+    // one StyleProbSlider (label chip + left-aligned vertical weight bar),
+    // tags kTagStyleProbBase + style ordinal, positioned to overlay the
+    // card area drawn by PanelView.
+    const double bandLeft = kPanelMarginX + kCardPad;
+    const double bandTop  = kPanelTop + kCardPad;
+    const double bandW    = (kEditorWidth - 2.0 * kPanelMarginX) - 2.0 * kCardPad;
+    const double colW     = bandW / static_cast<double> (state::kNumPlaybackStyles);
+    for (int i = 0; i < state::kNumPlaybackStyles; ++i)
+    {
+        const double colX = bandLeft + static_cast<double> (i) * colW;
+        auto* prob = new ui::StyleProbSlider (
+            CRect (colX, bandTop, colX + colW, bandTop + kStyleBandH),
+            this, static_cast<VSTGUI_INT32> (kTagStyleProbBase + i), i);
+        frame->addView (prob);
+        styleProbSliders_[static_cast<std::size_t> (i)] = prob;
+    }
+
+    // Every column hosts its style's params: continuous params get a 12px
+    // horizontal mini-slider row directly under their caption, discrete
+    // params a mini dropdown whose caption row IS the control (rows from
+    // columnParamsFor -- Subdivide/Volume-Mode skipped, swept params pair
+    // with their *Mode, Volume last). Tags = the StyleParamId (=
+    // ParameterSurface id < 1000), so edits route through the host edit
+    // protocol. Added after the prob sliders, so they sit on top for
+    // hit-testing; the columns' caption rows line up via the shared kProb*
+    // geometry and the same captionRowLocalY the columns draw with.
+    for (auto& column : paramMiniSliders_)
+        column.fill (nullptr);
+    for (auto& column : paramMiniMenus_)
+        column.fill (nullptr);
+    for (int col = 0; col < state::kNumPlaybackStyles; ++col)
+    {
+        auto* prob = styleProbSliders_[static_cast<std::size_t> (col)];
+        const auto& rows = prob->paramRows();
+        if (rows.empty())
+            continue;   // no params (none today; keep the weight slider)
+        const double colX = bandLeft + static_cast<double> (col) * colW;
+        const double listX = colX + kProbTrackX + kProbTrackW + 4.0;
+        const double listW = colX + colW - 2.0 - listX;
+        for (std::size_t i = 0; i < rows.size(); ++i)
+        {
+            const auto& row = rows[i];
+            if (! row.continuous)
+            {
+                // Discrete param: its caption row IS the control -- a mini
+                // dropdown showing the current option.
+                auto* menu = new ui::ParamMiniMenu (
+                    CRect (listX, bandTop + prob->captionRowLocalY (i),
+                           listX + listW,
+                           bandTop + prob->captionRowLocalY (i) + kProbRowH),
+                    this, static_cast<VSTGUI_INT32> (static_cast<std::uint32_t> (row.id)),
+                    col);
+                frame->addView (menu);
+                paramMiniMenus_[static_cast<std::size_t> (col)]
+                               [i] = menu;
+                continue;
+            }
+
+            const double localY = prob->sliderRowLocalY (i);
+            auto* mini = new ui::ParamMiniSlider (
+                CRect (listX, bandTop + localY, listX + listW,
+                       bandTop + localY + kProbSliderRowH),
+                this, static_cast<VSTGUI_INT32> (static_cast<std::uint32_t> (row.id)),
+                col, paramReadoutFormat (row.id));
+            frame->addView (mini);
+            paramMiniSliders_[static_cast<std::size_t> (col)]
+                             [i] = mini;
+        }
+    }
+
     syncTabBar();   // seed the strip + panel from the restored activeTab
 
     setIdleRate (60);
@@ -1713,6 +2450,11 @@ void PLUGIN_API NeditEditor::close()
     grainSpeedSlider_ = nullptr;
     tabBar_ = nullptr;
     panelView_ = nullptr;
+    styleProbSliders_.fill (nullptr);
+    for (auto& column : paramMiniSliders_)
+        column.fill (nullptr);
+    for (auto& column : paramMiniMenus_)
+        column.fill (nullptr);
     waveformView_ = nullptr;
     if (frame != nullptr)
     {
@@ -1865,6 +2607,16 @@ void NeditEditor::valueChanged (CControl* control)
         owner_->setActiveTab (static_cast<state::UiTab> (ord));
         if (panelView_)
             panelView_->invalid();   // the panel area re-renders per page
+        return;
+    }
+
+    // Style-probability sliders: tag = kTagStyleProbBase + style ordinal,
+    // value is the raw weight in [0,1].
+    if (control->getTag() >= kTagStyleProbBase
+        && control->getTag() < kTagStyleProbBase + state::kNumPlaybackStyles)
+    {
+        const int idx = static_cast<int> (control->getTag() - kTagStyleProbBase);
+        owner_->setStyleWeight (idx, control->getValueNormalized());
         return;
     }
 

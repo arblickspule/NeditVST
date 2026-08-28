@@ -71,6 +71,10 @@ public:
     // below the tab bar re-renders from state.
     void setActiveTab (state::UiTab tab);
 
+    // Per-style draw weight (GenerateState.styleWeights[i]). Publish only;
+    // clamps to [0,1], ignores out-of-range style indices.
+    void setStyleWeight (int styleIndex, float weight);
+
     // Trim: direct frame-based write from the waveform view's trim handles.
     void setTrimFrames (std::int64_t startFrame, std::int64_t endFrame);
 

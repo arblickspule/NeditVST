@@ -11,6 +11,10 @@
 
 #include "vstgui/lib/controls/icontrollistener.h"
 
+#include "state/Types.h"
+
+#include <array>
+
 namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; }
 
 #include <atomic>
@@ -32,6 +36,9 @@ class FadeSlider;
 class GrainSlider;
 class TabBar;
 class PanelView;
+class StyleProbSlider;
+class ParamMiniSlider;
+class ParamMiniMenu;
 
 } // namespace ui
 
@@ -71,6 +78,7 @@ void runFileSelector();
     void stylePitchButton();
     void setGrainEnabled (bool enabled);
     void syncTabBar();
+    void syncStyleProbs();
     void syncToolBarControls();
     // Returns true only on the RISING EDGE of a CTextButton press. The
     // default kKickStyle fires valueChanged once with the flipped value
@@ -100,6 +108,18 @@ void runFileSelector();
     ui::GrainSlider* grainSpeedSlider_ = nullptr; // toolbar grain speed (stretch only)
     ui::TabBar* tabBar_ = nullptr;         // performance-page tab strip
     ui::PanelView* panelView_ = nullptr;   // panel area below the tab bar
+    std::array<ui::StyleProbSlider*, state::kNumPlaybackStyles> styleProbSliders_ {};
+
+    // Per-style-column param mini-sliders and mini dropdowns, indexed
+    // [style][row], parallel to the rows StyleProbSlider builds from
+    // columnParamsFor. Each column uses at most kParamMiniRowCount rows
+    // (the Flanger max, 7); a row holds either the continuous mini-slider
+    // or the discrete mini dropdown, never both.
+    static constexpr std::size_t kParamMiniRowCount = 7;
+    std::array<std::array<ui::ParamMiniSlider*, kParamMiniRowCount>,
+               state::kNumPlaybackStyles> paramMiniSliders_ {};
+    std::array<std::array<ui::ParamMiniMenu*, kParamMiniRowCount>,
+               state::kNumPlaybackStyles> paramMiniMenus_ {};
 
     // Idle-timer dedup for the toolbar control-value sync (host automation
     // can change the state any time; only push to the controls on change).
@@ -121,6 +141,7 @@ void runFileSelector();
     bool lastPitchSync_ = false;     // pitch-mode toggle (timestretch on)
     bool lastPitchPressed_ = false;  // CTextButton press-edge latch
     int lastTabSync_ = -1;           // performance-page tab (state -> bar)
+    std::array<float, state::kNumPlaybackStyles> lastStyleWeightsSync_ {};
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the

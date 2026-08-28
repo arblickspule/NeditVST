@@ -250,3 +250,22 @@ TEST_CASE ("shell: active-tab writes persist in UiState")
     fx.processor.setActiveTab (static_cast<state::UiTab> (state::UiTab::generate));
     CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);
 }
+
+TEST_CASE ("shell: style-probability writes persist in GenerateState")
+{
+    RunningPlugin fx;
+
+    fx.processor.setStyleWeight (3, 0.4f);
+    CHECK (fx.processor.debugUiState().generate.styleWeights[3]
+           == Catch::Approx (0.4f));
+
+    // Out-of-range weights clamp to the [0,1] domain.
+    fx.processor.setStyleWeight (3, 1.7f);
+    CHECK (fx.processor.debugUiState().generate.styleWeights[3]
+           == Catch::Approx (1.0f));
+
+    // Out-of-range style indices are ignored.
+    fx.processor.setStyleWeight (99, 0.5f);
+    CHECK (fx.processor.debugUiState().generate.styleWeights[0]
+           == Catch::Approx (1.0f));
+}

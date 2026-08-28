@@ -293,6 +293,16 @@ void NeditProcessor::setTrimFrames (std::int64_t startFrame, std::int64_t endFra
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setStyleWeight (int styleIndex, float weight)
+{
+    if (! state::isValidPlaybackStyleIndex (styleIndex))
+        return;
+    uiState_.generate.styleWeights[static_cast<std::size_t> (styleIndex)]
+        = std::clamp (weight, 0.0f, 1.0f);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 float NeditProcessor::getSliceProbability (int sliceIndex) const
 {
     const auto& w = uiState_.generate.sliceWeights;
