@@ -38,6 +38,54 @@ TEST_CASE ("note value index validation", "[types]")
     CHECK_FALSE (isValidNoteValueIndex (20));
 }
 
+TEST_CASE ("note value palette partitions into plain / dotted / triplet groups", "[types]")
+{
+    // The "n=0 / nd=0 / nt=0" quick-clears zero whole variants at once, so
+    // the group membership table must mirror the palette's name suffixes:
+    //   plain   {128n, 64n, 32n, 16n, 8n, 4n, 2n, 1n}         -> 8
+    //   dotted  {64nd, 32nd, 16nd, 8nd, 4nd, 2nd}             -> 6
+    //   triplet {32nt, 16nt, 8nt, 4nt, 2nt, 1nt}              -> 6
+    // Any reordering of the %d/%n name suffixes in the palette must trip
+    // this check (name suffix always matches the declared variant).
+    const NoteValueVariant expected[kNumNoteValues] {
+        NoteValueVariant::plain,    // 0:  128n
+        NoteValueVariant::plain,    // 1:  64n
+        NoteValueVariant::triplet,  // 2:  32nt
+        NoteValueVariant::dotted,   // 3:  64nd
+        NoteValueVariant::plain,    // 4:  32n
+        NoteValueVariant::triplet,  // 5:  16nt
+        NoteValueVariant::dotted,   // 6:  32nd
+        NoteValueVariant::plain,    // 7:  16n
+        NoteValueVariant::triplet,  // 8:  8nt
+        NoteValueVariant::dotted,   // 9:  16nd
+        NoteValueVariant::plain,    // 10: 8n
+        NoteValueVariant::triplet,  // 11: 4nt
+        NoteValueVariant::dotted,   // 12: 8nd
+        NoteValueVariant::plain,    // 13: 4n
+        NoteValueVariant::triplet,  // 14: 2nt
+        NoteValueVariant::dotted,   // 15: 4nd
+        NoteValueVariant::plain,    // 16: 2n
+        NoteValueVariant::triplet,  // 17: 1nt
+        NoteValueVariant::dotted,   // 18: 2nd
+        NoteValueVariant::plain     // 19: 1n
+    };
+
+    std::array<int, 3> counts {};
+    for (int i = 0; i < kNumNoteValues; ++i)
+    {
+        const auto v = kNoteValueVariant[static_cast<std::size_t> (i)];
+        CHECK (v == expected[static_cast<std::size_t> (i)]);
+        CHECK (std::string (kNoteValues[static_cast<std::size_t> (i)].name).substr (
+                   std::string (kNoteValues[static_cast<std::size_t> (i)].name).size() - 1)
+               == (v == NoteValueVariant::plain ? "n"
+                      : v == NoteValueVariant::dotted ? "d" : "t"));
+        counts[static_cast<std::size_t> (v)] += 1;
+    }
+    CHECK (counts[static_cast<std::size_t> (NoteValueVariant::plain)] == 8);
+    CHECK (counts[static_cast<std::size_t> (NoteValueVariant::dotted)] == 6);
+    CHECK (counts[static_cast<std::size_t> (NoteValueVariant::triplet)] == 6);
+}
+
 TEST_CASE ("playback styles match the original nine", "[types]")
 {
     REQUIRE (kNumPlaybackStyles == 9);

@@ -66,6 +66,7 @@
 #include <state/PluginState.h>
 #include <state/Types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -132,11 +133,21 @@ public:
     void requestPatternSwitch (int midiNote) noexcept;
     [[nodiscard]] bool patternSwitchPending() const noexcept { return pendingPatternNote_ >= 0; }
 
-    // Drop a previously applied pattern recall so scheduling reads
-    // state.sequencer's working grid again. The plugin shell calls this
-    // whenever a new state snapshot carries sequencer edits (with
-    // immutable snapshots, an applied recall must not shadow them).
-    void releaseWorkingPatternOverride() noexcept { recalledPattern_.reset(); }
+    // Request that a previously applied pattern recall be dropped so
+    // scheduling reads state.sequencer's working grid again. The plugin
+    // shell calls this (from ANY thread) whenever a new state snapshot
+    // carries sequencer edits -- with immutable snapshots, an applied
+    // recall must not shadow them.
+    //
+    // THREAD SAFETY: the release itself is deferred to the start of the
+    // next process() block on the audio thread. Destroying
+    // recalledPattern_ directly from another thread would free the grid/
+    // override containers WHILE runSequenced holds raw pointers into them
+    // (SequencerView) mid-block -- a use-after-free.
+    void requestWorkingPatternRelease() noexcept
+    {
+        workingPatternReleaseRequested_.store (true, std::memory_order_release);
+    }
 
     // MIDI dispatch entry point (Performance mode). Mirrors the original's
     // note-on routing: the focused slot's key flags a fresh pick of the
@@ -301,6 +312,10 @@ private:
     double subdivisionTickLengthSamples_ = 0.0;
     double nextSubdivisionOffsetSamples_ = 0.0;
     std::optional<state::SequencerPattern> recalledPattern_;
+    // Cross-thread release request, drained at the top of process() (the
+    // audio thread owns recalledPattern_'s lifetime; see
+    // requestWorkingPatternRelease).
+    std::atomic<bool> workingPatternReleaseRequested_ { false };
 
     // Performance runtime.
     int pendingPerformanceNote_ = -1;

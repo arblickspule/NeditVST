@@ -125,6 +125,9 @@ constexpr double kTimingOptionsGap = 10.0;      // switch -> option menus
 constexpr double kTimingMenuH    = 36.0;        // caption (12) + option row (24)
 constexpr double kTimingMenuGap  = 16.0;        // between the option menus
 constexpr double kSubdivLabelH   = 14.0;        // interval-band per-bar labels
+constexpr double kIntervalCaptionH = 14.0;     // band caption row (N=0 chips share it)
+constexpr double kZeroChipW  = 46.0;            // subdivision quick-clear chip width
+constexpr double kZeroChipGap = 6.0;            // ... gap between the three chips
 
 // ── Style-probability column geometry ──────────────────────────────────
 // The header block above the vertical weight slider -- chip + % readout +
@@ -1803,7 +1806,8 @@ private:
         valueChanged();
     }
 
-    static constexpr double kCaptionH = 14.0;
+    // Shared with the editor so the N=0 chips sit exactly on the caption row.
+    static constexpr double kCaptionH = kIntervalCaptionH;
     NeditProcessor* owner_ = nullptr;
     bool dragging_ = false;
     int activeColumnIndex_ = 0;
@@ -2304,6 +2308,36 @@ void NeditEditor::styleModeButtons()
 }
 
 //------------------------------------------------------------------------
+// The subdivision quick-clear chips ("n=0" / "nd=0" / "nt=0") ride the
+// interval band's caption row. They act on CLOCK-mode-only weights, so
+// they are active exactly when Clock is: under Slice Length they dim to
+// disabled text and reject input (same contract as the band + menus).
+void NeditEditor::styleZeroChips()
+{
+    const bool enabled = owner_->uiStateView().generate.generateMode
+                         == state::TriggerMode::clock;
+    for (auto* chip : { zeroPlainBtn_, zeroDottedBtn_, zeroTripletBtn_ })
+    {
+        if (chip == nullptr)
+            continue;
+        chip->setMouseEnabled (enabled);
+        GradientColorStopMap stops;
+        stops.emplace (0., enabled ? kSurface2 : kSurface1);
+        stops.emplace (1., enabled ? kSurface2 : kSurface1);
+        chip->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., enabled ? kSurface3 : kSurface1);
+        hlStops.emplace (1., enabled ? kSurface3 : kSurface1);
+        chip->setGradientHighlighted (CGradient::create (hlStops));
+        chip->setTextColor (enabled ? kAccentMutedHi : kTextDisabled);
+        chip->setTextColorHighlighted (enabled ? kAccentBright : kTextDisabled);
+        chip->setFrameColor (enabled ? kOutline : kSurface1);
+        chip->setFrameColorHighlighted (enabled ? kAccent : kSurface1);
+        chip->setRoundRadius (2);
+    }
+}
+
+//------------------------------------------------------------------------
 // Grain size/speed sliders are only meaningful while rendering with the
 // granular time-stretch engine; otherwise they are dimmed and inert.
 void NeditEditor::setGrainEnabled (bool enabled)
@@ -2493,6 +2527,12 @@ void NeditEditor::syncTabBar()
         filterScopeMenu_->setVisible (showTiming);
     if (intervalBand_ != nullptr)
         intervalBand_->setVisible (showTiming);
+    if (zeroPlainBtn_ != nullptr)
+        zeroPlainBtn_->setVisible (showTiming);
+    if (zeroDottedBtn_ != nullptr)
+        zeroDottedBtn_->setVisible (showTiming);
+    if (zeroTripletBtn_ != nullptr)
+        zeroTripletBtn_->setVisible (showTiming);
     if (showTiming)
         syncGenerateControls();
 }
@@ -2655,6 +2695,15 @@ void NeditEditor::syncGenerateControls()
     {
         lastFilterScopeGreyed_ = grey.filterScopeGreyed;
         filterScopeMenu_->setGreyed (grey.filterScopeGreyed);
+    }
+
+    // The quick-clear chips act on CLOCK-mode-only weights, so they are
+    // enabled exactly when Clock is (like the band they ride).
+    const bool zeroEnabled = (mode == state::TriggerMode::clock);
+    if (lastZeroChipsEnabled_ != zeroEnabled)
+    {
+        lastZeroChipsEnabled_ = zeroEnabled;
+        styleZeroChips();
     }
 
     if (! std::equal (gen.subdivisionWeights.begin(), gen.subdivisionWeights.end(),
@@ -3105,7 +3154,8 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     clockRefMenu_ = clockRef;
     tapeScopeMenu_ = tapeScope;
     filterScopeMenu_ = filterScope;
-    syncGenerateControls();   // seed greys + scope values before first paint
+    // (Seeding happens below, once intervalBand_ exists -- the sync guard
+    // early-returns while ANY timing control is still null.)
 
     // Clock subdivision weights: one thin probability bar per note value,
     // filling the panel width below the options. Clock-mode only (the band
@@ -3116,6 +3166,31 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
         this, kTagIntervalProbBand, owner_);
     frame->addView (intervalBand);
     intervalBand_ = intervalBand;
+
+    // Momentary quick-clears for the subdivision band, sitting on its
+    // caption row's right side: "n=0" / "nd=0" / "nt=0" zero that
+    // variant group's weights in one press (see setSubdivisionGroupZero).
+    // Same label scheme as the user's N/ND/NT shorthand; there is no
+    // persisted toggle state -- the weights are zeroed for real.
+    const double chipY = bandTopT;
+    const double chipRight = bandLeft + bandW;
+    const double chip0Left = chipRight - 3.0 * kZeroChipW - 2.0 * kZeroChipGap;
+    const auto chipRect = [&] (int i) {
+        const double x = chip0Left + static_cast<double> (i) * (kZeroChipW + kZeroChipGap);
+        return CRect (x, chipY, x + kZeroChipW, chipY + kIntervalCaptionH);
+    };
+    auto* zeroPlain = new CTextButton (chipRect (0), this, kTagClearPlain, "n=0");
+    auto* zeroDotted = new CTextButton (chipRect (1), this, kTagClearDotted, "nd=0");
+    auto* zeroTriplet = new CTextButton (chipRect (2), this, kTagClearTriplet, "nt=0");
+    frame->addView (zeroPlain);
+    frame->addView (zeroDotted);
+    frame->addView (zeroTriplet);
+    zeroPlainBtn_ = zeroPlain;
+    zeroDottedBtn_ = zeroDotted;
+    zeroTripletBtn_ = zeroTriplet;
+    styleZeroChips();   // seed the Clock-only grey (Slice Length default)
+    syncGenerateControls();   // seed greys + option values before first paint
+                              // (ALL timing controls exist from here on)
 
     syncTabBar();   // seed the strip + panel from the restored activeTab
 
@@ -3149,6 +3224,9 @@ void PLUGIN_API NeditEditor::close()
     tapeScopeMenu_ = nullptr;
     filterScopeMenu_ = nullptr;
     intervalBand_ = nullptr;
+    zeroPlainBtn_ = nullptr;
+    zeroDottedBtn_ = nullptr;
+    zeroTripletBtn_ = nullptr;
     styleProbSliders_.fill (nullptr);
     for (auto& column : paramMiniSliders_)
         column.fill (nullptr);
@@ -3383,6 +3461,35 @@ void NeditEditor::valueChanged (CControl* control)
         return;
     }
 
+    // Subdivision quick-clears ("n=0" / "nd=0" / "nt=0"): zero a whole
+    // variant group at once. Momentary CTextButton presses, so the edge
+    // latch updates on EVERY echo (same rule as the mode switch -- the min
+    // echo is what resets it, short-circuiting would leave one dead click
+    // per pair).
+    if (control->getTag() == kTagClearPlain
+        || control->getTag() == kTagClearDotted
+        || control->getTag() == kTagClearTriplet)
+    {
+        const bool edge = pressedEdge (
+            *control, control->getTag() == kTagClearPlain
+                          ? lastZeroPlainPressed_
+                          : control->getTag() == kTagClearDotted
+                                ? lastZeroDottedPressed_
+                                : lastZeroTripletPressed_);
+        if (edge)
+        {
+            const auto variant = control->getTag() == kTagClearPlain
+                                     ? state::NoteValueVariant::plain
+                                     : control->getTag() == kTagClearDotted
+                                           ? state::NoteValueVariant::dotted
+                                           : state::NoteValueVariant::triplet;
+            owner_->setSubdivisionGroupZero (variant);
+            if (intervalBand_ != nullptr)
+                intervalBand_->invalid();   // repaint on the first click
+        }
+        return;
+    }
+
     // Style-probability sliders: tag = kTagStyleProbBase + style ordinal,
     // value is the raw weight in [0,1].
     if (control->getTag() >= kTagStyleProbBase
@@ -3561,6 +3668,13 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
             if (! path.empty())
                 owner_->requestSampleLoad (path);
         }
+
+        // Fold the audio thread's audition auto-stop (transport started
+        // while auditioning) back into state on THIS thread -- the audio
+        // thread only raises a flag, it never mutates/publishes uiState_.
+        // Must run before the audition-button sync below so the button
+        // reflects the fold in the same tick.
+        owner_->pollAuditionAutoStop();
 
         // Sync buttons on sample presence or audition state changes.
         const bool samplePresent = owner_->hasSample();

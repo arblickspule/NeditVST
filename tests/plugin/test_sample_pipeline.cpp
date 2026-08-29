@@ -254,6 +254,52 @@ TEST_CASE ("wav: rejects garbage, survives truncation at every byte")
     CHECK_FALSE (nedit::plugin::decodeWav (nullptr, 100).has_value());
 }
 
+TEST_CASE ("wav: rejects an internally inconsistent blockAlign (lying fmt)")
+{
+    // Regression: blockAlign comes straight from the file and used to be
+    // trusted (only checked != 0). A fmt chunk claiming a frame narrower
+    // than numChannels x bytesPerSample inflates `frames` and sends the
+    // tail-frame reads past the end of the data chunk -- heap OOB read.
+    const auto left = ramp (64);
+    std::vector<float> right (64, 0.25f);
+    Bytes wav = makeWav ({ left.data(), right.data() }, 2, 64, 44100, 16);
+
+    // Fmt payload starts at byte 20 (RIFF header 12 + chunk id/size 8);
+    // blockAlign is payload offset 12 -> file offset 32 (little-endian).
+    constexpr std::size_t kBlockAlignOffset = 12 + 8 + 12;
+    constexpr std::size_t kBitsOffset = 12 + 8 + 14;
+    REQUIRE (wav[kBlockAlignOffset] == 4);   // sanity: stereo pcm16 = 4 bytes
+
+    // Control: the untouched file decodes.
+    REQUIRE (nedit::plugin::decodeWav (wav.data(), wav.size()).has_value());
+
+    // Any claimed frame width below channels x bytesPerSample (4 here) must
+    // be rejected -- blockAlign = 1 would read 3 bytes past the chunk on
+    // the last frame, and blockAlign < numChannels additionally collapses
+    // the per-channel stride to zero.
+    for (const std::uint8_t bogus : { std::uint8_t { 1 }, std::uint8_t { 2 },
+                                      std::uint8_t { 3 } })
+    {
+        wav[kBlockAlignOffset] = bogus;
+        CHECK_FALSE (nedit::plugin::decodeWav (wav.data(), wav.size()).has_value());
+    }
+
+    // Wider-than-needed frames (padded containers) stay legal: frames
+    // re-derive from the stride and every read stays inside its frame.
+    wav[kBlockAlignOffset] = 8;
+    const auto padded = nedit::plugin::decodeWav (wav.data(), wav.size());
+    REQUIRE (padded.has_value());
+    CHECK (padded->frames == 32);   // 64 true frames re-grouped as 8-byte frames
+
+    // The other lying shape: sample width widened without the frame
+    // following (mono pcm16 file claiming 32-bit samples => 4-byte reads
+    // on 2-byte frames).
+    Bytes narrow = makeWav ({ left.data() }, 1, 64, 44100, 16);
+    REQUIRE (narrow[kBitsOffset] == 16);
+    narrow[kBitsOffset] = 32;
+    CHECK_FALSE (nedit::plugin::decodeWav (narrow.data(), narrow.size()).has_value());
+}
+
 TEST_CASE ("sample manager: load file -> analysis -> state metadata")
 {
     const auto click = ClickTrack::render();
@@ -345,6 +391,172 @@ TEST_CASE ("shell: loaded click track renders audible picks through process()")
     picks = static_cast<int> (processor.debugScheduler().picksStarted());
     CHECK (picks > 0);
     CHECK (peak > 0.01f);
+}
+
+TEST_CASE ("shell: a null output channel bails before anything renders")
+{
+    // Regression: with a sample loaded and the transport playing, the
+    // Slice Length scheduler starts picks immediately -- and the renderer
+    // used to write through whatever channel pointers the host provided
+    // (only the zeroing loop null-checked). A null second channel was a
+    // guaranteed write-through-null once a pick sounded.
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.setActive (1) == Steinberg::kResultOk);
+    REQUIRE (processor.setProcessing (1) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    std::vector<float> left (512, -1.0f);
+    float* channels[2] { left.data(), nullptr };   // hostile host
+    Steinberg::Vst::AudioBusBuffers bus {};
+    bus.numChannels = 2;
+    bus.channelBuffers32 = channels;
+    Steinberg::Vst::ProcessData data {};
+    data.numSamples = 512;
+    data.numOutputs = 1;
+    data.outputs = &bus;
+
+    const double bpm = 120.0;
+    double ppq = 0.0;
+    for (int block = 0; block < 30; ++block)
+    {
+        Steinberg::Vst::ProcessContext ctx {};
+        ctx.state = Steinberg::Vst::ProcessContext::kPlaying
+                  | Steinberg::Vst::ProcessContext::kTempoValid
+                  | Steinberg::Vst::ProcessContext::kProjectTimeMusicValid;
+        ctx.tempo = bpm;
+        ctx.projectTimeMusic = ppq;
+        data.processContext = &ctx;
+        REQUIRE (processor.process (data) == Steinberg::kResultOk);
+        ppq += static_cast<double> (512) * (bpm / 60.0) / 44100.0;
+    }
+
+    // Bailed before MIDI/scheduling every block: no picks, and the valid
+    // channel was still cleared (never rendered into).
+    CHECK (processor.debugScheduler().picksStarted() == 0);
+    for (const float s : left)
+        CHECK (s == 0.0f);
+}
+
+TEST_CASE ("audition: transport start defers the state fold to the UI thread")
+{
+    // Regression: process() used to mutate uiState_ AND publish() (a full
+    // PluginState deep copy -- vectors included) from the AUDIO thread when
+    // the transport started while auditioning. That copy races UI-thread
+    // vector edits (heap corruption) and allocates on the audio thread.
+    // The contract now: the audio thread only raises an atomic flag and the
+    // engine takes over the very same block; the state fold happens on the
+    // UI thread via pollAuditionAutoStop().
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.setActive (1) == Steinberg::kResultOk);
+    REQUIRE (processor.setProcessing (1) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    std::vector<float> out (512, 0.0f);
+    float* channels[1] { out.data() };
+    Steinberg::Vst::AudioBusBuffers bus {};
+    bus.numChannels = 1;
+    bus.channelBuffers32 = channels;
+    Steinberg::Vst::ProcessData data {};
+    data.numSamples = 512;
+    data.numOutputs = 1;
+    data.outputs = &bus;
+
+    processor.setAuditionEnabled (true);
+    REQUIRE (processor.debugUiState().ui.auditionEnabled);
+
+    // Stopped transport: audition renders the raw trim loop, scheduler idle.
+    data.processContext = nullptr;
+    REQUIRE (processor.process (data) == Steinberg::kResultOk);
+    float auditionPeak = 0.0f;
+    for (const float s : out)
+        auditionPeak = std::max (auditionPeak, std::abs (s));
+    CHECK (auditionPeak > 0.01f);   // trim starts on a click
+    CHECK (processor.debugScheduler().picksStarted() == 0);
+
+    // Playing transport: the ENGINE renders immediately -- and the state
+    // flag is NOT folded by the audio thread (no mutation, no publish).
+    const double bpm = 120.0;
+    double ppq = 0.0;
+    for (int block = 0; block < 30; ++block)
+    {
+        Steinberg::Vst::ProcessContext ctx {};
+        ctx.state = Steinberg::Vst::ProcessContext::kPlaying
+                  | Steinberg::Vst::ProcessContext::kTempoValid
+                  | Steinberg::Vst::ProcessContext::kProjectTimeMusicValid;
+        ctx.tempo = bpm;
+        ctx.projectTimeMusic = ppq;
+        data.processContext = &ctx;
+        REQUIRE (processor.process (data) == Steinberg::kResultOk);
+        ppq += static_cast<double> (512) * (bpm / 60.0) / 44100.0;
+    }
+    CHECK (processor.debugScheduler().picksStarted() > 0);
+    CHECK (processor.debugUiState().ui.auditionEnabled);   // audio thread left it alone
+
+    // The UI thread drains the pending auto-stop.
+    processor.pollAuditionAutoStop();
+    CHECK_FALSE (processor.debugUiState().ui.auditionEnabled);
+
+    // Once drained, polling again is a no-op (a fresh enable stays on).
+    processor.setAuditionEnabled (true);
+    processor.pollAuditionAutoStop();
+    CHECK (processor.debugUiState().ui.auditionEnabled);
+}
+
+TEST_CASE ("slice audition: RMB loop renders raw and stops clean")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.setActive (1) == Steinberg::kResultOk);
+    REQUIRE (processor.setProcessing (1) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const auto loaded = processor.acquireLoadedSample();
+    REQUIRE (loaded != nullptr);
+    REQUIRE (loaded->slices.size() >= 2);
+    const auto& sl = loaded->slices[1];
+
+    std::vector<float> out (512, 0.0f);
+    float* channels[1] { out.data() };
+    Steinberg::Vst::AudioBusBuffers bus {};
+    bus.numChannels = 1;
+    bus.channelBuffers32 = channels;
+    Steinberg::Vst::ProcessData data {};
+    data.numSamples = 512;
+    data.numOutputs = 1;
+    data.outputs = &bus;
+
+    // Hold: the slice loops raw (cursor reseeds to the slice head on the
+    // audio side, so the first block already carries the onset burst).
+    processor.startSliceAudition (sl.startFrame, sl.endFrame);
+    REQUIRE (processor.process (data) == Steinberg::kResultOk);
+    float peak = 0.0f;
+    for (const float s : out)
+        peak = std::max (peak, std::abs (s));
+    CHECK (peak > 0.01f);
+    CHECK (processor.debugScheduler().picksStarted() == 0);
+
+    // Release: silence (stopped transport, no MIDI, nothing scheduled).
+    processor.stopSliceAudition();
+    REQUIRE (processor.process (data) == Steinberg::kResultOk);
+    for (const float s : out)
+        CHECK (s == 0.0f);
 }
 
 // --- host automation plumbing ---------------------------------------------

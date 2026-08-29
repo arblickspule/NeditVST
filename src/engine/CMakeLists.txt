@@ -6,6 +6,7 @@ add_library(nedit_engine STATIC
     GranularStretcher.cpp
     PickRenderer.cpp
     Scheduler.cpp
+    SequenceRandomizer.cpp
     PickRenderer.cpp
 )
 target_include_directories(nedit_engine PUBLIC ${CMAKE_SOURCE_DIR}/src)

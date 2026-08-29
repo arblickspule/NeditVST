@@ -137,8 +137,11 @@ void WaveformView::draw (CDrawContext* dc)
     const auto loaded = processor_.acquireLoadedSample();
     const auto& st = processor_.uiStateView();
     const auto& sample = st.sample;
-    const auto& slices = (loaded != nullptr) ? loaded->slices
-                                              : std::vector<engine::Slice>{};
+    // NB: a `cond ? lvalue : prvalue{}` ternary here would materialize a
+    // COPY of the whole slice vector every draw (the conditional's common
+    // type is a prvalue); bind the shared static instead.
+    static const std::vector<engine::Slice> kNoSlices;
+    const auto& slices = (loaded != nullptr) ? loaded->slices : kNoSlices;
 
     const int64_t totalFrames = sample.sampleLengthFrames;
     if (totalFrames <= 0 || w <= 0 || h <= 0)

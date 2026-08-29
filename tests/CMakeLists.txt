@@ -31,6 +31,7 @@ add_executable(nedit_engine_tests
     engine/test_scheduler.cpp
     engine/test_threading.cpp
     engine/test_midi_dispatch.cpp
+    engine/test_sequence_randomizer.cpp
 )
 target_link_libraries(nedit_engine_tests
     PRIVATE nedit_engine nedit_debug nedit_warnings

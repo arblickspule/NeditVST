@@ -24,6 +24,7 @@
 #include "public.sdk/source/vst/vstsinglecomponenteffect.h"
 
 #include <array>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -154,12 +155,42 @@ public:
     void setResetBars (int index);
     void setClockReference (int index);
     void setSubdivisionWeight (int noteIndex, float weight);
+    // Momentary "n=0 / nd=0 / nt=0" quick-clears: zero every subdivision
+    // weight in the palette group (plain / dotted / triplet) at once.
+    void setSubdivisionGroupZero (state::NoteValueVariant variant);
+
+    // Sequencer pattern editing (UI thread). Both operate on the working
+    // grid in uiState_.sequencer and republish (the audio thread picks up
+    // the new pattern via the snapshot provider).
+    //
+    // randomizeSequence rebuilds a fresh monophonic pattern from the
+    // sequencer's own weight table + per-style randomize opt-ins, with
+    // natural-length-aware, spacing-aware placement. Returns how many
+    // cells were filled. Roles its own RNG seed per call.
+    [[nodiscard]] int randomizeSequence();
+    // clearSequence wipes the working grid + per-cell overrides/extensions,
+    // keeping the dimensions and the fallback params.
+    void clearSequence();
 
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);
 
+    // UI-thread drain for the audition auto-stop. The AUDIO thread never
+    // mutates or clones uiState_ (a publish() from process() deep-copies
+    // vectors the UI thread may be reallocating mid-copy — heap corruption
+    // — and allocates on the audio thread); instead process() raises an
+    // atomic flag when the transport starts while audition is on, and the
+    // editor's idle timer folds it back into state here. Audio correctness
+    // does not depend on this: process() gates audition rendering on the
+    // live transport, so playback wins instantly even if nothing drains.
+    void pollAuditionAutoStop();
+
     // Slice audition — loops a specific slice region. Called on RMB
-    // down, cleared on RMB up. Bypasses the scheduler entirely.
+    // down, cleared on RMB up. Bypasses the scheduler entirely. Bounds are
+    // written BEFORE the active flag (release/acquire pairing with
+    // process()) so the audio thread can never see the flag with stale
+    // bounds; the read cursor itself is audio-thread-owned and reseeded on
+    // the inactive->active edge.
     void startSliceAudition (int64_t startFrame, int64_t endFrame);
     void stopSliceAudition();
 
@@ -211,9 +242,15 @@ private:
     // Clamp a requested marker frame into the trim and, when snap is true,
     // pull it to the nearest transient (shared by add + move).
     [[nodiscard]] std::int64_t resolveManualFrame (std::int64_t frame, bool snap) const;
-    void renderAudition (float* const* outAdd, int numOutChannels,
+    // Audition renderers (audio thread). Everything they read comes in as
+    // arguments (the per-block snapshot's SampleState + the already-
+    // acquired sample slot) -- they must NOT touch uiState_, which the UI
+    // thread mutates freely.
+    void renderAudition (const state::SampleState& sample, const LoadedSample& loaded,
+                         float* const* outAdd, int numOutChannels,
                          int numSamples, double hostSampleRate);
-    void renderSliceAudition (float* const* outAdd, int numOutChannels,
+    void renderSliceAudition (const state::SampleState& sample, const LoadedSample& loaded,
+                              float* const* outAdd, int numOutChannels,
                               int numSamples, double hostSampleRate);
 
     // Controller-side authoritative live state.
@@ -229,7 +266,15 @@ private:
     std::array<const float*, kMaxSourceChannels> sourceChannelPointers_ {};
     state::PluginState automationScratch_;
     double lastBlockEndPpq_ = 0.0;
-    double auditionPosition_ = 0.0;  // read cursor for raw audition loop
+    // Audition read cursor + its enable edge detector. AUDIO-thread-owned:
+    // the cursor is reseeded to the trim start on the off->on edge inside
+    // process(), never written from the UI thread (a cross-thread double
+    // write can tear).
+    double auditionPosition_ = 0.0;
+    bool auditionWasActive_ = false;
+    // Raised by the audio thread when the transport starts while audition
+    // is enabled; drained on the UI thread by pollAuditionAutoStop().
+    std::atomic<bool> auditionAutoStopPending_ { false };
 
     // Audio-thread scratch: the slice list clipped to the CURRENT soft trim
     // with weights remapped in lockstep (see process()). Pre-reserved in the
@@ -237,11 +282,15 @@ private:
     std::vector<engine::Slice> trimSlices_;
     std::vector<float> trimWeights_;
 
-    // Slice audition state (RMB hold-to-loop).
-    bool sliceAuditionActive_ = false;
-    int64_t sliceAuditionStart_ = 0;
-    int64_t sliceAuditionEnd_ = 0;
+    // Slice audition state (RMB hold-to-loop). Bounds are stored before the
+    // active flag's release-store (see startSliceAudition); the position
+    // cursor is audio-thread-owned and reseeded on the inactive->active
+    // edge (sliceAuditionWasActive_ is audio-thread-local state).
+    std::atomic<bool> sliceAuditionActive_ { false };
+    std::atomic<int64_t> sliceAuditionStart_ { 0 };
+    std::atomic<int64_t> sliceAuditionEnd_ { 0 };
     double sliceAuditionPosition_ = 0.0;
+    bool sliceAuditionWasActive_ = false;
 
     NeditProcessor (const NeditProcessor&) = delete;
     NeditProcessor& operator= (const NeditProcessor&) = delete;

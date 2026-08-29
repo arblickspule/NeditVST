@@ -196,6 +196,48 @@ TEST_CASE ("shell: process block renders silence safely, MIDI routes to schedule
         CHECK (std::isfinite (sample));
 }
 
+TEST_CASE ("shell: process survives hostile output bus shapes")
+{
+    // Regression: the buffer-zeroing loop null-checked channel pointers but
+    // the render paths then dereferenced them blindly (and a zero-channel
+    // bus was promoted to 1, indexing channelBuffers32[0] of a possibly
+    // empty table). Broken hosts must get a clean kOk, not a segfault.
+    RunningPlugin fx;
+
+    std::vector<float> left (64, -1.0f);   // poisoned; proves the clear ran
+
+    ProcessData data {};
+    data.numSamples = 64;
+    data.numOutputs = 1;
+
+    Steinberg::Vst::AudioBusBuffers outputs {};
+    data.outputs = &outputs;
+
+    SECTION ("zero-channel bus")
+    {
+        outputs.numChannels = 0;
+        outputs.channelBuffers32 = nullptr;
+        CHECK (fx.processor.process (data) == Steinberg::kResultOk);
+    }
+
+    SECTION ("null channel pointer table")
+    {
+        outputs.numChannels = 2;
+        outputs.channelBuffers32 = nullptr;
+        CHECK (fx.processor.process (data) == Steinberg::kResultOk);
+    }
+
+    SECTION ("one null channel amid valid ones")
+    {
+        float* channels[2] { left.data(), nullptr };
+        outputs.numChannels = 2;
+        outputs.channelBuffers32 = channels;
+        CHECK (fx.processor.process (data) == Steinberg::kResultOk);
+        for (const float sample : left)
+            CHECK (sample == 0.0f);   // valid channels still cleared pre-bail
+    }
+}
+
 TEST_CASE ("shell: createView produces the editor (headless-safe checks only)")
 {
     RunningPlugin fx;
@@ -430,6 +472,32 @@ TEST_CASE ("shell: generate timing setters persist in GenerateState")
     CHECK (w[18] == Catch::Approx (1.0f));
     CHECK (w[4] == Catch::Approx (0.0f));
 
+    // Momentary "n=0"-style group clears zero ONLY their variant's columns.
+    // Values stay inside the [0,1] clamp (0.05 * (i+1) tops out at exactly 1.0).
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+        fx.processor.setSubdivisionWeight (i, 0.05f * static_cast<float> (i + 1));
+
+    fx.processor.setSubdivisionGroupZero (state::NoteValueVariant::plain);
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+    {
+        const auto wt = state::kNoteValueVariant[static_cast<std::size_t> (i)];
+        CHECK (w[static_cast<std::size_t> (i)]
+               == Catch::Approx (wt == state::NoteValueVariant::plain
+                                     ? 0.0f
+                                     : 0.05f * static_cast<float> (i + 1)));
+    }
+    fx.processor.setSubdivisionGroupZero (state::NoteValueVariant::dotted);
+    fx.processor.setSubdivisionGroupZero (state::NoteValueVariant::triplet);
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+        CHECK (w[static_cast<std::size_t> (i)] == Catch::Approx (0.0f));
+
+    // Clearing an already-zero group is a no-op publish (still consistent,
+    // never crashes), and a bogus variant value is rejected wholesale.
+    fx.processor.setSubdivisionGroupZero (state::NoteValueVariant::plain);
+    fx.processor.setSubdivisionGroupZero (static_cast<state::NoteValueVariant> (77));
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+        CHECK (w[static_cast<std::size_t> (i)] == Catch::Approx (0.0f));
+
     // Invalid values are ignored wholesale.
     fx.processor.setGenerateMode (state::TriggerMode::sequenced);   // not a Generate mode
     fx.processor.setResetBars (99);
@@ -447,4 +515,63 @@ TEST_CASE ("shell: generate timing setters persist in GenerateState")
     CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::sliceLength);
     CHECK (fx.processor.debugUiState().generate.generateMode
            == state::TriggerMode::sliceLength);
+}
+
+TEST_CASE ("editor: subdivision quick-clear chips zero the group on the first click")
+{
+    RunningPlugin fx;
+    NeditEditor editor (&fx.processor);
+
+    struct FakeControl : VSTGUI::CControl
+    {
+        FakeControl (const VSTGUI::CRect& r, VSTGUI::IControlListener* l, int32_t customTag)
+            : CControl (r, l, customTag) {}
+        void draw (VSTGUI::CDrawContext*) override {}
+        VSTGUI::CBaseObject* newCopy () const override { return new FakeControl (*this); }
+        VSTGUI::CMouseEventResult onMouseDown (VSTGUI::CPoint&, const VSTGUI::CButtonState&) override
+        {
+            return VSTGUI::kMouseEventHandled;
+        }
+    };
+
+    // A real CTextButton click echoes valueChanged(max) then valueChanged(min);
+    // the press-edge latch must fire exactly once per click.
+    FakeControl clearPlain (VSTGUI::CRect (0, 0, 4, 4), &editor,
+                            NeditEditor::kTagClearPlain);
+    auto clickPlain = [&] {
+        clearPlain.setValue (1.0f);
+        editor.valueChanged (&clearPlain);
+        clearPlain.setValue (0.0f);
+        editor.valueChanged (&clearPlain);
+    };
+
+    fx.processor.setGenerateMode (state::TriggerMode::clock);
+    auto& w = fx.processor.debugUiState().generate.subdivisionWeights;
+
+    auto paintAll = [&] (float v) {
+        for (int i = 0; i < state::kNumNoteValues; ++i)
+            fx.processor.setSubdivisionWeight (i, v);
+    };
+
+    paintAll (0.7f);
+    clickPlain();
+    // Only the plain group went to zero; dotted/triplet columns are intact.
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+    {
+        const auto variant = state::kNoteValueVariant[static_cast<std::size_t> (i)];
+        CHECK (w[static_cast<std::size_t> (i)]
+               == Catch::Approx (variant == state::NoteValueVariant::plain ? 0.0f : 0.7f));
+    }
+
+    // The latch must be reusable: repaint and click again -- a stale latch
+    // (the press-edge update short-circuited by the min echo) would swallow
+    // this second click and leave the group painted.
+    paintAll (0.7f);
+    clickPlain();
+    for (int i = 0; i < state::kNumNoteValues; ++i)
+    {
+        if (state::kNoteValueVariant[static_cast<std::size_t> (i)]
+            == state::NoteValueVariant::plain)
+            CHECK (w[static_cast<std::size_t> (i)] == Catch::Approx (0.0f));
+    }
 }

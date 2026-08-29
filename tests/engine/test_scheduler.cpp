@@ -750,6 +750,80 @@ TEST_CASE ("sequenced: switching to an empty bank slot is a no-op", "[scheduler]
     fx.advanceToPicks (2, 10);
 }
 
+TEST_CASE ("sequenced: working-pattern release is deferred to the next block",
+           "[scheduler][seq]")
+{
+    // requestWorkingPatternRelease is callable from ANY thread; the drop
+    // itself happens at the top of the next process() block (destroying
+    // recalledPattern_ mid-block would free the containers SequencerView
+    // holds raw pointers into -- the use-after-free this API prevents).
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);
+    fx.state.sequencer.patternBank[60] = fx.makeBankPattern (60, { { 0, 7 } });
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    // Recall the bank pattern (immediate timing) and prove it is live:
+    // ITS column 7 fires (~38587.5 absolute).
+    fx.scheduler.requestPatternSwitch (60);
+    fx.play (2);
+    CHECK_FALSE (fx.scheduler.patternSwitchPending());
+    fx.playQuiet (38580 - fx.totalProcessed);
+    fx.advanceToPicks (2, 10);
+
+    // Drop the override. Applied on the NEXT process() call; the working
+    // grid (column 0 only) is live again, so its wrap pick fires at
+    // ~88200 absolute and nothing in between.
+    fx.scheduler.requestWorkingPatternRelease();
+    fx.playQuiet (88190 - fx.totalProcessed);
+    fx.advanceToPicks (3, 20);
+    CHECK (fx.scheduler.playingStepIndex() == 0);
+
+    // The recalled pattern's column 7 must NOT fire again (~126787 would
+    // be its next slot if the override still shadowed the working grid).
+    fx.playQuiet (127000 - fx.totalProcessed);
+}
+
+TEST_CASE ("scheduler: out-of-range state indices are guarded (hardening)",
+           "[scheduler]")
+{
+    // The scheduler consumes state snapshots as given. sanitize() normally
+    // guarantees these ranges, but a missed clamp upstream must not become
+    // an OOB read of the 4-entry kResetBarsValues table or a
+    // floor(x / 0.0) -> int64 cast (UB): both indices are now guarded at
+    // the point of use like every other state-derived index in the file.
+
+    SECTION ("slice length: resetBarsIndex clamps into the table")
+    {
+        Fixture fx ({ Slice { 0, 88200 } });
+        fx.state.generate.resetBarsIndex = -5;
+        fx.play (4096);
+        CHECK (fx.picks() > 0);
+
+        Fixture fx2 ({ Slice { 0, 88200 } });
+        fx2.state.generate.resetBarsIndex = 9999;
+        fx2.play (4096);
+        CHECK (fx2.picks() > 0);
+    }
+
+    SECTION ("clock: invalid clockReferenceIndex falls back to the 4n reference")
+    {
+        Fixture fx ({ Slice { 0, 88200 } });
+        fx.state.triggerMode = TriggerMode::clock;
+        fx.state.generate.clockReferenceIndex = 999;
+        fx.play (4096);
+        CHECK (fx.picks() > 0);
+
+        // The fallback window is a quarter note (22050 samples @ 120 bpm):
+        // the window clock the renderer sees must be finite and positive.
+        CHECK (std::isfinite (fx.scheduler.renderer().windowLengthSamples()));
+        CHECK (fx.scheduler.renderer().windowLengthSamples() > 0.0);
+    }
+}
+
 // ===========================================================================
 // Performance mode: MIDI-recalled snapshots over their own segments.
 // ===========================================================================

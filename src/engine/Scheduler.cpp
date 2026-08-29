@@ -26,6 +26,35 @@ inline constexpr int kMaxOutputChannels = 8;
         : state::PlaybackStyle::forward;
 }
 
+// Slice Length reset-window length in beats for a (possibly unsanitized)
+// bars index. The scheduler consumes state snapshots as given, and every
+// OTHER state-derived index in this file is range-guarded before use --
+// this one is too: out-of-range indices clamp into the table instead of a
+// wild read of a 4-entry constexpr array (and the result is a divisor, so
+// a garbage 0 would cascade into floor(x / 0.0) -> UB int64 cast).
+[[nodiscard]] double resetWindowBeats (int barsIndex) noexcept
+{
+    const auto last = static_cast<int> (state::kResetBarsValues.size()) - 1;
+    const int clamped = std::clamp (barsIndex, 0, last);
+    return static_cast<double> (
+               state::kResetBarsValues[static_cast<std::size_t> (clamped)])
+         * 4.0;   // 4/4
+}
+
+// Clock-mode outer window length in beats. Invalid palette indices fall
+// back to the default reference (quarter note) INSTEAD of noteValueBeats'
+// 0.0 sentinel: windowBeats is a divisor at both call sites, and
+// floor(x / 0.0) casts inf/NaN to int64 -- UB. The sibling interval
+// divisions (pattern switch / performance recall) guard with
+// max(.., 1e-6) for exactly the same reason.
+[[nodiscard]] double clockWindowBeats (int index) noexcept
+{
+    const double beats = noteValueBeats (index);
+    return beats > 0.0
+        ? beats
+        : state::kNoteValues[static_cast<std::size_t> (state::kNoteValue4n)].beats;
+}
+
 } // namespace
 
 void VoiceScheduler::prepare (double hostSampleRate)
@@ -203,6 +232,13 @@ void VoiceScheduler::process (const state::PluginState& state,
     if (numSamples <= 0 || outAdd == nullptr || numOutChannels <= 0)
         return;
 
+    // Drain the cross-thread pattern-release request FIRST: no
+    // SequencerView raw pointers into recalledPattern_ exist between
+    // blocks, so this is the one safe place to destroy it (see
+    // requestWorkingPatternRelease).
+    if (workingPatternReleaseRequested_.exchange (false, std::memory_order_acq_rel))
+        recalledPattern_.reset();
+
     const double hostSampleRate = ctx.hostSampleRate;
 
     if (hostSampleRate <= 0.0 || transport.bpm <= 0.0)
@@ -295,13 +331,10 @@ void VoiceScheduler::runSliceLength (Run& r)
         // Just entered the mode or transport just started: snap to the
         // reset window we're currently inside and force a fresh pick
         // aligned to it right away.
-        const double resetWindowBeats =
-            static_cast<double> (
-                state::kResetBarsValues[static_cast<std::size_t> (generate.resetBarsIndex)])
-            * 4.0;  // 4/4
+        const double windowBeats = resetWindowBeats (generate.resetBarsIndex);
         const auto windowIndex = static_cast<std::int64_t> (
-            std::floor (r.transport.ppqStart / resetWindowBeats));
-        resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * resetWindowBeats;
+            std::floor (r.transport.ppqStart / windowBeats));
+        resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
         armedMode_ = ArmedMode::sliceLength;
         renderer_.clearPick();
     }
@@ -317,14 +350,10 @@ void VoiceScheduler::runSliceLength (Run& r)
         // at the next boundary.
         if (samplePpq >= resetWindowEndPpq_)
         {
-            const double resetWindowBeats =
-                static_cast<double> (
-                    state::kResetBarsValues[
-                        static_cast<std::size_t> (generate.resetBarsIndex)])
-                * 4.0;
+            const double windowBeats = resetWindowBeats (generate.resetBarsIndex);
             const auto windowIndex = static_cast<std::int64_t> (
-                std::floor (samplePpq / resetWindowBeats));
-            resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * resetWindowBeats;
+                std::floor (samplePpq / windowBeats));
+            resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
             renderer_.clearPick();
         }
 
@@ -431,7 +460,7 @@ void VoiceScheduler::runClock (Run& r)
         // Just entered the mode or transport just started: snap to the
         // window we're currently inside and force an immediate pick on
         // the very first sample below.
-        const double windowBeats = noteValueBeats (generate.clockReferenceIndex);
+        const double windowBeats = clockWindowBeats (generate.clockReferenceIndex);
         const auto windowIndex = static_cast<std::int64_t> (
             std::floor (r.transport.ppqStart / windowBeats));
         clockWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
@@ -459,7 +488,7 @@ void VoiceScheduler::runClock (Run& r)
                     generate.styleWeights.data(), state::kNumPlaybackStyles);
                 clockPickValid_ = true;
 
-                const double windowBeats = noteValueBeats (generate.clockReferenceIndex);
+                const double windowBeats = clockWindowBeats (generate.clockReferenceIndex);
                 const auto windowIndex = static_cast<std::int64_t> (
                     std::floor (samplePpq / windowBeats));
                 clockWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;

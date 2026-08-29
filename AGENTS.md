@@ -8,7 +8,7 @@ structure. UI decoupled from Engine; both operate on State. Tests for all
 critical aspects. Profiling/debugging utilities that are trivially
 included/excluded.
 
-## Current status (updated 2026-08-23)
+## Current status (updated 2026-08-29)
 
 **Phase 1 (State) — implemented, 51 tests green.**
 
@@ -65,6 +65,52 @@ included/excluded.
   are a possible post-Phase-2 enhancement.
 - `SequencerState` monophony (one style per column) is enforced by
   mutators/engine, not by the data structure.
+
+### Known deferred issues (2026-08-29 review — real, unfixed, tracked)
+
+Findings from the crash-review sweep that were deliberately NOT fixed
+(design work, not spot fixes). None are crash-class; the crash-class and
+UB findings from the same sweep were fixed (see the CRASH FIXES and
+HARDENING entries below).
+
+- **Audio-thread allocation: the automation fold.** `NeditProcessor::
+  process()` does `automationScratch_ = *snapshot` whenever the block
+  carries parameter changes. Only `manualPoints`/`excludedPoints` capacity
+  is pre-reserved, so the "steady-state alloc-free" claim holds only for a
+  near-default state: copying `sequencer.grid`, populated
+  `patternBank` grids/override `std::map`s and `performance.bank` allocates
+  (maps are node-based — they ALWAYS allocate per copy). Glitch/priority-
+  inversion risk under automation + heavy state. Fix sketch: cache the
+  last-seen snapshot pointer and re-copy scratch only when a new publish
+  landed; automation points are absolute last-point-wins values, so they
+  can be re-applied onto the existing scratch without a fresh copy.
+- **Audio-thread allocation: pattern recall.** `applyPatternRecallFromState`
+  deep-copies a `SequencerPattern` (grid vector + two maps) into
+  `recalledPattern_` inside runSequenced's per-sample loop when a recall
+  boundary fires. Same class of violation; needs a preallocated
+  double-buffer or a UI-thread-prepared copy handed over via pointer swap.
+- **`retrigger()` can resurrect a dead pick.** The Sequenced subdivide path
+  consults `renderer_.currentPick()` and calls `retrigger()` (which sets
+  `active = true` unconditionally) without checking `renderer_.hasPick()` —
+  a pick cleared earlier in the step revives with stale PickParams. All
+  source reads are clamped, so wrong audio only, never a crash.
+- **Stale frozen performance trim after a sample swap.** Bank snapshots and
+  `performanceFrozenSnapshot_` sanitized against the OLD sample keep
+  out-of-range trims when a shorter file is loaded mid-session; renderer
+  clamping makes this safe (silence/edge audio). Correct fix: re-clamp
+  snapshot trims on sample load.
+- **`data.symbolicSampleSize` never checked.** A host insisting on 64-bit
+  float processing would make `channelBuffers32` a reinterpreted double
+  buffer — garbage audio, not a crash (SingleComponentEffect's default
+  `canProcessSampleSize` only accepts kSample32, so a conforming host
+  won't). One-line bail if it ever shows up in the wild.
+- **Interpolation `frac` unclamped at the edges.** When a read position
+  clamps at index 0, `frac` can go negative (bounded extrapolation between
+  two real samples; at the top edge idx1 == idx0 neutralizes it). Audible
+  pop at worst.
+- **Sequenced Subdivide floors its tick at 1 sample.** Degenerate bpm/step
+  combinations turn a subdivided step into per-sample retriggers —
+  `picksStarted_` churn / CPU burn, audio stays defined.
 
 ## Session handoff (2026-08-23, evening)
 
@@ -166,9 +212,11 @@ included/excluded.
     deferred timings evaluated against the CURRENTLY playing pattern's
     own dimensions; empty bank slot = no-op; recalls are applied from the
     current block's bank into a scheduler-owned working-pattern override
-    (`releaseWorkingPatternOverride()` lets the future shell drop it when
-    fresh state snapshots arrive). `playingStepIndex()` is the UI
-    playhead signal.
+    (`requestWorkingPatternRelease()` lets the future shell drop it when
+    fresh state snapshots arrive — thread-safe: an atomic request drained
+    at the top of the NEXT process() block, because destroying the
+    override mid-block would free containers SequencerView holds raw
+    pointers into). `playingStepIndex()` is the UI playhead signal.
   - Chunk 4c — Performance + Control schedulers + MIDI dispatch:
     Performance (`requestPerformanceRecall(state, note, transportPlaying)`):
     focused slot = live `workingState` over the SHARED trim; any other
@@ -618,6 +666,25 @@ included/excluded.
     (clamps to [0,1], ignores invalid palette indices). Reads state via a
     `NeditProcessor*` owner (PanelView pattern), NOT the editor — only the
     processor exposes `uiStateView()`.
+  - Subdivision quick-clears (tags 1027 "n=0" / 1028 "nd=0" / 1029 "nt=0",
+    public `kTagClearPlain/Dotted/Triplet` in NeditEditor.h so tests drive
+    them): three small CTextButton chips on the interval band's caption row
+    (right side; the band's own `kCaptionH` resolves to the file-scope
+    `kIntervalCaptionH` so the rows can never drift). MOMENTARY actions —
+    each press calls `setSubdivisionGroupZero(NoteValueVariant)` which zeroes
+    that variant group's weights for real (one publish, no-op if already
+    zero, invalid enum values rejected). No persisted toggle state:
+    re-enabling is just painting values back. Variant membership is the
+    constexpr `kNoteValueVariant[20]` table in `state/Types.h` (plain
+    {128n..1n}=8, dotted {64nd..2nd}=6, triplet {32nt..1nt}=6), unit-tested
+    against the palette's name suffixes. The chips are enabled EXACTLY when
+    Clock is (they act on CLOCK-mode-only weights), styled/enabled via a
+    `lastZeroChipsEnabled_` latch + `styleZeroChips()` (accent-muted text on
+    surface-2, mouse-enabled off + flat grey under SL), hidden on non-Generate
+    tabs by syncTabBar. valueChanged uses the unconditional pressedEdge rule
+    (like the mode switch — the CTextButton min echo resets the latch, a
+    short-circuit leaves one dead click per pair), with a per-chip latch;
+    band invalidated on the first click for immediate repaint.
   - Geometry: band top 260 + 208 ⇒ mode segments y 484 (36px, segW =
     bandW/2), option menus y 530 (each 36px, caption row 12px + option
     24px, 4 × 210px wide with 16px gaps), interval band y 582..780
@@ -713,12 +780,109 @@ included/excluded.
   clips to silence, default-weight padding) + scheduler override plumbing
   (empty override ⇒ zero picks despite full state weights; matching
   override ⇒ byte-identical pick count as the default path).
-- Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 222/222 (state round-trip gained a v1 forward-compat case,
+- CRASH FIXES (2026-08-29, code review):
+  1. **Audio-thread publish removed from the audition auto-stop.**
+     `process()` used to do `uiState_.ui.auditionEnabled = false; provider_
+     .publish (uiState_)` when the transport started while auditioning —
+     publish() deep-copies the whole PluginState (manualPoints,
+     sliceWeights, grids, banks) while the UI thread may be reallocating
+     those exact vectors ⇒ heap corruption, plus allocation on the audio
+     thread. Now: process() gates audition rendering on the LIVE transport
+     (engine takes over the same block) and only raises
+     `auditionAutoStopPending_` (atomic); the editor idle timer drains it
+     via `NeditProcessor::pollAuditionAutoStop()` (UI thread owns the fold).
+     Related contract repairs: renderAudition/renderSliceAudition now take
+     the per-block snapshot's SampleState + the already-acquired
+     LoadedSample (they used to read `uiState_` and re-acquire the slot on
+     the audio thread); the audition/slice-audition read cursors are
+     AUDIO-thread-owned, reseeded on the inactive→active edge inside
+     process() (UI writes to them could tear); slice-audition bounds are
+     atomics stored BEFORE the active flag's release-store.
+  2. **WavDecoder trusted `blockAlign`.** Only `!= 0` was checked; a fmt
+     chunk lying about the frame width (e.g. stereo pcm16 claiming
+     blockAlign 1, or bits widened without the frame following) inflated
+     `frames = dataSize / blockAlign` and read past the end of the data
+     chunk — heap OOB on attacker-controlled file input, unreachable by
+     the truncation fuzz (needs internally INCONSISTENT fields, not a
+     short file). Now rejected when `blockAlign < numChannels *
+     bitsPerSample/8` (also guarantees the per-channel stride ≥
+     bytesPerSample, so every convertSample read stays inside its frame);
+     wider-than-needed (padded) frames stay legal.
+  3. **Hostile host output buses.** The buffer-zeroing loop null-checked
+     channel pointers but the render paths then wrote through them blindly,
+     and a zero-channel bus was promoted to 1 (indexing
+     `channelBuffers32[0]` of a possibly empty table). process() now
+     validates the bus once up front (bail on empty/null table, clear valid
+     channels, bail if ANY channel is null) and passes the true channel
+     count through; audition read indices additionally clamp at 0.
+  Regression tests: lying-blockAlign/bits fmt cases + padded-frame
+  legality (test_sample_pipeline.cpp), audition auto-stop defers the state
+  fold to pollAuditionAutoStop while the engine takes over immediately,
+  slice-audition render/stop, null-channel-while-sounding bails with zero
+  picks, hostile bus shapes return kOk (test_nedit_processor.cpp).
+- HARDENING (2026-08-29, follow-up sweep — all latent, none reachable
+  through sanitize()-guarded paths today):
+  - Scheduler: `resetBarsIndex` clamps into kResetBarsValues at the point
+    of use (was the ONE unguarded state index in the file — a negative
+    index cast to size_t would wild-read a 4-entry constexpr array, then
+    divide by garbage); invalid `clockReferenceIndex` falls back to the
+    4n reference instead of noteValueBeats' 0.0 sentinel (windowBeats is
+    a divisor → floor(x/0.0) int64 cast is UB; siblings already guarded
+    with max(..,1e-6)).
+  - `releaseWorkingPatternOverride()` (never yet called) REPLACED by
+    `requestWorkingPatternRelease()`: atomic request, drained at the top
+    of the next process() block. A direct UI-thread reset() would have
+    been a use-after-free the day the shell grew a caller (see the
+    Sequenced chunk note above).
+  - MIDI note-on velocity clamped to [0,1] BEFORE the uint8 cast
+    (float→uint8 of >~2.0 is UB per conv.fpint).
+  - PickRenderer/GranularStretcher read positions clamp in DOUBLE space
+    before the int64 cast (`clampedSourceIndex`: NaN/±inf/negative → 0,
+    ≥frames-1 → last frame) — the cast itself was the UB, so clamping
+    after it guarded nothing.
+  - WaveformView::draw no longer copies the whole slice vector per frame
+    (the `cond ? lvalue : prvalue{}` ternary materialized a prvalue copy;
+    now binds a static empty vector).
+  - NeditEditor::open's timing-section seed sync ran BEFORE intervalBand_
+    existed (dead call — the guard early-returns while any timing control
+    is null); moved after the quick-clear chips, where all controls exist.
+  Tests: sequenced working-pattern release defers to the next block and
+  reverts to the working grid; out-of-range resetBars/clockRef indices
+  schedule normally with a finite window clock (test_scheduler.cpp).
+- Test totals: default build 196/196 (53 state + 136 engine + 7 ui);
+  plugin build 241/241 (state round-trip gained a v1 forward-compat case,
   the editor gained active-tab + style-weight persistence cases, the
   Generate mode-switch gained a click-replay test proving the FIRST click
-  flips the mode via the real valueChanged handler — see
+  flips the mode via the real valueChanged handler, the palette gained a
+  plain/dotted/triplet partition check, and the subdivision quick-clears
+  gained a click-replay + group-zero test — see
   `tests/plugin/test_nedit_processor.cpp`), zero warnings.
+- SequenceRandomizer (2026-08-29, engine, `src/engine/SequenceRandomizer.
+  h/.cpp` + `tests/engine/test_sequence_randomizer.cpp`): the "Randomize
+  Sequence" generator lifted off the audio thread as a pure, seedable
+  function of `SequencerState` + the derived slice list. Faithful port of
+  the original (clear-then-rebuild, natural-length-per-slice quantized to
+  the step grid, fair round-robin passes over a per-pass Fisher-Yates
+  shuffle, style drawn from the SEQUENCER's own `randomizeStyleWeights`,
+  per-style `randomizeParametersForStyle` opt-in rolling each owned param
+  minus the general Subdivide/Volume, swept params getting their mode
+  sibling). Adjustments vs the original (licence to adapt): seeded + 
+  deterministic RNG (untestable unseedable member Random before),
+  configurable density `kDefaultPlacementProbability = 0.5` (was a hard 0.
+  35), spacing-aware span scan (nearestOccupiedDistance picks the free span
+  furthest from existing bars instead of "first free from a random start" —
+  spreads placements), safe all-zero-weights fallback to Forward, and a
+  `RandomizeResult{cellsPlaced,passes}` return for UI/tests. Also exposes
+  `clearGrid(state)` (wipes cells + overrides + extensions, keeps dims) —
+  shared by Clear Sequence and the randomize entry. Wired as
+  `NeditProcessor::randomizeSequence()` (per-call `std::random_device`
+  seed, uses the loaded sample's slices + `tempo::calculatedOriginalBpm`;
+  no sample ⇒ reduces to a clear) and `NeditProcessor::clearSequence()`,
+  both publish-only. 10 tests: determinism, differing seeds, monophony +
+  span non-overlap, zero density ⇒ nothing, all-zero weights ⇒ Forward,
+  only-weighted style, parameter-randomize excludes Subdivide/Volume +
+  clamps ranges, multi-column natural spans, degenerate inputs, clearGrid
+  keeps dimensions.
 
 ## Rules of engagement
 

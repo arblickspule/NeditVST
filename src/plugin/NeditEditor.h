@@ -67,6 +67,12 @@ public:
     static constexpr std::int32_t kTagLoadSample = 1000;
     static constexpr std::int32_t kTagGenerateModeSL = 1022;
     static constexpr std::int32_t kTagGenerateModeClock = 1023;
+    // Momentary quick-clears for the Clock subdivision band: zero the plain
+    // ("n=0"), dotted ("nd=0") or triplet ("nt=0") interval weights in one
+    // press. No persisted state -- the weights are zeroed for real.
+    static constexpr std::int32_t kTagClearPlain = 1027;
+    static constexpr std::int32_t kTagClearDotted = 1028;
+    static constexpr std::int32_t kTagClearTriplet = 1029;
 
     //--- VSTGUIEditor --------------------------------------------------------
     bool PLUGIN_API open (void* parent, const VSTGUI::PlatformType& platformType) override;
@@ -112,6 +118,9 @@ void runFileSelector();
     // like the pitch-mode toggle). styleModeSegment is the per-button rule.
     void styleModeButtons();
     void styleModeSegment (VSTGUI::CTextButton* button, bool active);
+    // The subdivision quick-clear chips ("n=0" etc.) are active only in
+    // Clock mode (subdivision weights are CLOCK-mode-only, like the band).
+    void styleZeroChips();
     // Returns true only on the RISING EDGE of a CTextButton press. The
     // default kKickStyle fires valueChanged once with the flipped value
     // (max) and once after resetting to min — the rising edge is the one
@@ -147,6 +156,9 @@ void runFileSelector();
     ui::ParamMiniMenu* tapeScopeMenu_ = nullptr;    // Clock -> Tape Stop scope
     ui::ParamMiniMenu* filterScopeMenu_ = nullptr;  // Clock -> Filter sweep scope
     ui::IntervalProbBand* intervalBand_ = nullptr;  // Clock -> subdivision weights
+    VSTGUI::CTextButton* zeroPlainBtn_ = nullptr;   // Clock subdivision quick-clear
+    VSTGUI::CTextButton* zeroDottedBtn_ = nullptr;
+    VSTGUI::CTextButton* zeroTripletBtn_ = nullptr;
     std::array<ui::StyleProbSlider*, state::kNumPlaybackStyles> styleProbSliders_ {};
 
     // Per-style-column param mini-sliders and mini dropdowns, indexed
@@ -199,6 +211,10 @@ void runFileSelector();
     bool lastModeSlPressed_ = false;      // mode-switch press-edge latches
     bool lastModeClockPressed_ = false;
     std::array<float, state::kNumNoteValues> lastSubdivWeightsSync_ {};
+    bool lastZeroChipsEnabled_ = false;   // quick-clear chips active in Clock only
+    bool lastZeroPlainPressed_ = false;   // quick-clear press-edge latches
+    bool lastZeroDottedPressed_ = false;
+    bool lastZeroTripletPressed_ = false;
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the
