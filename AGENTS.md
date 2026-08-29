@@ -508,7 +508,27 @@ included/excluded.
   (< 1000, ParameterSurface ids), so user edits flow through the host edit
   protocol (applyParamFromControl -> setParam) and host automation
   converges via `toNormalized` in syncStyleProbs (dedup against control
-  value). Mini-slider readouts: raw value via styleParamInfo
+  value). VOLUME ALIGNMENT: only each column's FINAL row — Volume, which
+  ends every column — parks on the SAME row as the Flanger column's
+  Volume slider (the Flanger list is the longest, so its Volume row is
+  the reference); all OTHER per-style rows stay top-anchored in their
+  own list exactly where they were. `captionRowLocalY/sliderRowLocalY`
+  branch on the last row (`i + 1 == rows_.size()`) to the aligned slot
+  (`alignedVolumeSliderY/CaptionY` via the cached `flangerParamRows()`
+  reference); captions and controls derive their Y from the same helpers,
+  so volumes line up across the bottom while each style's params keep
+  their original positions above. SCOPE SELECTORS — RECALLED 2026-08-29
+  into the Generate timing ribbon's Clock options (see the timing section
+  below; the Tape Stop/Filter columns were slimmed one row and
+  `StyleParamRow::isScope()` removed). They are editor-local discrete rows
+  (tags 1020/1021, `StyleParamRow` generalised to `tag` where < 1000 =
+  StyleParamId, >= 1000 = editor-local selector, driven by publish-only
+  `NeditProcessor::setTapeStopScope/setFilterSweepScope` on
+  `GenerateState.tapeStopScope/filterSweepScope`; `paramRowOptionCount/
+  Name` and `scopeSelectorNorm` bridge the menus; NOT automatable — the
+  original gated these on clock mode and our Clock scheduler honours
+  them, the other trigger modes pass fixed per-window values). Inserted
+  before Volume, so the volume-last invariant holds. Mini-slider readouts: raw value via styleParamInfo
   (Delay `%.1f ms`, Grain Size `%.0f ms`, Grain Speed `%.1f x`, else
   `%.2f`); drag maps to the TRACK width only (the 32px value readout is
   not part of the fill, so 100% stays at the track's right edge), wheel
@@ -537,6 +557,90 @@ included/excluded.
   safe) shared by the columns' applyFromY and the paint mapping; the
   paint col is recovered from the captured column's own rect (bandLeft =
   column left − ordinal × colW).
+- Generate timing ribbon (2026-08-29), below the style band on the
+  GENERATE page only, order = mode switch → full-width per-mode options →
+  interval probability sliders. REDESIGNED the same day per lead-dev
+  feedback: the mode switch is now a FULL-WIDTH segmented stick and the
+  option row spans the whole panel; the Tape Stop + Filter sweep scope
+  selectors were RECALLED off the style columns into this section (they
+  ride with the Clock options):
+  - Mode switch: two CTextButtons "SLICE LENGTH"/"CLOCK" filling the panel
+    width (two segments, 1px seam, tags 1022/1023 = `kTagGenerateModeSL`/
+    `kTagGenerateModeClock`, public constexprs in NeditEditor.h so tests
+    can drive them), styled by `styleModeButtons`/`styleModeSegment` (same
+    palette rules as the REPITCH/TIMESTRETCH toggle: the segment matching
+    `GenerateState.generateMode` is accent-filled, the other quiet).
+    Handler = pressedEdge + live-model compare (re-selecting the active
+    mode is a no-op) → publish-only `setGenerateMode` (accepts ONLY
+    sliceLength|clock; sequenced/performance/control rejected — Generate
+    hosts just its two random sub-modes) → **`syncGenerateControls()` in
+    the same call stack**, so the whole section (segment fills, greys,
+    interval band) reacts on the FIRST click, nothing waits for the idle
+    tick. Explicit first-click guarantee, not just `lastResetBarsSync_`
+    catch-up. **The segment switch drives the SCHEDULER-FACING mode too**:
+    `setGenerateMode` also writes the top-level `uiState_.triggerMode` (the
+    two Generate sub-modes ARE the sliceLength/clock entries of the
+    scheduler's trigger-mode switch; there is no separate "generate"
+    wrapper — this is the "mode change doesn't affect the audio" fix), and
+    the `kParamTriggerMode` surface fold mirrors it (top-bar menu ⇄ ribbon
+    stay in step). Coverage: `shell: generate timing setters persist in
+    GenerateState` asserts `setGenerateMode` moves `triggerMode` with it;
+    `surface: non-style params` asserts the param fold keeps
+    `generate.generateMode` in step.
+  - Option row (all `ParamMiniMenu`s, disabled by the mode selection via
+    `setGreyed` grey palette + setMouseEnabled(false)): each menu is enabled
+    EXACTLY when its mode is selected — the mapping is a pure,
+    unit-tested `TimingGreyState`/`timingGreyState(mode)` (RESET EVERY
+    enabled under SL, Clock trio enabled under Clock; a 2026-08-29 inversion
+    bug greyed the trio under Clock instead and is covered by
+    `timing ribbon: option menus enable exactly with their mode`):
+    SL = "RESET EVERY" (tag 1024, entries = `kResetBarsValues`
+    {1,2,4,8} bars, default index 2) → `setResetBars`,
+    greys whenever Clock is active.
+    Clock = "CLOCK REFERENCE" (tag 1025, entries = full `kNoteValues`
+    palette label list) → `setClockReference`, greys under SL.
+    Clock = "TAPE STOP SCOPE" (tag 1020) and "FILTER SWEEP SCOPE"
+    (tag 1021) — the recalled expander selectors, still reading/writing
+    `GenerateState.tapeStopScope/filterSweepScope` through the same
+    `valueChanged` dispatch + `ui::scopeSelectorNorm` used before; they
+    grey under SL (the engine honors the scopes only in Clock). Entries
+    auto-fill from `paramRowOptionName` via their tags (2 options).
+    Entries added via `COptionMenu::addEntry` AFTER construction (generic
+    path).
+  - `IntervalProbBand` (tag 1026): 20 thin vertical probability bars, one
+    per `kNoteValues` slot (labels below), value = raw
+    `subdivisionWeights[i]`, paint gesture over the whole band (press/drag
+    sets the column under the pointer, bright outline while dragged),
+    wheel ±0.05 on the column under the cursor. Clock-mode ONLY: under
+    Slice Length the band greys with an "(CLOCK MODE ONLY)" caption and
+    rejects input. Writes route through the editor's valueChanged →
+    `activeColumnIndex()` + getValueNormalized() → `setSubdivisionWeight`
+    (clamps to [0,1], ignores invalid palette indices). Reads state via a
+    `NeditProcessor*` owner (PanelView pattern), NOT the editor — only the
+    processor exposes `uiStateView()`.
+  - Geometry: band top 260 + 208 ⇒ mode segments y 484 (36px, segW =
+    bandW/2), option menus y 530 (each 36px, caption row 12px + option
+    24px, 4 × 210px wide with 16px gaps), interval band y 582..780
+    (panel inner bottom = kEditorHeight − kPanelGutter − kCardPad).
+  - `syncGenerateControls()` (idle hook alongside syncTabBar/
+    syncToolBarControls) dedup-pushes state→controls (latches
+    `lastGenerateModeSync_`, `lastResetBarsSync_`, `lastClockRefSync_`,
+    `lastResetBarsGreyed_`/`lastClockRefGreyed_` + the scope pair
+    `lastTapeScopeSync_`/`lastFilterScopeSync_` (float, sentinel -1.0) and
+    `lastTapeScopeGreyed_`/`lastFilterScopeGreyed_`,
+    `lastSubdivWeightsSync_` — a sentinel -1.0 fill forces the first
+    weights repaint since real weights are ≥ 0).
+  - `SyncTabBar` hides all seven timing controls on non-Generate tabs;
+    PanelView's GENERATE "style parameters (pending)" hint was REMOVED
+    (the timing ribbon fills the space) — the Sequencer "step grid ·
+    pattern controls (pending)" hint remains.
+  - `paramRowOptionCount`/`paramRowOptionName` now range-guard tag <
+    kNumStyleParams before indexing the option table — a 1024/1025-class
+    editor-local tag previously fell through to an out-of-bounds
+    `styleParamInfo[id]` std::array index (real UB; fixed).
+  - `columnParamsFor` no longer emits scope rows (Tape Stop/Filter columns
+    slimmed one row; the `StyleParamRow::isScope()` helper was removed);
+    `syncStyleProbs` assumes every mini-menu is a StyleParamId.
 - Per-style colours: `kStyleColours` mirrors the original's
   PlaybackStylePalette::getStyleColour (forward orange, pingPong purple,
   tapeStop dodgerblue, stretch teal, filterDown red, filterUp gold,
@@ -610,9 +714,11 @@ included/excluded.
   (empty override ⇒ zero picks despite full state weights; matching
   override ⇒ byte-identical pick count as the default path).
 - Test totals: default build 180/180 (51 state + 122 engine + 7 ui);
-  plugin build 216/216 (state round-trip gained a v1 forward-compat case
-  and the editor gained active-tab + style-weight persistence cases), zero
-  warnings.
+  plugin build 222/222 (state round-trip gained a v1 forward-compat case,
+  the editor gained active-tab + style-weight persistence cases, the
+  Generate mode-switch gained a click-replay test proving the FIRST click
+  flips the mode via the real valueChanged handler — see
+  `tests/plugin/test_nedit_processor.cpp`), zero warnings.
 
 ## Rules of engagement
 

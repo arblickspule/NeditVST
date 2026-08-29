@@ -59,5 +59,9 @@ if(NEDIT_BUILD_PLUGIN)
     )
     target_link_libraries(nedit_plugin_tests
         PRIVATE nedit_plugin nedit_warnings Catch2::Catch2WithMain)
+    # test_nedit_processor.cpp includes VSTGUI control headers directly to
+    # replay editor event sequences; expose the SDK header root.
+    target_include_directories(nedit_plugin_tests
+        SYSTEM PRIVATE ${VST3_SDK_DIR}/vstgui4)
     catch_discover_tests(nedit_plugin_tests)
 endif()

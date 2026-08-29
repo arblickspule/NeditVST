@@ -139,6 +139,22 @@ public:
     void setGrainSizeMs (float ms);
     void setGrainSpeed (float speed);
 
+    // Whole-window vs per-tick sweep scope for the Tape Stop and Filter
+    // Down+Up styles (GenerateState.tapeStopScope / filterSweepScope).
+    // Publish-only -- no slice rebuild. The Clock scheduler honours them;
+    // the other trigger modes pass fixed per-window values (the original
+    // gated these on clock mode too).
+    void setTapeStopScope (state::WindowScope scope);
+    void setFilterSweepScope (state::WindowScope scope);
+
+    // Generate-page timing (GenerateState.generateMode and its options).
+    // Publish-only -- the scheduler reads these when Generate is the
+    // active trigger mode.
+    void setGenerateMode (state::TriggerMode mode);
+    void setResetBars (int index);
+    void setClockReference (int index);
+    void setSubdivisionWeight (int noteIndex, float weight);
+
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);
 

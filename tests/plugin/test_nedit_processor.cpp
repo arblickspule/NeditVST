@@ -7,6 +7,9 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "plugin/NeditProcessor.h"
+#include "plugin/NeditEditor.h"
+
+#include "vstgui/lib/controls/ccontrol.h"
 
 #include "public.sdk/source/common/memorystream.h"
 #include "pluginterfaces/gui/iplugview.h"
@@ -268,4 +271,180 @@ TEST_CASE ("shell: style-probability writes persist in GenerateState")
     fx.processor.setStyleWeight (99, 0.5f);
     CHECK (fx.processor.debugUiState().generate.styleWeights[0]
            == Catch::Approx (1.0f));
+}
+
+TEST_CASE ("shell: sweep-scope writes persist in GenerateState")
+{
+    RunningPlugin fx;
+
+    // The opposite defaults (matches the original): wholeWindow for Tape
+    // Stop, perTick for the Filter sweep.
+    CHECK (fx.processor.debugUiState().generate.tapeStopScope
+           == state::WindowScope::wholeWindow);
+    CHECK (fx.processor.debugUiState().generate.filterSweepScope
+           == state::WindowScope::perTick);
+
+    fx.processor.setTapeStopScope (state::WindowScope::perTick);
+    CHECK (fx.processor.debugUiState().generate.tapeStopScope
+           == state::WindowScope::perTick);
+
+    fx.processor.setFilterSweepScope (state::WindowScope::wholeWindow);
+    CHECK (fx.processor.debugUiState().generate.filterSweepScope
+           == state::WindowScope::wholeWindow);
+
+    // Out-of-range scopes are ignored.
+    fx.processor.setTapeStopScope (static_cast<state::WindowScope> (7));
+    CHECK (fx.processor.debugUiState().generate.tapeStopScope
+           == state::WindowScope::perTick);
+}
+
+TEST_CASE ("editor: mode switch fires on the first click")
+{
+    RunningPlugin fx;
+
+    // Drive the SAME event sequence VSTGUI's CTextButton (kKickStyle)
+    // delivers per click, without a window or a platform init: onMouseUp
+    // fires valueChanged once with value=max, once after resetting to min.
+    // A real first click must switch the mode -- anything that needs a
+    // second click means the press-edge latch was left stale across clicks.
+    // A minimal CControl subclass stands in for the real buttons (a real
+    // CTextButton's ctor creates a CGradient, which needs the platform).
+    NeditEditor editor (&fx.processor);
+
+    struct FakeControl : VSTGUI::CControl
+    {
+        FakeControl (const VSTGUI::CRect& r, VSTGUI::IControlListener* l, int32_t customTag)
+            : CControl (r, l, customTag) {}
+        void draw (VSTGUI::CDrawContext*) override {}
+        VSTGUI::CBaseObject* newCopy () const override { return new FakeControl (*this); }
+        VSTGUI::CMouseEventResult onMouseDown (VSTGUI::CPoint&, const VSTGUI::CButtonState&) override
+        {
+            return VSTGUI::kMouseEventHandled;
+        }
+    };
+
+    FakeControl clockBtn (VSTGUI::CRect (0, 0, 4, 4), &editor,
+                          NeditEditor::kTagGenerateModeClock);
+    const auto clickClock = [&] {
+        clockBtn.setValue (1.0f);
+        editor.valueChanged (&clockBtn);
+        clockBtn.setValue (0.0f);
+        editor.valueChanged (&clockBtn);
+    };
+    FakeControl slBtn (VSTGUI::CRect (0, 0, 4, 4), &editor,
+                       NeditEditor::kTagGenerateModeSL);
+    const auto clickSl = [&] {
+        slBtn.setValue (1.0f);
+        editor.valueChanged (&slBtn);
+        slBtn.setValue (0.0f);
+        editor.valueChanged (&slBtn);
+    };
+
+    clickClock();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::clock);
+    // The ribbon switch also drives the scheduler-facing trigger mode, so
+    // the audio actually changes when the mode flips.
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::clock);
+
+    // A second click on the same (now-active) segment is a no-op.
+    clickClock();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::clock);
+
+    // Back to Slice Length -- again on the FIRST click.
+    clickSl();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::sliceLength);
+    // Re-selecting the active segment is a no-op.
+    clickSl();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::sliceLength);
+
+    // The regression: after EACH successful flip the latch must be reusable,
+    // so every later change happens on the FIRST click of its pair. Without
+    // the unconditional pressedEdge update (the latch reset short-circuited
+    // on the mode-matched min echo), these two would swallow the max echo
+    // and leave the mode unchanged until the *next* click.
+    clickClock();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::clock);
+    clickSl();
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::sliceLength);
+}
+
+TEST_CASE ("timing ribbon: option menus enable exactly with their mode")
+{
+    using nedit::plugin::timingGreyState;
+    using nedit::plugin::TimingGreyState;
+
+    // Slice Length: RESET EVERY rides SL, the Clock trio is greyed.
+    const TimingGreyState sl = timingGreyState (state::TriggerMode::sliceLength);
+    CHECK_FALSE (sl.resetBarsGreyed);
+    CHECK (sl.clockRefGreyed);
+    CHECK (sl.tapeScopeGreyed);
+    CHECK (sl.filterScopeGreyed);
+
+    // Clock: RESET EVERY greys, the Clock trio is enabled.
+    const TimingGreyState clk = timingGreyState (state::TriggerMode::clock);
+    CHECK (clk.resetBarsGreyed);
+    CHECK_FALSE (clk.clockRefGreyed);
+    CHECK_FALSE (clk.tapeScopeGreyed);
+    CHECK_FALSE (clk.filterScopeGreyed);
+}
+
+TEST_CASE ("shell: generate timing setters persist in GenerateState")
+{
+    RunningPlugin fx;
+    const auto& g0 = fx.processor.debugUiState().generate;
+
+    // Defaults per the original: Slice Length, reset every 4 bars, clock
+    // reference on the 1/4-note, all subdivision weights even.
+    CHECK (g0.generateMode == state::TriggerMode::sliceLength);
+    CHECK (g0.resetBarsIndex == state::kDefaultResetBarsIndex);
+    CHECK (g0.clockReferenceIndex == state::kNoteValue4n);
+
+    fx.processor.setGenerateMode (state::TriggerMode::clock);
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::clock);
+    // The Generate sub-modes ARE the scheduler's top-level sliceLength/clock
+    // trigger modes, so the setter must drive triggerMode too -- otherwise
+    // the ribbon flip changes UI-only state and the audio stays on the old
+    // mode. (Regression for "mode change doesn't affect audio".)
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::clock);
+
+    // Picking a note-value by palette index.
+    fx.processor.setClockReference (6);
+    CHECK (fx.processor.debugUiState().generate.clockReferenceIndex == 6);
+
+    fx.processor.setResetBars (1);
+    CHECK (fx.processor.debugUiState().generate.resetBarsIndex == 1);
+
+    // Subdivision weight writes clamp to [0,1].
+    fx.processor.setSubdivisionWeight (2, 0.4f);
+    fx.processor.setSubdivisionWeight (18, 1.7f);
+    fx.processor.setSubdivisionWeight (4, -0.3f);
+    const auto& w = fx.processor.debugUiState().generate.subdivisionWeights;
+    CHECK (w[2] == Catch::Approx (0.4f));
+    CHECK (w[18] == Catch::Approx (1.0f));
+    CHECK (w[4] == Catch::Approx (0.0f));
+
+    // Invalid values are ignored wholesale.
+    fx.processor.setGenerateMode (state::TriggerMode::sequenced);   // not a Generate mode
+    fx.processor.setResetBars (99);
+    fx.processor.setClockReference (-1);
+    fx.processor.setClockReference (state::kNumNoteValues + 4);
+    fx.processor.setSubdivisionWeight (state::kNumNoteValues, 0.9f);  // one past the palette
+    const auto& g1 = fx.processor.debugUiState().generate;
+    CHECK (g1.generateMode == state::TriggerMode::clock);
+    CHECK (g1.resetBarsIndex == 1);
+    CHECK (g1.clockReferenceIndex == 6);
+    CHECK (g1.subdivisionWeights == w);
+
+    // Flipping back drives the scheduler-facing trigger mode in lockstep.
+    fx.processor.setGenerateMode (state::TriggerMode::sliceLength);
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::sliceLength);
+    CHECK (fx.processor.debugUiState().generate.generateMode
+           == state::TriggerMode::sliceLength);
 }

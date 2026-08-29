@@ -174,8 +174,15 @@ inline void applyNormalized (state::PluginState& s, std::uint32_t id,
         {
             const auto idx = static_cast<int> (
                 std::lround (normalized * static_cast<float> (state::kNumTriggerModes - 1)));
-            s.triggerMode = static_cast<state::TriggerMode> (
+            const auto tm = static_cast<state::TriggerMode> (
                 idx < 0 ? 0 : (idx >= state::kNumTriggerModes ? state::kNumTriggerModes - 1 : idx));
+            s.triggerMode = tm;
+            // The two Generate sub-modes share the sliceLength/clock entries
+            // of the top-level trigger mode (mirror of
+            // NeditProcessor::setGenerateMode), so the top-bar menu and the
+            // Generate ribbon keep all their sync'd views of the same mode.
+            if (tm == state::TriggerMode::sliceLength || tm == state::TriggerMode::clock)
+                s.generate.generateMode = tm;
             break;
         }
         case kParamManualTempoEnabled:

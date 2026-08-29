@@ -116,6 +116,17 @@ TEST_CASE ("surface: non-style params write through and round trip")
     applyNormalized (s, kParamTriggerMode, 0.0f);
     CHECK (s.triggerMode == state::TriggerMode::sliceLength);
 
+    // The top-level Generate modes double as generate.generateMode (the
+    // ribbon aliases the same two entries), so a top-bar selection must
+    // keep the ribbon's sub-mode in step -- mirror of setGenerateMode.
+    applyNormalized (s, kParamTriggerMode, 1.0f);       // ... off generate
+    s.generate.generateMode = state::TriggerMode::sliceLength;
+    applyNormalized (s, kParamTriggerMode, 0.25f);      // clock
+    CHECK (s.triggerMode == state::TriggerMode::clock);
+    CHECK (s.generate.generateMode == state::TriggerMode::clock);
+    applyNormalized (s, kParamTriggerMode, 0.0f);       // sliceLength
+    CHECK (s.generate.generateMode == state::TriggerMode::sliceLength);
+
     applyNormalized (s, kParamManualTempoEnabled, 1.0f);
     CHECK (s.sample.manualBpmOverrideEnabled);
 

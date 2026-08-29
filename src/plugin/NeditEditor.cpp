@@ -118,6 +118,14 @@ constexpr CColor mixColor (const CColor& a, const CColor& b, double t) noexcept
 constexpr double kCardPad = 12.0;
 constexpr double kStyleBandH = 208.0;
 
+// Generate-page Timing section geometry (below the style-probability band).
+constexpr double kTimingModeBtnH = 36.0;        // SL | Clock switch
+constexpr double kTimingGap      = 16.0;        // band -> switch / menus -> band
+constexpr double kTimingOptionsGap = 10.0;      // switch -> option menus
+constexpr double kTimingMenuH    = 36.0;        // caption (12) + option row (24)
+constexpr double kTimingMenuGap  = 16.0;        // between the option menus
+constexpr double kSubdivLabelH   = 14.0;        // interval-band per-bar labels
+
 // ── Style-probability column geometry ──────────────────────────────────
 // The header block above the vertical weight slider -- chip + % readout +
 // gaps -- and the slider track offsets feed BOTH the column's own
@@ -135,15 +143,35 @@ constexpr double kProbSliderRowH = 10.0;       // mini-slider row (thinner: no t
 constexpr double kProbCaptionSliderGap = 1.0;  // caption -> its slider
 constexpr double kProbRowGap = 5.0;            // inter-entry breathing room
 
+// Editor-local selectors laid into the param columns (tags >= 1000: NOT
+// host params -- these are GenerateState.tapeStopScope / filterSweepScope,
+// scoped to the Tape Stop and Filter styles, published via publish-only
+// setters instead of the automatable surface).
+constexpr auto kTagTapeStopScope    = static_cast<VSTGUI_INT32> (1020);
+constexpr auto kTagFilterSweepScope = static_cast<VSTGUI_INT32> (1021);
+// kTagGenerateModeSL/Clock are declared in NeditEditor.h (1022/1023);
+// the plugin tests drive them through the same handler.
+constexpr auto kTagResetBars        = static_cast<VSTGUI_INT32> (1024);
+constexpr auto kTagClockReference   = static_cast<VSTGUI_INT32> (1025);
+constexpr auto kTagIntervalProbBand = static_cast<VSTGUI_INT32> (1026);
+
 // Column param row: one parameter shown in a style column's space under
 // the % readout and right of the vertical weight slider, following the
 // Flanger pilot recipe. Continuous params get a horizontal mini-slider
 // under their caption; discrete params are mini dropdowns whose caption
-// IS the current option. Volume rides last in every column.
+// IS the current option. Volume rides last in every column. `tag` < 1000
+// is a StyleParamId (host-automatable, driven through the host-edit
+// protocol); tag >= 1000 is an editor-local scope selector (see the two
+// kTag*Scope constants) driven by a publish-only setter.
 struct StyleParamRow
 {
-    state::StyleParamId id;
+    VSTGUI_INT32 tag;
     bool continuous;
+
+    [[nodiscard]] state::StyleParamId paramId() const noexcept
+    {
+        return static_cast<state::StyleParamId> (tag);
+    }
 };
 
 // Derived from applicableStyleParams: Subdivide is dropped everywhere (it
@@ -164,13 +192,13 @@ struct StyleParamRow
             || id == state::StyleParamId::volumeMode)
             continue;
         const auto& info = state::styleParamInfo (id);
-        rows.push_back ({ id, ! info.discrete });
+        rows.push_back ({ static_cast<VSTGUI_INT32> (id), ! info.discrete });
         if (info.swept)
         {
             const auto mode = static_cast<state::StyleParamId> (
                 static_cast<int> (id) + 1);
             if (mode != state::StyleParamId::volumeMode)
-                rows.push_back ({ mode, false });
+                rows.push_back ({ static_cast<VSTGUI_INT32> (mode), false });
         }
     }
     return rows;
@@ -184,6 +212,41 @@ struct StyleParamRow
     return row.continuous ? kProbRowH + kProbCaptionSliderGap + kProbSliderRowH
                                 + kProbRowGap
                           : kProbRowH + kProbRowGap;
+}
+
+// Column-local list origin: the header block (chip + % readout + gaps)
+// plus 1px leading that every column's param list starts below.
+[[nodiscard]] constexpr double paramListTop() noexcept
+{
+    return kProbChipH + kProbChipReadoutGap + kProbReadoutH
+         + kProbReadoutSliderGap + 1.0;
+}
+
+// Local Y of entry i's caption row / of the row directly under a
+// continuous caption, for a TOP-anchored list (no alignment offset yet).
+[[nodiscard]] constexpr double paramEntryCaptionY (const std::vector<StyleParamRow>& rows,
+                                                   std::size_t i) noexcept
+{
+    double y = paramListTop();
+    for (std::size_t j = 0; j < i; ++j)
+        y += paramEntrySpan (rows[j]);
+    return y;
+}
+
+[[nodiscard]] constexpr double paramEntrySliderY (const std::vector<StyleParamRow>& rows,
+                                                  std::size_t i) noexcept
+{
+    return paramEntryCaptionY (rows, i) + kProbRowH + kProbCaptionSliderGap;
+}
+
+// The Flanger column's list is the volume-alignment reference: it is the
+// longest list (7 entries), so its Volume slider row is where every
+// column's own Volume parks. Built once (constexpr-size derived at load).
+[[nodiscard]] const std::vector<StyleParamRow>& flangerParamRows()
+{
+    static const std::vector<StyleParamRow> rows =
+        columnParamsFor (state::PlaybackStyle::flanger);
+    return rows;
 }
 
 // Readout format for a continuous mini-slider's raw value (ms for temps
@@ -1034,22 +1097,37 @@ public:
         return rows_;
     }
 
-    // Local (column-relative) Y of entry i's caption row / of the
-    // mini-slider row directly under a continuous caption. The header
-    // block above the list is included, plus 1px leading.
-    [[nodiscard]] double captionRowLocalY (std::size_t i) const noexcept
-    {
-        double y = kProbChipH + kProbChipReadoutGap + kProbReadoutH
-                 + kProbReadoutSliderGap + 1.0;
-        for (std::size_t j = 0; j < i; ++j)
-            y += paramEntrySpan (rows_[j]);
-        return y;
-    }
+// Local (column-relative) Y of entry i's caption row / of the
+// mini-slider row directly under a continuous caption. The header
+// block above the list is included, plus 1px leading. Every row except
+// the final one (Volume, which ends every column) stays top-anchored in
+// the column's own list; the final row parks on the Flanger column's
+// Volume row so all the volumes line up across the band.
+[[nodiscard]] double captionRowLocalY (std::size_t i) const noexcept
+{
+    return (i + 1 == rows_.size()) ? alignedVolumeCaptionY()
+                                   : paramEntryCaptionY (rows_, i);
+}
 
-    [[nodiscard]] double sliderRowLocalY (std::size_t i) const noexcept
-    {
-        return captionRowLocalY (i) + kProbRowH + kProbCaptionSliderGap;
-    }
+[[nodiscard]] double sliderRowLocalY (std::size_t i) const noexcept
+{
+    return (i + 1 == rows_.size()) ? alignedVolumeSliderY()
+                                   : paramEntrySliderY (rows_, i);
+}
+
+// The aligned Volume row: the Flanger column's list is the reference
+// (longest, so its Volume row is the line every other column's Volume
+// parks on).
+[[nodiscard]] double alignedVolumeSliderY() const noexcept
+{
+    const auto& ref = flangerParamRows();
+    return paramEntrySliderY (ref, ref.size() - 1);
+}
+
+[[nodiscard]] double alignedVolumeCaptionY() const noexcept
+{
+    return alignedVolumeSliderY() - kProbRowH - kProbCaptionSliderGap;
+}
 
     void draw (CDrawContext* dc) override
     {
@@ -1148,7 +1226,7 @@ public:
                     if (! rows_[i].continuous)
                         continue;   // owned by the mini dropdown overlay
                     const double labelY = r.top + captionRowLocalY (i);
-                    dc->drawString (state::styleParamInfo (rows_[i].id).name,
+                    dc->drawString (state::styleParamInfo (rows_[i].paramId()).name,
                                     CRect (listX, labelY, listX + listW,
                                            labelY + kProbRowH),
                                     kLeftText);
@@ -1436,30 +1514,82 @@ private:
     std::string fmt_;
 };
 
-// ── Mini dropdown for ONE discrete style param, occupying the 12px ──
-// caption row of the Flanger column (the current option IS the row's
-// label). Subclassed from COptionMenu so the click publishes its own
-// popup (platform list, anchored at this row) and the value stays an
-// entry index routed straight through the host-edit protocol like the
-// mini-sliders; draw() keeps the row as slim and quiet as the captions
-// (no 19px menu chrome). Tag = the StyleParamId (< 1000).
+// ── Option list helpers for a discrete param row ─────────────────────
+// Scope selectors (editor-local tags) are the fixed two-item
+// "Whole window" / "Per tick" list (WindowScope, same wording as the
+// original's selectors); anything else is a StyleParamId.
+
+[[nodiscard]] int paramRowOptionCount (VSTGUI_INT32 tag) noexcept
+{
+    if (tag == kTagTapeStopScope || tag == kTagFilterSweepScope)
+        return 2;
+    // Only StyleParamIds (tags < kNumStyleParams) may index the option
+    // table -- editor-local tags (timing menus etc.) supply their own
+    // entries after construction.
+    if (tag < 0 || tag >= static_cast<VSTGUI_INT32> (state::kNumStyleParams))
+        return 0;
+    return state::styleParamInfo (static_cast<state::StyleParamId> (tag)).numOptions;
+}
+
+[[nodiscard]] const char* paramRowOptionName (VSTGUI_INT32 tag, int index) noexcept
+{
+    if (tag == kTagTapeStopScope || tag == kTagFilterSweepScope)
+        return index <= 0 ? "Whole window" : "Per tick";
+    if (tag < 0 || tag >= static_cast<VSTGUI_INT32> (state::kNumStyleParams))
+        return nullptr;
+    return state::styleParamOptionName (static_cast<state::StyleParamId> (tag), index);
+}
+
+// Normalized value of a scope selector read from state. Entry index 0 =
+// wholeWindow, 1 = perTick -- matches WindowScope's numeric values, so
+// the menu index IS the enum and no mapping is needed.
+[[nodiscard]] float scopeSelectorNorm (const state::PluginState& s, VSTGUI_INT32 tag) noexcept
+{
+    const auto scope = tag == kTagTapeStopScope ? s.generate.tapeStopScope
+                                                : s.generate.filterSweepScope;
+    return scope == state::WindowScope::perTick ? 1.0f : 0.0f;
+}
+
+// ── Mini dropdown for ONE discrete param row ───────────────────────
+// For the band columns it is the 12px caption row: the current option IS
+// the row's label, a quiet accent-muted text + caret + hairline. The same
+// control doubles as the Generate-page timing options with an optional
+// caption line drawn above (option list supplied by the caller) and a
+// greyed/disabled state for the inactive mode's column. Subclassed from
+// COptionMenu so the click publishes its own popup and the value stays an
+// entry index. Tag < 1000 = a StyleParamId (entries built from its option
+// table via paramRowOptionCount/Name); >= 1000 = editor-local (entries
+// must be supplied after construction, or built from the scope tags).
 class ParamMiniMenu : public COptionMenu
 {
 public:
-    ParamMiniMenu (const CRect& size, IControlListener* l, int32_t t, int styleIndex)
-        : COptionMenu (size, l, t), styleIndex_ (styleIndex)
+    ParamMiniMenu (const CRect& size, IControlListener* l, int32_t t, int styleIndex,
+                   const char* caption = nullptr)
+        : COptionMenu (size, l, t), styleIndex_ (styleIndex), caption_ (caption)
     {
-        const auto param = static_cast<state::StyleParamId> (t);
-        const auto& info = state::styleParamInfo (param);
-        for (int i = 0; i < info.numOptions; ++i)
-            addEntry (state::styleParamOptionName (param, i));
+        for (int i = 0; i < paramRowOptionCount (t); ++i)
+            addEntry (paramRowOptionName (t, i));
     }
 
     CBaseObject* newCopy () const override
     {
-        auto* copy = new ParamMiniMenu (getViewSize(), getListener(), getTag(), styleIndex_);
+        auto* copy = new ParamMiniMenu (getViewSize(), getListener(), getTag(),
+                                        styleIndex_, caption_);
+        for (int32_t i = 0; i < getNbEntries(); ++i)
+            if (auto* e = getEntry (i))
+                copy->addEntry (e->getTitle().data());
         copy->setValue (getValue());
+        copy->greyed_ = greyed_;
         return copy;
+    }
+
+    // Greyed rows are read-only: input disabled and the whole row drawn in
+    // the disabled palette (the inactive mode's column).
+    void setGreyed (bool greyed)
+    {
+        greyed_ = greyed;
+        setMouseEnabled (! greyed);
+        invalid();
     }
 
     void draw (CDrawContext* dc) override
@@ -1467,22 +1597,31 @@ public:
         const CRect r = getViewSize();
         dc->setDrawMode (kAliasing);
 
-        const auto param = static_cast<state::StyleParamId> (getTag());
-        const auto idx = static_cast<int> (getValue());
+        const double optTop = (caption_ != nullptr) ? r.top + kMenuCaptionH : r.top;
+        const double optTextBottom = (caption_ != nullptr) ? r.bottom - 2.0 : r.bottom;
 
-        // The current option is the row's only text, tinted like a value
-        // readout (interactive, unlike the muted caption rows).
+        if (caption_ != nullptr)
+        {
+            dc->setFont (kNormalFontSmaller);
+            dc->setFontColor (greyed_ ? kTextDisabled : kTextSecondary);
+            dc->drawString (caption_, CRect (r.left + 2, r.top, r.right - 2, optTop),
+                            kLeftText);
+        }
+
+        // The current option's title is the row's own text, tinted like a
+        // value readout (interactive, unlike the muted caption rows).
+        CMenuItem* item = getCurrent();
         dc->setFont (kNormalFontSmaller);
-        dc->setFontColor (kAccentMutedHi);
-        dc->drawString (state::styleParamOptionName (param, idx),
-                        CRect (r.left + 2, r.top, r.right - 12, r.bottom), kLeftText);
+        dc->setFontColor (greyed_ ? kTextDisabled : kAccentMutedHi);
+        dc->drawString (item != nullptr ? item->getTitle().data() : "",
+                        CRect (r.left + 2, optTop, r.right - 12, optTextBottom), kLeftText);
 
         // Caret triangle, drawn (the default font's glyph set is not
         // guaranteed to include ▾), antialiased for the small size.
         const double cx = r.right - 7.0;
-        const double cy = r.top + r.getHeight() / 2.0;
+        const double cy = (optTop + optTextBottom) / 2.0;
         dc->setDrawMode (kAntiAliasing);
-        dc->setFillColor (kTextSecondary);
+        dc->setFillColor (greyed_ ? kTextDisabled : kTextSecondary);
         const std::vector<CPoint> tri {
             { cx - 3.0, cy - 1.5 }, { cx + 3.0, cy - 1.5 }, { cx, cy + 2.0 }
         };
@@ -1499,7 +1638,175 @@ public:
     }
 
 private:
+    static constexpr double kMenuCaptionH = 12.0;
     int styleIndex_ = 0;
+    const char* caption_ = nullptr;
+    bool greyed_ = false;
+};
+
+// ── Clock subdivision weights: 20 thin probability bars, one per note  ──
+// value (kNoteValues palette order, 128n..1n), spanning the Generate
+// panel's remaining width below the mode switch + option menus. Value =
+// raw GenerateState.subdivisionWeights[i] in [0,1], the weighted draw for
+// the retrigger interval inside each clock window. The whole band is the
+// hit target: press/drag paints the bar under the pointer (same gesture
+// language as the style columns' paint overlay), wheel nudges the column
+// under the cursor. Only live in Clock mode -- in Slice Length the band
+// greys and ignores input (the weights are Clock-only state).
+class IntervalProbBand : public CControl
+{
+public:
+    IntervalProbBand (const CRect& size, IControlListener* l, int32_t t,
+                      NeditProcessor* owner)
+        : CControl (size, l, t), owner_ (owner)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new IntervalProbBand (getViewSize(), getListener(), getTag(), owner_);
+    }
+
+    // Column (note-value slot) of the current/ last drag, for the editor's
+    // valueChanged dispatch.
+    [[nodiscard]] int activeColumnIndex () const noexcept { return activeColumnIndex_; }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const bool enabled = clockEnabled();
+        const auto& weights = owner_->uiStateView().generate.subdivisionWeights;
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmaller);
+        dc->setFontColor (enabled ? kTextSecondary : kTextDisabled);
+        dc->drawString (enabled ? "INTERVAL PROBABILITY"
+                                : "INTERVAL PROBABILITY  (CLOCK MODE ONLY)",
+                        CRect (r.left, r.top, r.right, r.top + kCaptionH), kLeftText);
+
+        const double barTop = r.top + kCaptionH;
+        const double barBottom = r.bottom - kSubdivLabelH;
+        const double colW = r.getWidth() / static_cast<double> (state::kNumNoteValues);
+        constexpr double barW = 8.0;
+
+        for (int i = 0; i < state::kNumNoteValues; ++i)
+        {
+            const double cx = r.left + static_cast<double> (i) * colW;
+
+            dc->setFont (kNormalFontSmaller);
+            dc->setFontColor (enabled ? kTextSecondary : kTextDisabled);
+            dc->drawString (
+                state::kNoteValues[static_cast<std::size_t> (i)].name,
+                CRect (cx, barBottom, cx + colW, r.bottom), kCenterText);
+
+            const CRect track (cx + 2.0, barTop, cx + 2.0 + barW, barBottom);
+            dc->setFillColor (kSurface2);
+            dc->drawRect (track, kDrawFilled);
+
+            const double v = std::clamp (
+                static_cast<double> (weights[static_cast<std::size_t> (i)]), 0.0, 1.0);
+            if (v > 0.0)
+            {
+                const double fillH = (track.bottom - track.top) * v;
+                dc->setFillColor (enabled ? kAccent : kSurface3);
+                dc->drawRect (
+                    CRect (track.left, track.bottom - fillH, track.right, track.bottom),
+                    kDrawFilled);
+            }
+
+            // The grabbed column gets a bright outline while dragging, like
+            // the style-band paint overlay's live column.
+            if (dragging_ && activeColumnIndex_ == i)
+            {
+                dc->setFrameColor (kAccentBright);
+                dc->setLineWidth (1.0);
+                dc->drawRect (CRect (cx, barTop, cx + colW, barBottom), kDrawStroked);
+            }
+        }
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! clockEnabled() || ! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+        dragging_ = true;
+        applyAt (where);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        if (! dragging_)
+            return kMouseEventNotHandled;
+        applyAt (where);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (! clockEnabled() || event.deltaY == 0.0)
+            return;
+        const double colW = getViewSize().getWidth()
+                            / static_cast<double> (state::kNumNoteValues);
+        const int col = std::clamp (
+            static_cast<int> ((event.mousePosition.x - getViewSize().left) / colW),
+            0, state::kNumNoteValues - 1);
+        activeColumnIndex_ = col;
+        setValueNormalized (std::clamp (getValueNormalized()
+                                            + static_cast<float> (event.deltaY) * 0.05f,
+                                        0.0f, 1.0f));
+        invalid();
+        valueChanged();
+        event.consumed = true;
+    }
+
+private:
+    [[nodiscard]] bool clockEnabled () const noexcept
+    {
+        return owner_->uiStateView().generate.generateMode == state::TriggerMode::clock;
+    }
+
+    // Paint gesture: map a frame-space point to a column (by x) + value
+    // (top of the bar area = 1.0, bottom = 0.0), publish via valueChanged
+    // so the editor's single dispatch path owns the setter call.
+    void applyAt (const CPoint& where)
+    {
+        const CRect r = getViewSize();
+        const double colW = r.getWidth() / static_cast<double> (state::kNumNoteValues);
+        const int col = std::clamp (
+            static_cast<int> ((where.x - r.left) / colW), 0, state::kNumNoteValues - 1);
+        const double barTop = r.top + kCaptionH;
+        const double barBottom = r.bottom - kSubdivLabelH;
+        double v = (barBottom > barTop)
+                       ? 1.0 - (where.y - barTop) / (barBottom - barTop)
+                       : 0.0;
+        v = std::clamp (v, 0.0, 1.0);
+
+        activeColumnIndex_ = col;
+        setValueNormalized (static_cast<float> (v));
+        invalid();
+        valueChanged();
+    }
+
+    static constexpr double kCaptionH = 14.0;
+    NeditProcessor* owner_ = nullptr;
+    bool dragging_ = false;
+    int activeColumnIndex_ = 0;
 };
 
 // ── Performance-page tab strip (GENERATE / SEQUENCER / CONTROL / ───────
@@ -1673,7 +1980,11 @@ public:
         {
             // The Generate/Sequence band is drawn by the 9 sibling
             // StyleProbSlider columns layered over this card; here we only
-            // mark the band's bottom edge and hint at what sits below.
+            // mark the band's bottom edge and hint at what sits below
+            // (the Generate timing section has no hint -- it fills the
+            // space with the IntervalProbBand wrapper just above this text
+            // ... but that band lives in the SAME card, so the Generate
+            // page's hint must be empty; the Sequencer hint stays).
             const double bandBottom = r.top + kCardPad + kStyleBandH;
             dc->setDrawMode (kAliasing);
             dc->setFrameColor (kOutline);
@@ -1681,12 +1992,16 @@ public:
             dc->drawLine (CPoint (r.left + kCardPad, bandBottom),
                           CPoint (r.right - kCardPad, bandBottom));
 
-            dc->setFont (kNormalFontSmaller);
-            dc->setFontColor (kTextDisabled);
-            dc->drawString (hintBelow (tab),
-                            CRect (r.left + kCardPad, r.bottom - 18,
-                                   r.right - kCardPad, r.bottom - 8),
-                            kLeftText);
+            const char* hint = hintBelow (tab);
+            if (hint[0] != '\0')
+            {
+                dc->setFont (kNormalFontSmaller);
+                dc->setFontColor (kTextDisabled);
+                dc->drawString (hint,
+                                CRect (r.left + kCardPad, r.bottom - 18,
+                                       r.right - kCardPad, r.bottom - 8),
+                                kLeftText);
+            }
         }
         else
         {
@@ -1715,7 +2030,7 @@ private:
     [[nodiscard]] static const char* hintBelow (state::UiTab tab)
     {
         return tab == state::UiTab::generate
-                   ? "style parameters (pending)"
+                   ? ""   // the timing section fills the space below the band
                    : "step grid · pattern controls (pending)";
     }
 
@@ -1737,9 +2052,15 @@ private:
 }; // namespace ui
 
 //------------------------------------------------------------------------
-NeditEditor::NeditEditor (NeditProcessor* owner)
-    : VSTGUIEditor (owner, &kEditorRect), owner_ (owner)
+NeditEditor::NeditEditor (NeditProcessor* owner, Steinberg::ViewRect* size)
+    : VSTGUIEditor (owner, size != nullptr ? size : &kEditorRect), owner_ (owner)
 {
+    // Force the first interval-band repaint on the next sync even if the
+    // restored state equals the zero-filled default (weights are valid
+    // 0..1 values, so a sentinel that no real value can collide with is
+    // needed to make "never synced" distinguishable from "already synced
+    // to 0").
+    lastSubdivWeightsSync_.fill (-1.0f);
 }
 
 //------------------------------------------------------------------------
@@ -1932,6 +2253,57 @@ void NeditEditor::stylePitchButton()
 }
 
 //------------------------------------------------------------------------
+void NeditEditor::styleModeSegment (CTextButton* button, bool active)
+{
+    if (button == nullptr)
+        return;
+
+    if (active)
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kAccent);
+        stops.emplace (1., kAccent);
+        button->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kAccentPressed);
+        hlStops.emplace (1., kAccentPressed);
+        button->setGradientHighlighted (CGradient::create (hlStops));
+        button->setTextColor (kAccentOn);
+        button->setTextColorHighlighted (kAccentOn);
+        button->setFrameColor (kAccent);
+        button->setFrameColorHighlighted (kAccentPressed);
+    }
+    else
+    {
+        GradientColorStopMap stops;
+        stops.emplace (0., kSurface2);
+        stops.emplace (1., kSurface2);
+        button->setGradient (CGradient::create (stops));
+        GradientColorStopMap hlStops;
+        hlStops.emplace (0., kSurface3);
+        hlStops.emplace (1., kSurface3);
+        button->setGradientHighlighted (CGradient::create (hlStops));
+        button->setTextColor (kTextSecondary);
+        button->setTextColorHighlighted (kTextPrimary);
+        button->setFrameColor (kOutline);
+        button->setFrameColorHighlighted (kOutline);
+    }
+    button->setRoundRadius (2);
+}
+
+//------------------------------------------------------------------------
+// The Slice-Length/Clock mode switch: the segment matching
+// GenerateState.generateMode is accent-filled, the other quiet. The title
+// on each is fixed (the model state decides what's active, never the
+// pressed button value).
+void NeditEditor::styleModeButtons()
+{
+    const auto mode = owner_->uiStateView().generate.generateMode;
+    styleModeSegment (modeSlBtn_, mode == state::TriggerMode::sliceLength);
+    styleModeSegment (modeClockBtn_, mode == state::TriggerMode::clock);
+}
+
+//------------------------------------------------------------------------
 // Grain size/speed sliders are only meaningful while rendering with the
 // granular time-stretch engine; otherwise they are dimmed and inert.
 void NeditEditor::setGrainEnabled (bool enabled)
@@ -2104,6 +2476,25 @@ void NeditEditor::syncTabBar()
         }
     if (showProbs)
         syncStyleProbs();
+
+    // The Generate-page timing section is Generate-only.
+    const bool showTiming = (tab == static_cast<int> (state::UiTab::generate));
+    if (modeSlBtn_ != nullptr)
+        modeSlBtn_->setVisible (showTiming);
+    if (modeClockBtn_ != nullptr)
+        modeClockBtn_->setVisible (showTiming);
+    if (resetBarsMenu_ != nullptr)
+        resetBarsMenu_->setVisible (showTiming);
+    if (clockRefMenu_ != nullptr)
+        clockRefMenu_->setVisible (showTiming);
+    if (tapeScopeMenu_ != nullptr)
+        tapeScopeMenu_->setVisible (showTiming);
+    if (filterScopeMenu_ != nullptr)
+        filterScopeMenu_->setVisible (showTiming);
+    if (intervalBand_ != nullptr)
+        intervalBand_->setVisible (showTiming);
+    if (showTiming)
+        syncGenerateControls();
 }
 
 //------------------------------------------------------------------------
@@ -2146,14 +2537,17 @@ void NeditEditor::syncStyleProbs()
 
     // Mini dropdowns: same normalized mapping (a discrete value sits
     // exactly on index/(numOptions-1)), pushed as the raw entry index via
-    // COptionMenu::setValue so the valueChanged echo stays silent.
+    // COptionMenu::setValue so the valueChanged echo stays silent. (The
+    // sweep-scope selectors now live in the Generate timing ribbon instead
+    // of the columns, so every menu here is a StyleParamId.)
     for (auto& column : paramMiniMenus_)
         for (auto* menu : column)
         {
             if (menu == nullptr)
                 continue;
+            const auto tag = menu->getTag();
             const float norm = toNormalized (owner_->uiStateView(),
-                                             static_cast<std::uint32_t> (menu->getTag()));
+                                             static_cast<std::uint32_t> (tag));
             if (std::abs (norm - menu->getValueNormalized()) > 1e-3f)
             {
                 const int index = static_cast<int> (
@@ -2162,6 +2556,113 @@ void NeditEditor::syncStyleProbs()
                 menu->invalid();
             }
         }
+}
+
+//------------------------------------------------------------------------
+//------------------------------------------------------------------------
+// Pure per-mode grey contract for the Generate timing option menus, shared
+// by syncGenerateControls and unit tests.
+TimingGreyState timingGreyState (state::TriggerMode mode) noexcept
+{
+    const bool sl = (mode == state::TriggerMode::sliceLength);
+    TimingGreyState g;
+    g.resetBarsGreyed = ! sl;
+    g.clockRefGreyed = sl;
+    g.tapeScopeGreyed = sl;
+    g.filterScopeGreyed = sl;
+    return g;
+}
+
+//------------------------------------------------------------------------
+// Generate-page timing: full-width SL|Clock mode switch, the four option
+// menus (reset bars / clock reference / recalled Tape Stop + Filter sweep
+// scopes) and the Clock subdivision band, pushed state->controls on
+// change. The inactive mode's option column is greyed (disabled by mode
+// selection); the interval band only paints in Clock mode.
+void NeditEditor::syncGenerateControls()
+{
+    if (modeSlBtn_ == nullptr || modeClockBtn_ == nullptr
+        || resetBarsMenu_ == nullptr || clockRefMenu_ == nullptr
+        || tapeScopeMenu_ == nullptr || filterScopeMenu_ == nullptr
+        || intervalBand_ == nullptr)
+        return;
+
+    const auto& gen = owner_->uiStateView().generate;
+    const auto mode = gen.generateMode;
+
+    if (mode != lastGenerateModeSync_)
+    {
+        lastGenerateModeSync_ = mode;
+        styleModeButtons();
+        intervalBand_->invalid();
+    }
+
+    if (gen.resetBarsIndex != lastResetBarsSync_)
+    {
+        lastResetBarsSync_ = gen.resetBarsIndex;
+        resetBarsMenu_->setValue (static_cast<float> (gen.resetBarsIndex));
+        resetBarsMenu_->invalid();
+    }
+
+    if (gen.clockReferenceIndex != lastClockRefSync_)
+    {
+        lastClockRefSync_ = gen.clockReferenceIndex;
+        clockRefMenu_->setValue (static_cast<float> (gen.clockReferenceIndex));
+        clockRefMenu_->invalid();
+    }
+
+    // Recalled sweep-scope selectors (GenerateState.tapeStopScope /
+    // filterSweepScope), moved off the style columns into the Clock
+    // options here; their menu index IS the WindowScope enum value.
+    const float tapeNorm = ui::scopeSelectorNorm (owner_->uiStateView(),
+                                                  kTagTapeStopScope);
+    if (tapeNorm != lastTapeScopeSync_)
+    {
+        lastTapeScopeSync_ = tapeNorm;
+        tapeScopeMenu_->setValue (tapeNorm);
+        tapeScopeMenu_->invalid();
+    }
+    const float filterNorm = ui::scopeSelectorNorm (owner_->uiStateView(),
+                                                    kTagFilterSweepScope);
+    if (filterNorm != lastFilterScopeSync_)
+    {
+        lastFilterScopeSync_ = filterNorm;
+        filterScopeMenu_->setValue (filterNorm);
+        filterScopeMenu_->invalid();
+    }
+
+    // Mode-dependent availability: reset bars rides with Slice Length; the
+    // Clock options (reference, Tape Stop scope, Filter sweep scope) ride
+    // with Clock. Each control is enabled EXACTLY when its mode is selected
+    // (the counterpart menu greys under the other mode).
+    const auto grey = timingGreyState (mode);
+    if (lastResetBarsGreyed_ != grey.resetBarsGreyed)
+    {
+        lastResetBarsGreyed_ = grey.resetBarsGreyed;
+        resetBarsMenu_->setGreyed (grey.resetBarsGreyed);
+    }
+    if (lastClockRefGreyed_ != grey.clockRefGreyed)
+    {
+        lastClockRefGreyed_ = grey.clockRefGreyed;
+        clockRefMenu_->setGreyed (grey.clockRefGreyed);
+    }
+    if (lastTapeScopeGreyed_ != grey.tapeScopeGreyed)
+    {
+        lastTapeScopeGreyed_ = grey.tapeScopeGreyed;
+        tapeScopeMenu_->setGreyed (grey.tapeScopeGreyed);
+    }
+    if (lastFilterScopeGreyed_ != grey.filterScopeGreyed)
+    {
+        lastFilterScopeGreyed_ = grey.filterScopeGreyed;
+        filterScopeMenu_->setGreyed (grey.filterScopeGreyed);
+    }
+
+    if (! std::equal (gen.subdivisionWeights.begin(), gen.subdivisionWeights.end(),
+                      lastSubdivWeightsSync_.begin()))
+    {
+        lastSubdivWeightsSync_ = gen.subdivisionWeights;
+        intervalBand_->invalid();
+    }
 }
 
 //------------------------------------------------------------------------
@@ -2491,11 +2992,13 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     // horizontal mini-slider row directly under their caption, discrete
     // params a mini dropdown whose caption row IS the control (rows from
     // columnParamsFor -- Subdivide/Volume-Mode skipped, swept params pair
-    // with their *Mode, Volume last). Tags = the StyleParamId (=
-    // ParameterSurface id < 1000), so edits route through the host edit
-    // protocol. Added after the prob sliders, so they sit on top for
-    // hit-testing; the columns' caption rows line up via the shared kProb*
-    // geometry and the same captionRowLocalY the columns draw with.
+    // with their *Mode, Volume last). Tags = the StyleParamId (< 1000 =
+    // ParameterSurface id), so edits route through the host edit
+    // protocol; the style-scoped scope selectors use editor-local tags
+    // (>= 1000) with publish-only setters. Added after the prob sliders,
+    // so they sit on top for hit-testing; the columns' caption rows line
+    // up via the shared kProb* geometry and the same captionRowLocalY the
+    // columns draw with.
     for (auto& column : paramMiniSliders_)
         column.fill (nullptr);
     for (auto& column : paramMiniMenus_)
@@ -2520,8 +3023,7 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
                     CRect (listX, bandTop + prob->captionRowLocalY (i),
                            listX + listW,
                            bandTop + prob->captionRowLocalY (i) + kProbRowH),
-                    this, static_cast<VSTGUI_INT32> (static_cast<std::uint32_t> (row.id)),
-                    col);
+                    this, row.tag, col);
                 frame->addView (menu);
                 paramMiniMenus_[static_cast<std::size_t> (col)]
                                [i] = menu;
@@ -2532,13 +3034,88 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
             auto* mini = new ui::ParamMiniSlider (
                 CRect (listX, bandTop + localY, listX + listW,
                        bandTop + localY + kProbSliderRowH),
-                this, static_cast<VSTGUI_INT32> (static_cast<std::uint32_t> (row.id)),
-                col, paramReadoutFormat (row.id));
+                this, row.tag,
+                col, paramReadoutFormat (row.paramId()));
             frame->addView (mini);
             paramMiniSliders_[static_cast<std::size_t> (col)]
                              [i] = mini;
         }
     }
+
+    // ── Generate-page Timing section: mode switch → per-mode options → ──
+    // Clock subdivision weights, all spanning the full panel width. The
+    // sweep scopes recalled from the style columns (Tape Stop + Filter)
+    // sit with the Clock options. These controls only exist on the
+    // Generate page; hidden elsewhere by syncTabBar.
+    const double panelInnerBottom = kEditorHeight - kPanelGutter - kCardPad;
+
+    // Mode switch: Slice Length vs Clock as a full-width stick of two
+    // segments (1px seam). The active segment is accent-filled; the other
+    // stays a quiet outlined button (styleModeSegment/Buttons).
+    const double modeY = bandTop + kStyleBandH + kTimingGap;
+    const double segW = (bandW - 1.0) / 2.0;
+    auto* modeSl = new CTextButton (
+        CRect (bandLeft, modeY, bandLeft + segW, modeY + kTimingModeBtnH),
+        this, kTagGenerateModeSL, "SLICE LENGTH");
+    auto* modeClock = new CTextButton (
+        CRect (bandLeft + segW + 1.0, modeY, bandLeft + bandW,
+               modeY + kTimingModeBtnH),
+        this, kTagGenerateModeClock, "CLOCK");
+    frame->addView (modeSl);
+    frame->addView (modeClock);
+    modeSlBtn_ = modeSl;
+    modeClockBtn_ = modeClock;
+    styleModeButtons();
+
+    // Per-mode option row, disabled by the mode selection (greyed while
+    // the OTHER mode is active): Slice Length owns "RESET EVERY"; Clock
+    // owns the reference note value and the recalled Tape Stop / Filter
+    // sweep scopes (the engine honors the scopes only in Clock). Entries
+    // are built from the state palettes after construction (the generic
+    // ParamMiniMenu option path); the scope menus auto-fill from
+    // paramRowOptionName via their tags.
+    const double optY = modeY + kTimingModeBtnH + kTimingOptionsGap;
+    const double menuW = (bandW - 3.0 * kTimingMenuGap) / 4.0;
+    const auto menuRect = [&] (int i) {
+        const double x = bandLeft + static_cast<double> (i) * (menuW + kTimingMenuGap);
+        return CRect (x, optY, x + menuW, optY + kTimingMenuH);
+    };
+
+    auto* resetBars = new ui::ParamMiniMenu (menuRect (0), this, kTagResetBars,
+                                             0, "RESET EVERY");
+    for (int b : state::kResetBarsValues)
+    {
+        char label[24];
+        std::snprintf (label, sizeof (label), "%d %s", b, b == 1 ? "bar" : "bars");
+        resetBars->addEntry (label);
+    }
+    auto* clockRef = new ui::ParamMiniMenu (menuRect (1), this, kTagClockReference,
+                                            0, "CLOCK REFERENCE");
+    for (const auto& v : state::kNoteValues)
+        clockRef->addEntry (v.name);
+    auto* tapeScope = new ui::ParamMiniMenu (menuRect (2), this, kTagTapeStopScope,
+                                             0, "TAPE STOP SCOPE");
+    auto* filterScope = new ui::ParamMiniMenu (menuRect (3), this, kTagFilterSweepScope,
+                                               0, "FILTER SWEEP SCOPE");
+    frame->addView (resetBars);
+    frame->addView (clockRef);
+    frame->addView (tapeScope);
+    frame->addView (filterScope);
+    resetBarsMenu_ = resetBars;
+    clockRefMenu_ = clockRef;
+    tapeScopeMenu_ = tapeScope;
+    filterScopeMenu_ = filterScope;
+    syncGenerateControls();   // seed greys + scope values before first paint
+
+    // Clock subdivision weights: one thin probability bar per note value,
+    // filling the panel width below the options. Clock-mode only (the band
+    // greys under Slice Length).
+    const double bandTopT = optY + kTimingMenuH + kTimingGap;
+    auto* intervalBand = new ui::IntervalProbBand (
+        CRect (bandLeft, bandTopT, bandLeft + bandW, panelInnerBottom),
+        this, kTagIntervalProbBand, owner_);
+    frame->addView (intervalBand);
+    intervalBand_ = intervalBand;
 
     syncTabBar();   // seed the strip + panel from the restored activeTab
 
@@ -2565,6 +3142,13 @@ void PLUGIN_API NeditEditor::close()
     grainSpeedSlider_ = nullptr;
     tabBar_ = nullptr;
     panelView_ = nullptr;
+    modeSlBtn_ = nullptr;
+    modeClockBtn_ = nullptr;
+    resetBarsMenu_ = nullptr;
+    clockRefMenu_ = nullptr;
+    tapeScopeMenu_ = nullptr;
+    filterScopeMenu_ = nullptr;
+    intervalBand_ = nullptr;
     styleProbSliders_.fill (nullptr);
     for (auto& column : paramMiniSliders_)
         column.fill (nullptr);
@@ -2722,6 +3306,80 @@ void NeditEditor::valueChanged (CControl* control)
         owner_->setActiveTab (static_cast<state::UiTab> (ord));
         if (panelView_)
             panelView_->invalid();   // the panel area re-renders per page
+        return;
+    }
+
+    // Style-scoped sweep scopes (GenerateState, publish-only like the
+    // toolbar structural edits -- NOT host params). COptionMenu value is
+    // the entry index 0 = wholeWindow / 1 = perTick (WindowScope's
+    // numeric values).
+    if (control->getTag() == kTagTapeStopScope)
+    {
+        const int idx = static_cast<int> (std::lround (control->getValue()));
+        owner_->setTapeStopScope (idx <= 0 ? state::WindowScope::wholeWindow
+                                           : state::WindowScope::perTick);
+        return;
+    }
+
+    if (control->getTag() == kTagFilterSweepScope)
+    {
+        const int idx = static_cast<int> (std::lround (control->getValue()));
+        owner_->setFilterSweepScope (idx <= 0 ? state::WindowScope::wholeWindow
+                                              : state::WindowScope::perTick);
+        return;
+    }
+
+    // Generate-page timing. The mode switch is a two-segment toggle styled
+    // like the pitch-mode button: pressedEdge + the live model state decide
+    // the new mode (never the button value, which double-echoes as a
+    // CTextButton release), and re-selecting the active mode is a no-op.
+    if (control->getTag() == kTagGenerateModeSL
+        || control->getTag() == kTagGenerateModeClock)
+    {
+        const auto mode = control->getTag() == kTagGenerateModeSL
+                              ? state::TriggerMode::sliceLength
+                              : state::TriggerMode::clock;
+        // CRITICAL: update the press-edge latch on EVERY valueChanged echo,
+        // BEFORE the mode guard. CTextButton kick-style release echoes
+        // [valueChanged(max), valueChanged(min)]; the min echo is what resets
+        // the latch. If it short-circuits on "mode already selected", the
+        // latch stays true and the NEXT physical click's max echo is
+        // swallowed as a false edge -- the first click of every later change
+        // does nothing (alternating one-good/one-dead clicks).
+        const bool edge = pressedEdge (*control, control->getTag() == kTagGenerateModeSL
+                                                      ? lastModeSlPressed_
+                                                      : lastModeClockPressed_);
+        if (edge && mode != owner_->uiStateView().generate.generateMode)
+        {
+            owner_->setGenerateMode (mode);
+            // Refresh segment styling, per-mode greys AND the interval band
+            // in the same call stack (the mode-change branch in
+            // syncGenerateControls fires because lastGenerateModeSync_
+            // still holds the old mode), so the section reacts on the FIRST
+            // click -- nothing waits for the idle tick.
+            syncGenerateControls();
+        }
+        return;
+    }
+
+    if (control->getTag() == kTagResetBars)
+    {
+        owner_->setResetBars (static_cast<int> (std::lround (control->getValue())));
+        return;
+    }
+
+    if (control->getTag() == kTagClockReference)
+    {
+        owner_->setClockReference (static_cast<int> (std::lround (control->getValue())));
+        return;
+    }
+
+    if (control->getTag() == kTagIntervalProbBand)
+    {
+        auto* band = dynamic_cast<ui::IntervalProbBand*> (control);
+        if (band != nullptr)
+            owner_->setSubdivisionWeight (band->activeColumnIndex(),
+                                          control->getValueNormalized());
         return;
     }
 
@@ -2920,6 +3578,7 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         // user edit.
         syncToolBarControls();
         syncTabBar();
+        syncGenerateControls();   // timing modes/options/interval weights
 
         if (sampleChanged && loadBtn_)
         {

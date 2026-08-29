@@ -39,18 +39,34 @@ class PanelView;
 class StyleProbSlider;
 class ParamMiniSlider;
 class ParamMiniMenu;
+class IntervalProbBand;
 
 } // namespace ui
+
+// Per-mode enabled/grey mapping for the Generate timing option menus. Each
+// menu is enabled EXACTLY when its mode is selected: RESET EVERY rides Slice
+// Length; CLOCK REFERENCE + the two sweep scopes ride Clock. Pure + free so
+// the mode->grey contract is unit-testable without a widget tree.
+struct TimingGreyState
+{
+    bool resetBarsGreyed = false;
+    bool clockRefGreyed = false;
+    bool tapeScopeGreyed = false;
+    bool filterScopeGreyed = false;
+};
+[[nodiscard]] TimingGreyState timingGreyState (state::TriggerMode mode) noexcept;
 
 class NeditEditor : public Steinberg::Vst::VSTGUIEditor,
                     public VSTGUI::IControlListener
 {
 public:
-    explicit NeditEditor (NeditProcessor* owner);
+    explicit NeditEditor (NeditProcessor* owner, Steinberg::ViewRect* size = nullptr);
 
     // Control tags. Values < 1000 are ParamIDs routed to the host edit
     // protocol; the rest are editor-local actions.
     static constexpr std::int32_t kTagLoadSample = 1000;
+    static constexpr std::int32_t kTagGenerateModeSL = 1022;
+    static constexpr std::int32_t kTagGenerateModeClock = 1023;
 
     //--- VSTGUIEditor --------------------------------------------------------
     bool PLUGIN_API open (void* parent, const VSTGUI::PlatformType& platformType) override;
@@ -90,7 +106,12 @@ void runFileSelector();
     void setGrainEnabled (bool enabled);
     void syncTabBar();
     void syncStyleProbs();
+    void syncGenerateControls();
     void syncToolBarControls();
+    // Slice-Length/Clock mode-switch segment styling (active = accent fill,
+    // like the pitch-mode toggle). styleModeSegment is the per-button rule.
+    void styleModeButtons();
+    void styleModeSegment (VSTGUI::CTextButton* button, bool active);
     // Returns true only on the RISING EDGE of a CTextButton press. The
     // default kKickStyle fires valueChanged once with the flipped value
     // (max) and once after resetting to min — the rising edge is the one
@@ -119,6 +140,13 @@ void runFileSelector();
     ui::GrainSlider* grainSpeedSlider_ = nullptr; // toolbar grain speed (stretch only)
     ui::TabBar* tabBar_ = nullptr;         // performance-page tab strip
     ui::PanelView* panelView_ = nullptr;   // panel area below the tab bar
+    VSTGUI::CTextButton* modeSlBtn_ = nullptr;      // Generate timing mode switch
+    VSTGUI::CTextButton* modeClockBtn_ = nullptr;
+    ui::ParamMiniMenu* resetBarsMenu_ = nullptr;    // Slice Length -> reset bars
+    ui::ParamMiniMenu* clockRefMenu_ = nullptr;     // Clock -> reference note value
+    ui::ParamMiniMenu* tapeScopeMenu_ = nullptr;    // Clock -> Tape Stop scope
+    ui::ParamMiniMenu* filterScopeMenu_ = nullptr;  // Clock -> Filter sweep scope
+    ui::IntervalProbBand* intervalBand_ = nullptr;  // Clock -> subdivision weights
     std::array<ui::StyleProbSlider*, state::kNumPlaybackStyles> styleProbSliders_ {};
 
     // Per-style-column param mini-sliders and mini dropdowns, indexed
@@ -157,6 +185,20 @@ void runFileSelector();
     bool lastPitchPressed_ = false;  // CTextButton press-edge latch
     int lastTabSync_ = -1;           // performance-page tab (state -> bar)
     std::array<float, state::kNumPlaybackStyles> lastStyleWeightsSync_ {};
+
+    // Generate-page timing sync dedup (state -> controls) + press edges.
+    state::TriggerMode lastGenerateModeSync_ = state::TriggerMode::sliceLength;
+    int lastResetBarsSync_ = -1;
+    int lastClockRefSync_ = -1;
+    bool lastResetBarsGreyed_ = false;
+    bool lastClockRefGreyed_ = false;
+    bool lastTapeScopeGreyed_ = false;
+    bool lastFilterScopeGreyed_ = false;
+    float lastTapeScopeSync_ = -1.0f;     // recalled scope menu values
+    float lastFilterScopeSync_ = -1.0f;
+    bool lastModeSlPressed_ = false;      // mode-switch press-edge latches
+    bool lastModeClockPressed_ = false;
+    std::array<float, state::kNumNoteValues> lastSubdivWeightsSync_ {};
 
     // Async native file dialog. Runs on a detached background thread so the
     // UI/run-loop thread keeps servicing X events (a blocking dialog on the

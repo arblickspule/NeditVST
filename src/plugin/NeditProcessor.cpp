@@ -509,6 +509,67 @@ void NeditProcessor::setGrainSpeed (float speed)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setTapeStopScope (state::WindowScope scope)
+{
+    if (scope != state::WindowScope::wholeWindow && scope != state::WindowScope::perTick)
+        return;
+    uiState_.generate.tapeStopScope = scope;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setFilterSweepScope (state::WindowScope scope)
+{
+    if (scope != state::WindowScope::wholeWindow && scope != state::WindowScope::perTick)
+        return;
+    uiState_.generate.filterSweepScope = scope;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setGenerateMode (state::TriggerMode mode)
+{
+    if (mode != state::TriggerMode::sliceLength && mode != state::TriggerMode::clock)
+        return;   // Generate hosts only its two generative sub-modes
+    uiState_.generate.generateMode = mode;
+    // The Generate sub-modes ARE the top-level sliceLength/clock trigger
+    // modes (the enum has no separate "generate" wrapper; the scheduler
+    // dispatches on triggerMode), so the same switch must drive the
+    // scheduler-facing mode -- otherwise flipping the ribbon would change
+    // UI-only state and the audio would keep the old mode.
+    uiState_.triggerMode = mode;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setResetBars (int index)
+{
+    if (index < 0 || index >= static_cast<int> (state::kResetBarsValues.size()))
+        return;
+    uiState_.generate.resetBarsIndex = index;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setClockReference (int index)
+{
+    if (! state::isValidNoteValueIndex (index))
+        return;
+    uiState_.generate.clockReferenceIndex = index;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setSubdivisionWeight (int noteIndex, float weight)
+{
+    if (! state::isValidNoteValueIndex (noteIndex))
+        return;
+    uiState_.generate.subdivisionWeights[static_cast<std::size_t> (noteIndex)]
+        = std::clamp (weight, 0.0f, 1.0f);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 void NeditProcessor::rebuildSlicesPreservingWeights()
 {
     // Snapshot the OLD slices + their painted weights (kept parallel).
