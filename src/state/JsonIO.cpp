@@ -316,6 +316,7 @@ std::string toJson (const PluginState& state)
             { "fadeOutMs", r.fadeOutMs },
             { "pitchMode", static_cast<int> (r.pitchMode) },
             { "grainSizeMs", r.grainSizeMs },
+            { "grainSpeed", r.grainSpeed },
             { "grainWindowShape", static_cast<int> (r.grainWindowShape) },
             { "pitchShiftSemitones", r.pitchShiftSemitones },
             { "beatQuantizeTimeStretch", r.beatQuantizeTimeStretch },
@@ -461,6 +462,7 @@ std::optional<PluginState> fromJson (const std::string& text)
         readField (*it, "fadeOutMs", r.fadeOutMs);
         readEnumField (*it, "pitchMode", r.pitchMode);
         readField (*it, "grainSizeMs", r.grainSizeMs);
+        readField (*it, "grainSpeed", r.grainSpeed);
         readEnumField (*it, "grainWindowShape", r.grainWindowShape);
         readField (*it, "pitchShiftSemitones", r.pitchShiftSemitones);
         readField (*it, "beatQuantizeTimeStretch", r.beatQuantizeTimeStretch);

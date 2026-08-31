@@ -26,6 +26,35 @@ inline constexpr int kMaxOutputChannels = 8;
         : state::PlaybackStyle::forward;
 }
 
+// Slice Length reset-window length in beats for a (possibly unsanitized)
+// bars index. The scheduler consumes state snapshots as given, and every
+// OTHER state-derived index in this file is range-guarded before use --
+// this one is too: out-of-range indices clamp into the table instead of a
+// wild read of a 4-entry constexpr array (and the result is a divisor, so
+// a garbage 0 would cascade into floor(x / 0.0) -> UB int64 cast).
+[[nodiscard]] double resetWindowBeats (int barsIndex) noexcept
+{
+    const auto last = static_cast<int> (state::kResetBarsValues.size()) - 1;
+    const int clamped = std::clamp (barsIndex, 0, last);
+    return static_cast<double> (
+               state::kResetBarsValues[static_cast<std::size_t> (clamped)])
+         * 4.0;   // 4/4
+}
+
+// Clock-mode outer window length in beats. Invalid palette indices fall
+// back to the default reference (quarter note) INSTEAD of noteValueBeats'
+// 0.0 sentinel: windowBeats is a divisor at both call sites, and
+// floor(x / 0.0) casts inf/NaN to int64 -- UB. The sibling interval
+// divisions (pattern switch / performance recall) guard with
+// max(.., 1e-6) for exactly the same reason.
+[[nodiscard]] double clockWindowBeats (int index) noexcept
+{
+    const double beats = noteValueBeats (index);
+    return beats > 0.0
+        ? beats
+        : state::kNoteValues[static_cast<std::size_t> (state::kNoteValue4n)].beats;
+}
+
 } // namespace
 
 void VoiceScheduler::prepare (double hostSampleRate)
@@ -77,13 +106,14 @@ int VoiceScheduler::pickWeightedIndex (const float* weights, std::size_t count)
 
 int VoiceScheduler::pickWeightedSlice (const Run& r)
 {
-    const auto count = std::min<std::size_t> (r.slices.size(),
-                                              r.generate.sliceWeights.size());
+    const auto& weights = (r.sliceWeights != nullptr) ? *r.sliceWeights
+                                                      : r.generate.sliceWeights;
+    const auto count = std::min<std::size_t> (r.slices.size(), weights.size());
 
     if (count == 0)
         return -1;
 
-    return pickWeightedIndex (r.generate.sliceWeights.data(), count);
+    return pickWeightedIndex (weights.data(), count);
 }
 
 state::PlaybackStyle VoiceScheduler::pickWeightedStyle (const Run& r)
@@ -196,10 +226,18 @@ void VoiceScheduler::process (const state::PluginState& state,
                               const TransportFrame& transport,
                               float* const* outAdd,
                               int numOutChannels,
-                              int numSamples)
+                              int numSamples,
+                              const std::vector<float>* sliceWeightsOverride)
 {
     if (numSamples <= 0 || outAdd == nullptr || numOutChannels <= 0)
         return;
+
+    // Drain the cross-thread pattern-release request FIRST: no
+    // SequencerView raw pointers into recalledPattern_ exist between
+    // blocks, so this is the one safe place to destroy it (see
+    // requestWorkingPatternRelease).
+    if (workingPatternReleaseRequested_.exchange (false, std::memory_order_acq_rel))
+        recalledPattern_.reset();
 
     const double hostSampleRate = ctx.hostSampleRate;
 
@@ -219,6 +257,7 @@ void VoiceScheduler::process (const state::PluginState& state,
     ctx.timeStretchMode = state.render.pitchMode == state::PitchMode::timeStretch;
     ctx.grainSizeHostSamples = static_cast<double> (state.render.grainSizeMs) / 1000.0
                              * hostSampleRate;
+    ctx.grainSpeed = static_cast<double> (state.render.grainSpeed);
     ctx.outputHopSamples = ctx.grainSizeHostSamples * 0.5;  // fixed 50% overlap
     ctx.sourceHopSamples = ctx.outputHopSamples * srConversion * repitch;
     ctx.grainWindowShape = state.render.grainWindowShape == state::GrainWindowShape::hann
@@ -232,6 +271,7 @@ void VoiceScheduler::process (const state::PluginState& state,
     Run r { state,
             state.generate,
             slices,
+            sliceWeightsOverride,
             ctx,
             transport,
             (transport.bpm / 60.0) / hostSampleRate,
@@ -291,13 +331,10 @@ void VoiceScheduler::runSliceLength (Run& r)
         // Just entered the mode or transport just started: snap to the
         // reset window we're currently inside and force a fresh pick
         // aligned to it right away.
-        const double resetWindowBeats =
-            static_cast<double> (
-                state::kResetBarsValues[static_cast<std::size_t> (generate.resetBarsIndex)])
-            * 4.0;  // 4/4
+        const double windowBeats = resetWindowBeats (generate.resetBarsIndex);
         const auto windowIndex = static_cast<std::int64_t> (
-            std::floor (r.transport.ppqStart / resetWindowBeats));
-        resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * resetWindowBeats;
+            std::floor (r.transport.ppqStart / windowBeats));
+        resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
         armedMode_ = ArmedMode::sliceLength;
         renderer_.clearPick();
     }
@@ -313,14 +350,10 @@ void VoiceScheduler::runSliceLength (Run& r)
         // at the next boundary.
         if (samplePpq >= resetWindowEndPpq_)
         {
-            const double resetWindowBeats =
-                static_cast<double> (
-                    state::kResetBarsValues[
-                        static_cast<std::size_t> (generate.resetBarsIndex)])
-                * 4.0;
+            const double windowBeats = resetWindowBeats (generate.resetBarsIndex);
             const auto windowIndex = static_cast<std::int64_t> (
-                std::floor (samplePpq / resetWindowBeats));
-            resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * resetWindowBeats;
+                std::floor (samplePpq / windowBeats));
+            resetWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
             renderer_.clearPick();
         }
 
@@ -427,7 +460,7 @@ void VoiceScheduler::runClock (Run& r)
         // Just entered the mode or transport just started: snap to the
         // window we're currently inside and force an immediate pick on
         // the very first sample below.
-        const double windowBeats = noteValueBeats (generate.clockReferenceIndex);
+        const double windowBeats = clockWindowBeats (generate.clockReferenceIndex);
         const auto windowIndex = static_cast<std::int64_t> (
             std::floor (r.transport.ppqStart / windowBeats));
         clockWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
@@ -455,7 +488,7 @@ void VoiceScheduler::runClock (Run& r)
                     generate.styleWeights.data(), state::kNumPlaybackStyles);
                 clockPickValid_ = true;
 
-                const double windowBeats = noteValueBeats (generate.clockReferenceIndex);
+                const double windowBeats = clockWindowBeats (generate.clockReferenceIndex);
                 const auto windowIndex = static_cast<std::int64_t> (
                     std::floor (samplePpq / windowBeats));
                 clockWindowEndPpq_ = static_cast<double> (windowIndex + 1) * windowBeats;
@@ -619,11 +652,15 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     const auto cell = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (view.columns)
                     + static_cast<std::uint32_t> (step);
 
-    // fallbackParams + this cell's overrides. The fallback always comes
-    // from the WORKING sequencer state -- a recalled bank snapshot swaps
-    // grid/dimensions only (the original's recall never touched global
-    // parameter values either).
-    state::StyleParameters merged = r.state.sequencer.fallbackParams;
+    // Style-param base: GENERATE's params are the one surface the user edits
+    // (the per-style sliders/dropdowns on the Generate/Sequence tabs), so a
+    // sequencer note with no per-cell override should speak with those
+    // values. This is a READ coupling -- generate.styleParams is written by
+    // the UI alone (a single writer here, unlike the original's silent
+    // aliasing), and this cell's overrides still stack on top. The working
+    // state's own copy (sequencer.fallbackParams) stays serialized but is
+    // no longer the audio default for sequenced notes.
+    state::StyleParameters merged = r.state.generate.styleParams;
 
     if (const auto it = view.overrides->find (cell); it != view.overrides->end())
         for (const auto& [id, value] : it->second)
@@ -708,7 +745,14 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     }
     else
     {
-        pickLength = std::min (declaredLengthHostSamples, samplesUntilNextActiveStep);
+        // Fold/bounce styles define their own window: scratch plays exactly
+        // ONE full Rate cycle (matching Clock/Performance, where scratch
+        // pickLength == scratchCycleHostSamples), capped by the next active
+        // column so the anticipatory fade still applies. Every other style
+        // occupies its declared step duration.
+        pickLength = style == state::PlaybackStyle::scratch
+            ? std::min (prepared.scratchCycleHostSamples, samplesUntilNextActiveStep)
+            : std::min (declaredLengthHostSamples, samplesUntilNextActiveStep);
     }
 
     // The window clock spans THIS STEP'S whole declared duration (before
@@ -853,7 +897,7 @@ void VoiceScheduler::runSequenced (Run& r)
                 && currentStepIndex != sequencedLastStepIndex_)
             {
                 sequencedLastStepIndex_ = currentStepIndex;
-                playingStepIndex_ = currentStepIndex;
+                playingStepIndex_.store (currentStepIndex, std::memory_order_relaxed);
 
                 const int rowsEffective =
                     std::min (view.rows, static_cast<int> (r.slices.size()));

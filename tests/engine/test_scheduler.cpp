@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 using namespace nedit::engine;
@@ -80,6 +81,23 @@ struct Fixture
     void play (int numSamples)
     {
         run ({ true, 120.0, ppqCursor }, numSamples);
+        ppqCursor += static_cast<double> (numSamples) * ((120.0 / 60.0) / kRate);
+        totalProcessed += numSamples;
+    }
+
+    // Play while rendering into an explicit output buffer, so tests can
+    // inspect the actual waveform (envelope tails, fades) rather than just
+    // the pick counter.
+    void playInto (const TransportFrame& transport, int numSamples, std::vector<float>& sink)
+    {
+        sink.assign (static_cast<std::size_t> (numSamples), 0.0f);
+        const float* channels[] = { source.data() };
+        ctx.source = channels;
+        ctx.sourceChannels = 1;
+        ctx.sourceFrames = static_cast<std::int64_t> (source.size());
+
+        float* outs[] = { sink.data() };
+        scheduler.process (state, slices, ctx, transport, outs, 1, numSamples);
         ppqCursor += static_cast<double> (numSamples) * ((120.0 / 60.0) / kRate);
         totalProcessed += numSamples;
     }
@@ -255,6 +273,61 @@ TEST_CASE ("slice length: reset boundary cuts with anticipated fade", "[schedule
 
     fx.playQuiet (88196);          // quiet through ~88198
     fx.advanceToPicks (2, 6);      // boundary cut + rechain by 88201
+}
+
+TEST_CASE ("slice length: fade-out engages at slice end even with a decaying source", "[scheduler][sl][fade]")
+{
+    // A single-slice forward pick through the REAL trigger path, with a
+    // decaying source (the "natural envelope" that can mask a fade-out).
+    // Source ramps 1.0 -> 0.4 across the slice, so the slice's own end
+    // amplitude is audibly nonzero (0.4). A long fade-out must nevertheless
+    // pull the tail toward silence.
+    constexpr std::int64_t kLen = 44100;
+    constexpr std::int64_t kFadeWin = 4410;   // 100 ms @ 44.1 kHz
+
+    std::vector<float> sink;
+
+    // ----- control: no fade-out. The tail stays at the source's natural
+    // value (~0.4) until the pick ends. --------------------------------------
+    {
+        Fixture fx ({ Slice { 0, kLen } });
+        for (std::int64_t i = 0; i < kLen; ++i)
+            fx.source[static_cast<std::size_t> (i)] =
+                static_cast<float> (1.0 - 0.6 * (static_cast<double> (i) / static_cast<double> (kLen)));
+        fx.state.render.fadeInMs = 0.0f;
+        fx.state.render.fadeOutMs = 0.0f;
+
+        // The last sample that still belongs to pick 1 (the pick ends at
+        // position kLen-1, so its final rendered sample is at index kLen-2;
+        // the very next sample already chains pick 2 from the slice top).
+        const auto lastPick1 = static_cast<std::size_t> (kLen) - 2;
+
+        fx.playInto ({ true, 120.0, 0.0 }, static_cast<int> (kLen), sink);
+        const float tailValue = std::fabs (sink[lastPick1]);
+        CHECK_THAT (static_cast<double> (tailValue), WithinAbs (0.4, 0.02));
+
+        // ----- with a 100 ms fade-out: the tail ramps to ~0. ---------------
+        Fixture fx2 ({ Slice { 0, kLen } });
+        for (std::int64_t i = 0; i < kLen; ++i)
+            fx2.source[static_cast<std::size_t> (i)] =
+                static_cast<float> (1.0 - 0.6 * (static_cast<double> (i) / static_cast<double> (kLen)));
+        fx2.state.render.fadeInMs = 0.0f;
+        fx2.state.render.fadeOutMs = 100.0f;
+
+        fx2.playInto ({ true, 120.0, 0.0 }, static_cast<int> (kLen), sink);
+
+        const float fadedTail = std::fabs (sink[lastPick1]);
+
+        // The fade-out clearly engages: the tail is pulled far below the
+        // source's natural end amplitude (0.4) and below the no-fade control.
+        CHECK (fadedTail < 0.03f);
+        CHECK (fadedTail < tailValue * 0.1f);
+
+        // And the ramp is progressive across the fade window: the midpoint of
+        // the fade sits between the natural level and silence.
+        const auto halfWay = static_cast<std::size_t> (kLen) - static_cast<std::size_t> (kFadeWin / 2);
+        CHECK_THAT (static_cast<double> (std::fabs (sink[halfWay])), WithinAbs (0.2, 0.03));
+    }
 }
 
 TEST_CASE ("slice length: reset bars change takes effect at next boundary", "[scheduler][sl]")
@@ -529,7 +602,30 @@ TEST_CASE ("sequenced: next active column caps the note", "[scheduler][seq]")
     CHECK (fx.scheduler.renderer().currentPick().halfSliceFold);   // sequenced half-window
 }
 
-TEST_CASE ("sequenced: cell overrides beat the fallback parameters", "[scheduler][seq]")
+TEST_CASE ("sequenced: scratch plays one Rate cycle, not a grid step", "[scheduler][seq][scratch]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, static_cast<std::int8_t> (PlaybackStyle::scratch));
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+    const auto& pick = fx.scheduler.renderer().currentPick();
+
+    // Scratch must declare ONE full Rate cycle (default Rate = 16n), NOT the
+    // natural slice/step length (44100) the generic path used to hand it --
+    // that was the sequencer-only bug: the whip never completed within its
+    // window. With only column 0 filled the next active column is the
+    // pattern wrap (16 steps, 88200), so the cycle is not capped here.
+    const double expectedCycle = tempo::scratchCycleLengthHostSamples (
+        kNoteValue16n, 44100, 120.0, kRate, 1.0);
+    CHECK_THAT (pick.pickLengthHostSamples, WithinAbs (expectedCycle, 2.0));
+    CHECK (pick.useDurationGate);   // fold style ends by declared window
+    CHECK_FALSE (pick.pickLengthHostSamples > 44000.0);   // was the natural length
+}
+
+TEST_CASE ("sequenced: cell overrides beat the generated slider params", "[scheduler][seq]")
 {
     Fixture fx ({ Slice { 0, 44100 } });
     fx.state.triggerMode = TriggerMode::sequenced;
@@ -542,7 +638,29 @@ TEST_CASE ("sequenced: cell overrides beat the fallback parameters", "[scheduler
 
     const auto& params = fx.scheduler.renderer().currentPick().params;
     CHECK_THAT (params.grainSizeMs, WithinAbs (25.0f, 1e-6f));   // override wins
-    CHECK_THAT (params.grainSpeed, WithinAbs (fx.state.sequencer.fallbackParams.grainSpeed, 1e-6f));
+    CHECK_THAT (params.grainSpeed,
+                WithinAbs (fx.state.generate.styleParams.grainSpeed, 1e-6f));
+}
+
+TEST_CASE ("sequenced: notes without overrides use the generate (slider) params",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, static_cast<std::int8_t> (PlaybackStyle::flanger));
+
+    // A slider value on the Generate/Sequence bands flows into the cell:
+    // the pick's params come from generate.styleParams (the surface the UI
+    // edits), NOT the sequencer's own fallback copy.
+    fx.state.generate.styleParams.set (StyleParamId::flangerDelayMs, 8.5f);
+    fx.state.sequencer.fallbackParams.set (StyleParamId::flangerDelayMs, 1.0f);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& params = fx.scheduler.renderer().currentPick().params;
+    CHECK_THAT (params.flangerDelayMs, WithinAbs (8.5f, 1e-6f));
 }
 
 TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-step",
@@ -675,6 +793,80 @@ TEST_CASE ("sequenced: switching to an empty bank slot is a no-op", "[scheduler]
     // And the working pattern keeps looping as if nothing happened.
     fx.playQuiet (88130);
     fx.advanceToPicks (2, 10);
+}
+
+TEST_CASE ("sequenced: working-pattern release is deferred to the next block",
+           "[scheduler][seq]")
+{
+    // requestWorkingPatternRelease is callable from ANY thread; the drop
+    // itself happens at the top of the next process() block (destroying
+    // recalledPattern_ mid-block would free the containers SequencerView
+    // holds raw pointers into -- the use-after-free this API prevents).
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);
+    fx.state.sequencer.patternBank[60] = fx.makeBankPattern (60, { { 0, 7 } });
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    // Recall the bank pattern (immediate timing) and prove it is live:
+    // ITS column 7 fires (~38587.5 absolute).
+    fx.scheduler.requestPatternSwitch (60);
+    fx.play (2);
+    CHECK_FALSE (fx.scheduler.patternSwitchPending());
+    fx.playQuiet (38580 - fx.totalProcessed);
+    fx.advanceToPicks (2, 10);
+
+    // Drop the override. Applied on the NEXT process() call; the working
+    // grid (column 0 only) is live again, so its wrap pick fires at
+    // ~88200 absolute and nothing in between.
+    fx.scheduler.requestWorkingPatternRelease();
+    fx.playQuiet (88190 - fx.totalProcessed);
+    fx.advanceToPicks (3, 20);
+    CHECK (fx.scheduler.playingStepIndex() == 0);
+
+    // The recalled pattern's column 7 must NOT fire again (~126787 would
+    // be its next slot if the override still shadowed the working grid).
+    fx.playQuiet (127000 - fx.totalProcessed);
+}
+
+TEST_CASE ("scheduler: out-of-range state indices are guarded (hardening)",
+           "[scheduler]")
+{
+    // The scheduler consumes state snapshots as given. sanitize() normally
+    // guarantees these ranges, but a missed clamp upstream must not become
+    // an OOB read of the 4-entry kResetBarsValues table or a
+    // floor(x / 0.0) -> int64 cast (UB): both indices are now guarded at
+    // the point of use like every other state-derived index in the file.
+
+    SECTION ("slice length: resetBarsIndex clamps into the table")
+    {
+        Fixture fx ({ Slice { 0, 88200 } });
+        fx.state.generate.resetBarsIndex = -5;
+        fx.play (4096);
+        CHECK (fx.picks() > 0);
+
+        Fixture fx2 ({ Slice { 0, 88200 } });
+        fx2.state.generate.resetBarsIndex = 9999;
+        fx2.play (4096);
+        CHECK (fx2.picks() > 0);
+    }
+
+    SECTION ("clock: invalid clockReferenceIndex falls back to the 4n reference")
+    {
+        Fixture fx ({ Slice { 0, 88200 } });
+        fx.state.triggerMode = TriggerMode::clock;
+        fx.state.generate.clockReferenceIndex = 999;
+        fx.play (4096);
+        CHECK (fx.picks() > 0);
+
+        // The fallback window is a quarter note (22050 samples @ 120 bpm):
+        // the window clock the renderer sees must be finite and positive.
+        CHECK (std::isfinite (fx.scheduler.renderer().windowLengthSamples()));
+        CHECK (fx.scheduler.renderer().windowLengthSamples() > 0.0);
+    }
 }
 
 // ===========================================================================
@@ -939,4 +1131,50 @@ TEST_CASE ("control: trigger mode ignores note-offs entirely", "[scheduler][ctl]
     fx.scheduler.controlNoteOff (36, false);
     fx.play (2000);
     CHECK (fx.scheduler.renderer().hasPick());   // untouched by the note-off
+}
+
+TEST_CASE ("scheduler: sliceWeightsOverride replaces state weights in the picker")
+{
+    const std::vector<Slice> list {
+        {      0, 22050 },
+        {  22050, 44100 },
+        {  44100, 88200 },
+    };
+
+    // Baseline: the default path (fixture fills state weights with 1.0)
+    // starts picks across a bar.
+    Fixture base (list, 1);
+    base.play (88200);
+    REQUIRE (base.picks() > 0);
+
+    // Empty override = no pickable slices even though the STATE weights are
+    // all 1.0 -> proves the override is really consulted. The shell uses
+    // this to hand the scheduler a list clipped to the SOFT trim, so a
+    // clip-of-everything goes silent instead of playing outside the trim.
+    Fixture fx (list, 1);
+    std::vector<float> empty;
+    const float* channels[] = { fx.source.data() };
+    fx.ctx.source = channels;
+    fx.ctx.sourceChannels = 1;
+    fx.ctx.sourceFrames = static_cast<std::int64_t> (fx.source.size());
+    std::vector<float> sink (static_cast<std::size_t> (88200), 0.0f);
+    float* outs[] = { sink.data() };
+    fx.scheduler.process (fx.state, fx.slices, fx.ctx, { true, 120.0, 0.0 },
+                          outs, 1, 88200, &empty);
+    CHECK (fx.picks() == 0);
+
+    // Override matching the state weights reproduces the default pick count
+    // (same deterministic seed) -- the shell's clipped-slices + remapped-
+    // weights pair routes exactly like the untouched list.
+    Fixture match (list, 1);
+    const std::vector<float> sameWeights (list.size(), 1.0f);
+    const float* mChannels[] = { match.source.data() };
+    match.ctx.source = mChannels;
+    match.ctx.sourceChannels = 1;
+    match.ctx.sourceFrames = static_cast<std::int64_t> (match.source.size());
+    std::vector<float> mSink (static_cast<std::size_t> (88200), 0.0f);
+    float* mOuts[] = { mSink.data() };
+    match.scheduler.process (match.state, match.slices, match.ctx,
+                             { true, 120.0, 0.0 }, mOuts, 1, 88200, &sameWeights);
+    CHECK (match.picks() == base.picks());
 }

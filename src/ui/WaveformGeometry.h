@@ -10,7 +10,6 @@
 
 #pragma once
 
-#include <engine/Slice.h>
 #include <state/UiState.h>
 
 #include <cstdint>
@@ -36,9 +35,10 @@ struct WaveformColumn
 
 // Pixel x-positions (in [0, width]) of slice boundaries that fall inside
 // the visible window. One entry per boundary; boundaries outside the
-// window are skipped entirely.
+// window are skipped entirely. `boundaries` are absolute frame positions
+// (adjacent slices share a boundary, so it is emitted once).
 [[nodiscard]] std::vector<double> computeSliceMarkerX (
-    const std::vector<engine::Slice>& slices, std::int64_t rangeStart,
+    const std::vector<std::int64_t>& boundaries, std::int64_t rangeStart,
     std::int64_t rangeEnd, const state::UiState& ui, double width);
 
 // Pixel x of an arbitrary frame position (e.g. the playhead); not

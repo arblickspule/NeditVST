@@ -60,6 +60,40 @@ inline constexpr int kNoteValue16n = 7;
 inline constexpr int kNoteValue4n  = 13;
 inline constexpr int kNoteValue1n  = 19;
 
+// Subdivision-variant grouping of the palette, by the name suffix: plain
+// note values ("…n"), dotted ("…nd") and triplets ("…nt"). The editor's
+// "n=0 / nd=0 / nt=0" quick-clears zero whole groups at once; 128n is the
+// shortest plain value and has no dotted/triplet siblings.
+enum class NoteValueVariant : std::uint8_t
+{
+    plain = 0,
+    dotted = 1,
+    triplet = 2
+};
+
+inline constexpr std::array<NoteValueVariant, kNumNoteValues> kNoteValueVariant { {
+    NoteValueVariant::plain,    // 0:  128n
+    NoteValueVariant::plain,    // 1:  64n
+    NoteValueVariant::triplet,  // 2:  32nt
+    NoteValueVariant::dotted,   // 3:  64nd
+    NoteValueVariant::plain,    // 4:  32n
+    NoteValueVariant::triplet,  // 5:  16nt
+    NoteValueVariant::dotted,   // 6:  32nd
+    NoteValueVariant::plain,    // 7:  16n
+    NoteValueVariant::triplet,  // 8:  8nt
+    NoteValueVariant::dotted,   // 9:  16nd
+    NoteValueVariant::plain,    // 10: 8n
+    NoteValueVariant::triplet,  // 11: 4nt
+    NoteValueVariant::dotted,   // 12: 8nd
+    NoteValueVariant::plain,    // 13: 4n
+    NoteValueVariant::triplet,  // 14: 2nt
+    NoteValueVariant::dotted,   // 15: 4nd
+    NoteValueVariant::plain,    // 16: 2n
+    NoteValueVariant::triplet,  // 17: 1nt
+    NoteValueVariant::dotted,   // 18: 2nd
+    NoteValueVariant::plain     // 19: 1n
+} };
+
 [[nodiscard]] constexpr bool isValidNoteValueIndex (int index) noexcept
 {
     return index >= 0 && index < kNumNoteValues;
@@ -157,6 +191,13 @@ inline constexpr std::array<const char*, 3> kFilterTypeNames { {
 
 inline constexpr std::array<const char*, 2> kCurveShapeNames { {
     "Linear", "Exponential"
+} };
+
+// Pattern-recall timing (the Sequencer page's pattern-switch timing). Order
+// matches PatternSwitchTiming's numeric values (immediate 0, setInterval 1,
+// endOfPattern 2).
+inline constexpr std::array<const char*, 3> kPatternSwitchTimingNames { {
+    "Immediate", "Set Interval", "End of Pattern"
 } };
 
 // ---------------------------------------------------------------------------

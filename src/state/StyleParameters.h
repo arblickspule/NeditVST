@@ -7,8 +7,13 @@
 // an override -- a documented pitfall. In the rewrite each scope owns its
 // own StyleParameters instance:
 //
-//   * GenerateState.styleParams       -- the Generate tab's parameter panel
-//   * SequencerState.fallbackParams   -- what non-overridden steps use
+//   * GenerateState.styleParams       -- the Generate/Sequence tab slider
+//                                        surface; ALSO the merged base for
+//                                        a sequencer step without a per-cell
+//                                        override (so the on-screen sliders
+//                                        are what the sequencer speaks with)
+//   * SequencerState.fallbackParams   -- carried + serialized but no longer
+//                                        the audio default (lead-dev 2026-08-30)
 //   * ControlState.styleParams        -- Control mode's parameter panel
 //   * PerformanceSnapshot.params      -- one per performance slot (as before)
 //
@@ -118,8 +123,8 @@ struct StyleParameters
 
     // Scratch
     int scratchRate = kNoteValue16n;                     // note value index
-    EasingCurve scratchForwardCurve = EasingCurve::linear;
-    EasingCurve scratchBackwardCurve = EasingCurve::linear;
+    EasingCurve scratchForwardCurve = EasingCurve::easeInEaseOut;
+    EasingCurve scratchBackwardCurve = EasingCurve::easeInEaseOut;
 
     // Flanger
     float flangerDelayMs = 2.0f;                         // 0.5 .. 10

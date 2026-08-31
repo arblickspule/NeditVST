@@ -14,6 +14,20 @@ namespace {
         return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
     }
 
+    // NaN/inf-safe double -> source read index. Clamp in DOUBLE space
+    // FIRST: casting a non-representable double (NaN, +-inf, > int64 max)
+    // to int64 is itself UB, so a clamp applied after the cast guards
+    // nothing. The negated comparison routes NaN to 0 alongside negatives.
+    [[nodiscard]] std::int64_t clampedSourceIndex (double pos,
+                                                   std::int64_t numFrames) noexcept
+    {
+        if (! (pos >= 0.0))   // negatives AND NaN
+            return 0;
+        if (pos >= static_cast<double> (numFrames - 1))
+            return numFrames - 1;
+        return static_cast<std::int64_t> (pos);
+    }
+
     // Shared Sweep In/Out interpolation (Bitcrush, Flanger): mode 0 static,
     // 1 = set value -> extreme, 2 = extreme -> set value.
     [[nodiscard]] float sweptValue (float setValue, state::SweepMode mode, float extreme,
@@ -327,11 +341,18 @@ bool PickRenderer::renderSample (const BlockContext& ctx, float* const* outAdd, 
         // Granular path. Stretch always comes here (a character effect,
         // independent of the pitch-mode toggle) with its own parameters.
         double grainOutputHop = ctx.outputHopSamples;
+        // Grain Speed (global): a re-granulation density divisor on the
+        // rate-matching hop. At the default 1.0 the source hop marches at
+        // the playback rate exactly (clean pitch-preserving granular);
+        // higher values re-granulate the same source region more times
+        // (choppier character). Tape-stop keeps its own decel; the Stretch
+        // style's own grain speed overwrites below.
         double grainSourceHop = tapeStopPositionExhausted ? 0.0
                               : tapeStopActive ? (ctx.sourceHopSamples * tapeStopRateMultiplier)
-                              : pick.beatQuantized ? (ctx.outputHopSamples * ctx.srConversionRatio
-                                                      * pick.quantizedStretchRatio)
-                                                   : ctx.sourceHopSamples;
+                              : ((pick.beatQuantized ? (ctx.outputHopSamples * ctx.srConversionRatio
+                                                        * pick.quantizedStretchRatio)
+                                                     : ctx.sourceHopSamples)
+                                 / ctx.grainSpeed);
         double grainSize = ctx.grainSizeHostSamples;
         double grainPitchRatio = tapeStopActive ? (ctx.pitchRatio * tapeStopRateMultiplier)
                                                 : ctx.pitchRatio;
@@ -417,8 +438,7 @@ bool PickRenderer::renderSample (const BlockContext& ctx, float* const* outAdd, 
                                             bounceFoldLength, foldStyle,
                                             forwardCurve, backwardCurve);
 
-        const auto idx0 = std::clamp<std::int64_t> (static_cast<std::int64_t> (folded),
-                                                    0, ctx.sourceFrames - 1);
+        const auto idx0 = clampedSourceIndex (folded, ctx.sourceFrames);
         const auto idx1 = std::min<std::int64_t> (idx0 + 1, ctx.sourceFrames - 1);
         const auto frac = static_cast<float> (folded - static_cast<double> (idx0));
 

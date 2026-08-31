@@ -32,7 +32,8 @@
 //
 //   Sequenced: the step grid advances on per-sample ppq boundaries. A
 //     filled column triggers its cell's style DIRECTLY (no weighted draw)
-//     with fallbackParams + that cell's overrides merged; durations come
+//     with generate.styleParams (the UI slider surface) + that cell's
+//     overrides merged; durations come
 //     from the cell's DECLARED length (natural length in steps, or its
 //     Shift+drag extension), capped by the next active column anywhere in
 //     the grid (anticipatory fade). Subdivide slices a step into retriggers
@@ -66,6 +67,7 @@
 #include <state/PluginState.h>
 #include <state/Types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -92,13 +94,21 @@ public:
     // Deterministic draw sequence for tests (and reproducible sessions).
     void setSeed (std::uint32_t seed) noexcept;
 
-    // Process one audio block.
+// Process one audio block.
     //
     // ctx must have the raw source fields pre-filled by the caller
     // (source pointers/channels/frames, host + source sample rates);
     // every DERIVED field (playback rate, granular settings, fades) is
     // recomputed here from state + transport so callers cannot desync
     // from the state snapshot.
+    //
+    // By default the picker reads per-slice weights from
+    // state.generate.sliceWeights, assumed parallel to `slices`. When the
+    // caller TRANSLATES `slices` (e.g. the shell clips the shared list to
+    // the current SOFT trim so playback never reads audio outside it), it
+    // must pass a matching `sliceWeightsOverride` so indices stay aligned
+    // (nullptr = no override, default path). The override is POD scratch
+    // the caller holds, read but never stored here.
     //
     // outAdd receives the rendered audio (rendered additively).
     void process (const state::PluginState& state,
@@ -107,7 +117,8 @@ public:
                   const TransportFrame& transport,
                   float* const* outAdd,
                   int numOutChannels,
-                  int numSamples);
+                  int numSamples,
+                  const std::vector<float>* sliceWeightsOverride = nullptr);
 
     // Diagnostics / tests: how many picks have been started since
     // construction (never reset).
@@ -115,7 +126,10 @@ public:
 
     // The step index most recently crossed in Sequenced mode (-1 before
     // the first boundary). UI-facing playhead signal.
-    [[nodiscard]] int playingStepIndex() const noexcept { return playingStepIndex_; }
+    [[nodiscard]] int playingStepIndex() const noexcept
+    {
+        return playingStepIndex_.load (std::memory_order_relaxed);
+    }
 
     // MIDI dispatch entry point (Sequenced mode): arm a pattern-bank
     // recall. When the bank slot is empty the pending request is dropped
@@ -123,11 +137,21 @@ public:
     void requestPatternSwitch (int midiNote) noexcept;
     [[nodiscard]] bool patternSwitchPending() const noexcept { return pendingPatternNote_ >= 0; }
 
-    // Drop a previously applied pattern recall so scheduling reads
-    // state.sequencer's working grid again. The plugin shell calls this
-    // whenever a new state snapshot carries sequencer edits (with
-    // immutable snapshots, an applied recall must not shadow them).
-    void releaseWorkingPatternOverride() noexcept { recalledPattern_.reset(); }
+    // Request that a previously applied pattern recall be dropped so
+    // scheduling reads state.sequencer's working grid again. The plugin
+    // shell calls this (from ANY thread) whenever a new state snapshot
+    // carries sequencer edits -- with immutable snapshots, an applied
+    // recall must not shadow them.
+    //
+    // THREAD SAFETY: the release itself is deferred to the start of the
+    // next process() block on the audio thread. Destroying
+    // recalledPattern_ directly from another thread would free the grid/
+    // override containers WHILE runSequenced holds raw pointers into them
+    // (SequencerView) mid-block -- a use-after-free.
+    void requestWorkingPatternRelease() noexcept
+    {
+        workingPatternReleaseRequested_.store (true, std::memory_order_release);
+    }
 
     // MIDI dispatch entry point (Performance mode). Mirrors the original's
     // note-on routing: the focused slot's key flags a fresh pick of the
@@ -171,6 +195,7 @@ private:
         const state::PluginState& state;
         const state::GenerateState& generate;
         const std::vector<Slice>& slices;
+        const std::vector<float>* sliceWeights = nullptr;  // override; null = from state
         BlockContext& ctx;
         TransportFrame transport;
         double ppqPerSample = 0.0;
@@ -282,7 +307,10 @@ private:
 
     // Sequenced runtime.
     int sequencedLastStepIndex_ = -1;
-    int playingStepIndex_ = -1;
+    // UI-facing playhead signal (the editor polls this from the idle timer
+    // while the audio thread crosses step boundaries -- atomic so the cross-
+    // thread read is well-defined, never a torn/wrong value).
+    std::atomic<int> playingStepIndex_ { -1 };
     int pendingPatternNote_ = -1;
     bool patternIntervalArmed_ = false;
     double patternIntervalBoundaryPpq_ = 0.0;
@@ -291,6 +319,10 @@ private:
     double subdivisionTickLengthSamples_ = 0.0;
     double nextSubdivisionOffsetSamples_ = 0.0;
     std::optional<state::SequencerPattern> recalledPattern_;
+    // Cross-thread release request, drained at the top of process() (the
+    // audio thread owns recalledPattern_'s lifetime; see
+    // requestWorkingPatternRelease).
+    std::atomic<bool> workingPatternReleaseRequested_ { false };
 
     // Performance runtime.
     int pendingPerformanceNote_ = -1;

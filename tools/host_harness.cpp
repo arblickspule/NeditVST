@@ -2,6 +2,17 @@
 // outside Bitwig: full lifecycle incl. editor open() on the real X
 // display, which our unit tests can't do (no X server there).
 
+// IMPORTANT: must be the FIRST include. NeditProcessor pulls in
+// vstsinglecomponenteffect.h which #defines setState->setEditorState /
+// getState->getEditorState for the whole SDK header block it parses (then
+// #undefs them), so IComponent/IEditController/EditController all see
+// consistent names. If any pluginterfaces/vst header were parsed first,
+// EditController::setState (vsteditcontroller.h) would appear to override
+// nothing and the SDK header fails to compile.
+#include "plugin/NeditProcessor.h"
+
+#include "state/Types.h"
+
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "public.sdk/source/vst/hosting/module.h"
 
@@ -331,6 +342,42 @@ int main (int argc, char** argv)
                 // SendEvent clicks are ignored by X). Drives the async file-
                 // dialog path; with NEDIT_TEST_FILE set it returns at once.
                 STEP("click Load button (XTEST)");
+                    // Play XEmbed host: VSTGUI maps its embedded child window
+                    // only after the parent sends _XEMBED EMBEDDED_NOTIFY.
+                    // Without this the child stays unmapped (no rendering,
+                    // no input), which silently disables every real click.
+                    xcb_intern_atom_cookie_t embAt = xcb_intern_atom (conn, 0, 7, "_XEMBED");
+                    if (xcb_intern_atom_reply_t* embR = xcb_intern_atom_reply (conn, embAt, nullptr))
+                    {
+                        xcb_window_t child = 0;
+                        xcb_query_tree_cookie_t qt2 = xcb_query_tree (conn, win);
+                        if (xcb_query_tree_reply_t* tr2 = xcb_query_tree_reply (conn, qt2, nullptr))
+                        {
+                            xcb_window_t* kids = xcb_query_tree_children (tr2);
+                            if (xcb_query_tree_children_length (tr2) > 0)
+                                child = kids[0];
+                            free (tr2);
+                        }
+                        if (child)
+                        {
+                            // XEmbed EMBEDDED_NOTIFY (op 0) + XEMBED_VERSION 15.
+                            xcb_client_message_event_t msg{};
+                            msg.response_type = XCB_CLIENT_MESSAGE;
+                            msg.format = 32;
+                            msg.window = child;
+                            msg.type = embR->atom;
+                            msg.data.data32[0] = 0;
+                            msg.data.data32[1] = 0;                 // EMBEDDED_NOTIFY
+                            msg.data.data32[2] = 15;                // XEMBED_VERSION
+                            msg.data.data32[3] = 0;
+                            msg.data.data32[4] = 0;
+                            xcb_send_event (conn, 0, child, XCB_EVENT_MASK_NO_EVENT, (const char*) &msg);
+                            xcb_flush (conn);
+                            host.pump (40);
+                            host.pump (40);
+                        }
+                        free (embR);
+                    }
                 if (Display* dpy = XOpenDisplay (nullptr))
                 {
                     // Translate the button's window coords to root coords.
@@ -356,6 +403,100 @@ int main (int argc, char** argv)
                 {
                     processor->process (data);
                     host.pump (20);
+                }
+
+                // ---- Mode-switch one-click diagnostic (real XTEST) ----
+                // Each click below is ONE physical press (down+up). The
+                // editor-local CLOCK segment spans x 481..924, y 484..520;
+                // SLICE LENGTH spans x 36..480 (window == editor size, so
+                // window coords are editor coords). After each single click
+                // we read the generate mode back: it must flip on the FIRST
+                // click, and re-clicking the now-active segment must not.
+                // This reproduces the DAW's real widget event path (the
+                // unit-test replay can't construct a live CTextButton).
+                auto* ned = static_cast<nedit::plugin::NeditProcessor*> (
+                    static_cast<Steinberg::Vst::SingleComponentEffect*> (
+                        component.get()));
+                const auto modeName = [] (nedit::state::TriggerMode m) {
+                    return m == nedit::state::TriggerMode::sliceLength ? "sliceLength"
+                         : m == nedit::state::TriggerMode::clock         ? "clock"
+                         : m == nedit::state::TriggerMode::sequenced     ? "sequenced"
+                         : m == nedit::state::TriggerMode::performance   ? "performance"
+                                                                        : "control";
+                };
+                const auto clickAt = [&] (int wx, int wy, Display* dpy, const char* label) {
+                    xcb_translate_coordinates_cookie_t tc =
+                        xcb_translate_coordinates (conn, win, screen->root,
+                                                   (int16_t) wx, (int16_t) wy);
+                    int rx = wx, ry = wy;
+                    if (auto* tr = xcb_translate_coordinates_reply (conn, tc, nullptr))
+                    { rx = tr->dst_x; ry = tr->dst_y; free (tr); }
+                    XTestFakeMotionEvent (dpy, -1, rx, ry, CurrentTime); XFlush (dpy);
+                    host.pump (20);
+                    XTestFakeButtonEvent (dpy, 1, True, CurrentTime);  XFlush (dpy);
+                    host.pump (20);
+                    XTestFakeButtonEvent (dpy, 1, False, CurrentTime); XFlush (dpy);
+                    XFlush (dpy);
+                    for (int i = 0; i < 6; ++i) host.pump (20);
+                    std::printf ("[harness]   single click <<%s>> at (%d,%d) -> root (%d,%d)\n",
+                                 label, wx, wy, rx, ry);
+                };
+                if (Display* dpy = XOpenDisplay (nullptr))
+                {
+                    std::printf ("[harness] mode before clicks = %s (expect sliceLength)\n",
+                                 modeName (ned->debugUiState().generate.generateMode));
+                    STEP("one-click mode switch round-trip (XTEST)");
+                    clickAt (702, 502, dpy, "CLOCK");
+                    const auto afterClock =
+                        modeName (ned->debugUiState().generate.generateMode);
+                    std::printf ("[harness]   mode after 1st CLOCK click = %s -> %s\n",
+                                 afterClock, afterClock == std::string ("clock")
+                                                 ? "PASS (first click flips)"
+                                                 : "FAIL (needs a second click)");
+                    clickAt (702, 502, dpy, "CLOCK again");
+                    const auto afterClockRe =
+                        modeName (ned->debugUiState().generate.generateMode);
+                    std::printf ("[harness]   mode after re-click CLOCK = %s -> %s\n",
+                                 afterClockRe,
+                                 afterClockRe == std::string ("clock")
+                                     ? "PASS (re-select is a no-op)"
+                                     : "FAIL (re-select toggled)");
+                    // Back to the Generate page's default layout the segments
+                    // are at y 484..520; the SLICE LENGTH click must flip back.
+                    // (Sequence: CLOCK selected, so a click on SL switches.)
+                    clickAt (258, 502, dpy, "SLICE LENGTH");
+                    const auto afterSl =
+                        modeName (ned->debugUiState().generate.generateMode);
+                    std::printf ("[harness]   mode after 1st SL click = %s -> %s\n",
+                                 afterSl, afterSl == std::string ("sliceLength")
+                                              ? "PASS (clicked back)"
+                                              : "FAIL (did not flip back)");
+                    // Second full round-trip -- this is the regression the
+                    // first-round sequence could NOT catch (it never re-clicked
+                    // CLOCK after SL, so the stale latch never surfaced).
+                    clickAt (702, 502, dpy, "CLOCK (round 2)");
+                    const auto round2Clock =
+                        modeName (ned->debugUiState().generate.generateMode);
+                    std::printf ("[harness]   mode after CLOCK round 2 = %s -> %s\n",
+                                 round2Clock,
+                                 round2Clock == std::string ("clock")
+                                     ? "PASS (first click of round 2 flips)"
+                                     : "FAIL (regressed to two-click)");
+                    clickAt (258, 502, dpy, "SLICE LENGTH (round 2)");
+                    const auto round2Sl =
+                        modeName (ned->debugUiState().generate.generateMode);
+                    std::printf ("[harness]   mode after SL round 2 = %s -> %s\n",
+                                 round2Sl,
+                                 round2Sl == std::string ("sliceLength")
+                                     ? "PASS (clicked back round 2)"
+                                     : "FAIL (regressed round 2)");
+                    STEP("single click SEQUENCER tab (XTEST, hits tab strip y 192..240)");
+                    clickAt (400, 216, dpy, "SEQUENCER tab");
+                    std::printf ("[harness]   activeTab after tab click = %d -> %s\n",
+                                 static_cast<int> (ned->debugUiState().ui.activeTab),
+                                 static_cast<int> (ned->debugUiState().ui.activeTab) == 1
+                                     ? "PASS" : "FAIL");
+                    XCloseDisplay (dpy);
                 }
 
                 // Prove the click path actually loaded audio: play transport

@@ -123,9 +123,7 @@ std::optional<DecodedAudio> decodeWav (const std::uint8_t* data, std::size_t siz
                     bitsPerSample = readU16 (chunk.data + 14);
                     // Fmt payload layout: format(0) channels(2) rate(4)
                     // byteRate(8) blockAlign(12) bits(14).
-                    blockAlign = chunk.size >= 16 ? readU16 (chunk.data + 12)
-                                                  : static_cast<std::uint16_t> (
-                                                      (numChannels * bitsPerSample + 7) / 8);
+                    blockAlign = readU16 (chunk.data + 12);
 
                     if (formatTag == kFormatExtensible && chunk.size >= 40)
                         formatTag = readU16 (chunk.data + 24); // SubFormat GUID first two bytes
@@ -160,6 +158,19 @@ std::optional<DecodedAudio> decodeWav (const std::uint8_t* data, std::size_t siz
     {
         return std::nullopt;
     }
+
+    // Internal consistency: a frame must be at least numChannels x
+    // bytesPerSample wide. blockAlign comes straight from the file, and a
+    // lying fmt chunk (e.g. mono float64 claiming blockAlign = 1) would
+    // otherwise inflate `frames` and send the per-frame reads below past
+    // the end of the data chunk -- a heap out-of-bounds read on attacker-
+    // controlled input. This check also guarantees the per-channel stride
+    // (blockAlign / numChannels) is >= bytesPerSample, so every
+    // convertSample read stays inside its own frame.
+    const auto bytesPerSample = static_cast<std::uint32_t> (bitsPerSample / 8u);
+    if (static_cast<std::uint32_t> (blockAlign)
+        < static_cast<std::uint32_t> (numChannels) * bytesPerSample)
+        return std::nullopt;
 
     auto frames = static_cast<std::int64_t> (dataChunk.size / blockAlign);
     if (frames <= 0)

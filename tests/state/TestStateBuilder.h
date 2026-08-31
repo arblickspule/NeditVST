@@ -42,6 +42,7 @@ namespace nedit::test {
     render.fadeOutMs = 30.0f;
     render.pitchMode = PitchMode::timeStretch;
     render.grainSizeMs = 90.0f;
+    render.grainSpeed = 3.5f;
     render.grainWindowShape = GrainWindowShape::triangular;
     render.pitchShiftSemitones = -7.0f;
     render.beatQuantizeTimeStretch = false;

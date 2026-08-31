@@ -20,6 +20,43 @@ enum class UiTab : std::uint8_t
     perform
 };
 
+// ---------------------------------------------------------------------------
+// Tab <-> TriggerMode mapping (the tab and the scheduler-facing mode move in
+// lockstep). TriggerMode is FLAT -- the two Generate sub-modes ARE the
+// sliceLength/clock entries -- so the only many-to-one is the Generate tab,
+// which resolves through generateMode. These are the single source of truth
+// for both coupling directions (tab drives mode, mode drives tab); the
+// processor setters and the parameter-surface fold both go through them.
+[[nodiscard]] constexpr UiTab tabForTriggerMode (TriggerMode mode) noexcept
+{
+    switch (mode)
+    {
+        case TriggerMode::sliceLength:
+        case TriggerMode::clock:       return UiTab::generate;
+        case TriggerMode::sequenced:   return UiTab::sequence;
+        case TriggerMode::performance: return UiTab::perform;
+        case TriggerMode::control:     return UiTab::control;
+    }
+    return UiTab::generate;
+}
+
+[[nodiscard]] constexpr TriggerMode triggerModeForTab (UiTab tab,
+                                                       TriggerMode generateMode) noexcept
+{
+    switch (tab)
+    {
+        case UiTab::generate:
+            // The Generate tab hosts two modes; keep whichever sub-mode the
+            // ribbon last chose (defaulting to sliceLength for anything odd).
+            return generateMode == TriggerMode::clock ? TriggerMode::clock
+                                                      : TriggerMode::sliceLength;
+        case UiTab::sequence: return TriggerMode::sequenced;
+        case UiTab::control:  return TriggerMode::control;
+        case UiTab::perform:  return TriggerMode::performance;
+    }
+    return TriggerMode::sliceLength;
+}
+
 struct UiState
 {
     UiTab activeTab = UiTab::generate;

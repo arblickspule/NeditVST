@@ -6,6 +6,24 @@
 
 namespace nedit::engine {
 
+namespace {
+
+// NaN/inf-safe double -> source read index. Clamp in DOUBLE space FIRST:
+// casting a non-representable double (NaN, +-inf, > int64 max) to int64
+// is itself UB, so a clamp applied after the cast guards nothing. The
+// negated comparison routes NaN to 0 alongside negatives.
+[[nodiscard]] std::int64_t clampedSourceIndex (double pos,
+                                               std::int64_t numFrames) noexcept
+{
+    if (! (pos >= 0.0))   // negatives AND NaN
+        return 0;
+    if (pos >= static_cast<double> (numFrames - 1))
+        return numFrames - 1;
+    return static_cast<std::int64_t> (pos);
+}
+
+} // namespace
+
 void GranularStretcher::reset (double startSourcePosition) noexcept
 {
     for (auto& grain : grains)
@@ -133,8 +151,7 @@ void GranularStretcher::renderAndAdvance (const float* const* sourceChannels,
                               : 1.0;
         const float gain = windowGain (progress, windowShape);
 
-        const auto idx0 = std::clamp<std::int64_t> (static_cast<std::int64_t> (grain.sourcePosition),
-                                                    0, numSourceFrames - 1);
+        const auto idx0 = clampedSourceIndex (grain.sourcePosition, numSourceFrames);
         const auto idx1 = std::min<std::int64_t> (idx0 + 1, numSourceFrames - 1);
         const auto frac = static_cast<float> (grain.sourcePosition
                                               - static_cast<double> (idx0));

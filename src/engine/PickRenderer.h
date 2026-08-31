@@ -72,6 +72,7 @@ struct BlockContext
     // Time-Stretch pitch-mode granular settings.
     bool timeStretchMode = false;
     double grainSizeHostSamples = 0.0;
+    double grainSpeed = 1.0;       // re-granulation density (1.0 = clean rate-matching)
     double outputHopSamples = 0.0;   // grainSize * 0.5 (fixed 50% overlap)
     double sourceHopSamples = 0.0;   // outputHop * srConversion * repitchRatio
     GranularStretcher::WindowShape grainWindowShape = GranularStretcher::WindowShape::hann;

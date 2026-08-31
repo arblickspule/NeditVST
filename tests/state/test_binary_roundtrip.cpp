@@ -80,3 +80,30 @@ TEST_CASE ("out-of-range values in the chunk are sanitized on load", "[serialize
     CHECK (restored->sample.sensitivity == 1.0f);
     CHECK (restored->control.baseNote == 127);
 }
+
+TEST_CASE ("v1 chunks (no grainSpeed field) load with the default", "[serialize]")
+{
+    // Version 2 appended grainSpeed to the render section. A v1 chunk is
+    // just the v2 serialization with the version word rewritten: the
+    // reader must skip the trailing field and keep the default.
+    const auto original = nedit::test::makeFullyMutatedState();
+    CHECK (original.render.grainSpeed == 3.5f);
+
+    auto bytes = serialize (original);
+
+    // bytes[4..8) is the version word (magic first).
+    REQUIRE (bytes.size() >= 8);
+    REQUIRE (bytes[0] == 'N');
+    REQUIRE (bytes[1] == 'E');
+    REQUIRE (bytes[2] == 'D');
+    REQUIRE (bytes[3] == 'T');
+    bytes[4] = 1;
+    bytes[5] = 0;
+    bytes[6] = 0;
+    bytes[7] = 0;
+
+    const auto restored = deserialize (bytes);
+    REQUIRE (restored.has_value());
+    CHECK (restored->render.grainSpeed == RenderState::kMinGrainSpeed);
+    CHECK (restored->render.grainSizeMs == original.render.grainSizeMs);
+}

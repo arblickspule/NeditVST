@@ -25,7 +25,7 @@ class WaveformView : public VSTGUI::CView
 public:
     explicit WaveformView (NeditProcessor& processor,
                            VSTGUI::IControlListener* listener,
-                           int height = 144);
+                           int height = 96);
 
     //--- CView -----------------------------------------------------------
     void draw (VSTGUI::CDrawContext* dc) override;
