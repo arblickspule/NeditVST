@@ -4,5 +4,5 @@ add_library(nedit_ui STATIC
 )
 target_include_directories(nedit_ui PUBLIC ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(nedit_ui
-    PUBLIC nedit_state nedit_engine
+    PUBLIC nedit_state
     PRIVATE nedit_warnings)

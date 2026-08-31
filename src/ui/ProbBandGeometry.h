@@ -1,13 +1,13 @@
-// Nedit -- Plugin layer.
+// Nedit -- UI layer.
 //
 // Pure geometry for the style-probability band and its paint-overlay
 // gesture: mapping a frame-space pointer back into a probability column /
-// weight value. Kept SDK-free (no VSTGUI) so the plugin tests can cover
-// the mapping without instantiating editor controls.
+// weight value. Kept SDK-free (no VSTGUI) so the mapping is unit-testable
+// without instantiating editor controls.
 //
-// Must stay in lockstep with StyleProbSlider's drawing maths (a paint
-// drag anywhere in a column sets exactly the value the vertical slider
-// would for the same pointer height).
+// Must stay in lockstep with the editor's StyleProbSlider drawing maths (a
+// paint drag anywhere in a column sets exactly the value the vertical
+// slider would for the same pointer height).
 
 #pragma once
 
@@ -15,7 +15,7 @@
 
 #include <algorithm>
 
-namespace nedit::plugin::ui {
+namespace nedit::ui {
 
 // 0-based probability column under an x that is `colW` wide per column,
 // the first column starting at `bandLeft` (frame-space). Clamps to the
@@ -40,4 +40,4 @@ namespace nedit::plugin::ui {
     return static_cast<float> (v);
 }
 
-} // namespace nedit::plugin::ui
+} // namespace nedit::ui

@@ -4,10 +4,11 @@
 
 #include "NeditProcessor.h"
 #include "ParameterSurface.h"
-#include "ProbBandGeometry.h"
 #include "WaveformView.h"
 
+#include "ui/ProbBandGeometry.h"
 #include "ui/SequencerGridGeometry.h"
+#include "ui/TimingGrey.h"
 
 #include "state/StyleParameters.h"
 
@@ -1540,13 +1541,13 @@ private:
         const double colW = getViewSize().getWidth();
         const double bandLeft = getViewSize().left
                               - static_cast<double> (styleIndex_) * colW;
-        const int col = ui::probColumnFromX (where.x, bandLeft, colW);
+        const int col = nedit::ui::probColumnFromX (where.x, bandLeft, colW);
         // All columns share the band's top, so any column's local offset
         // works; the paint value maps from the pointer's height in the
         // same slider band the vertical bars use.
         const double top = sliderBandTopLocal();
         const double bottom = getViewSize().getHeight() - kProbBottomPad;
-        owner_->stylePaintTo (col, probValueFromY (where.y - getViewSize().top, top, bottom));
+        owner_->stylePaintTo (col, nedit::ui::probValueFromY (where.y - getViewSize().top, top, bottom));
     }
 
     void applyFromY (double localY)
@@ -1557,7 +1558,7 @@ private:
         // absolute-ized sliderTop() used for drawing.
         const double top = sliderBandTopLocal();
         const double bottom = getViewSize().getHeight() - kProbBottomPad;
-        setValueNormalized (probValueFromY (localY, top, bottom));
+        setValueNormalized (nedit::ui::probValueFromY (localY, top, bottom));
         invalid();
         valueChanged();
     }
@@ -3719,20 +3720,6 @@ void NeditEditor::syncStyleProbs()
 
 //------------------------------------------------------------------------
 //------------------------------------------------------------------------
-// Pure per-mode grey contract for the Generate timing option menus, shared
-// by syncGenerateControls and unit tests.
-TimingGreyState timingGreyState (state::TriggerMode mode) noexcept
-{
-    const bool sl = (mode == state::TriggerMode::sliceLength);
-    TimingGreyState g;
-    g.resetBarsGreyed = ! sl;
-    g.clockRefGreyed = sl;
-    g.tapeScopeGreyed = sl;
-    g.filterScopeGreyed = sl;
-    return g;
-}
-
-//------------------------------------------------------------------------
 // Generate-page timing: full-width SL|Clock mode switch, the four option
 // menus (reset bars / clock reference / recalled Tape Stop + Filter sweep
 // scopes) and the Clock subdivision band, pushed state->controls on
@@ -3794,7 +3781,7 @@ void NeditEditor::syncGenerateControls()
     // Clock options (reference, Tape Stop scope, Filter sweep scope) ride
     // with Clock. Each control is enabled EXACTLY when its mode is selected
     // (the counterpart menu greys under the other mode).
-    const auto grey = timingGreyState (mode);
+    const auto grey = nedit::ui::timingGreyState (mode);
     if (lastResetBarsGreyed_ != grey.resetBarsGreyed)
     {
         lastResetBarsGreyed_ = grey.resetBarsGreyed;

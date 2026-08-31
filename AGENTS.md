@@ -600,7 +600,7 @@ HARDENING entries below).
   valueChanged -> setStyleWeight (same publish path as the track drag);
   release hides the overlay and restores the mini-controls. Track presses
   keep the precise single-column drag. Geometry is pure and tested:
-  `ProbBandGeometry.h` (`probColumnFromX` clamps to the 9 columns,
+  `src/ui/ProbBandGeometry.h` (`probColumnFromX` clamps to the 9 columns,
   `probValueFromY` = top→1.0/bottom→0.0 clamp, degenerate band/width
   safe) shared by the columns' applyFromY and the paint mapping; the
   paint col is recovered from the captured column's own rect (bandLeft =

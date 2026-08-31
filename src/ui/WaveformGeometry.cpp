@@ -101,8 +101,11 @@ std::vector<WaveformColumn> computeWaveformPeaks (
     return columns;
 }
 
+// Pixel x-positions of slice boundaries that fall inside the visible window.
+// `boundaries` are absolute frame positions of each slice start/end; adjacent
+// slices share a boundary, so it is emitted once.
 std::vector<double> computeSliceMarkerX (
-    const std::vector<engine::Slice>& slices, std::int64_t rangeStart,
+    const std::vector<std::int64_t>& boundaries, std::int64_t rangeStart,
     std::int64_t rangeEnd, const state::UiState& ui, double width)
 {
     std::vector<double> result;
@@ -110,25 +113,21 @@ std::vector<double> computeSliceMarkerX (
         return result;
 
     const auto visible = visibleFrames (rangeStart, rangeEnd, ui);
-    result.reserve (slices.size() + 1);
+    result.reserve (boundaries.size() + 1);
 
-    // Adjacent slices share their boundary frame; draw it once.
     std::vector<std::int64_t> emitted;
 
-    for (const auto& slice : slices)
+    for (const std::int64_t boundary : boundaries)
     {
-        for (const std::int64_t boundary : { slice.startFrame, slice.endFrame })
-        {
-            if (boundary < visible.start || boundary > visible.end)
-                continue;
-            if (std::find (emitted.begin(), emitted.end(), boundary) != emitted.end())
-                continue;
+        if (boundary < visible.start || boundary > visible.end)
+            continue;
+        if (std::find (emitted.begin(), emitted.end(), boundary) != emitted.end())
+            continue;
 
-            emitted.push_back (boundary);
-            const double t = static_cast<double> (boundary - visible.start)
-                           / static_cast<double> (visible.end - visible.start);
-            result.push_back (t * width);
-        }
+        emitted.push_back (boundary);
+        const double t = static_cast<double> (boundary - visible.start)
+                       / static_cast<double> (visible.end - visible.start);
+        result.push_back (t * width);
     }
     return result;
 }

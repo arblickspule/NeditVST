@@ -96,12 +96,13 @@ TEST_CASE ("waveform: degenerate inputs")
 
 TEST_CASE ("waveform: slice markers map into the visible window")
 {
-    std::vector<engine::Slice> slices {
-        { 0, 400 }, { 400, 800 }, { 800, 1000 },
+    // Boundary frames of slices {0,400}, {400,800}, {800,1000}.
+    std::vector<std::int64_t> boundaries {
+        0, 400, 800, 1000,
     };
 
     state::UiState ui;
-    const auto full = ui::computeSliceMarkerX (slices, 0, 1000, ui, 200.0);
+    const auto full = ui::computeSliceMarkerX (boundaries, 0, 1000, ui, 200.0);
     // Boundaries 0,400,800,1000 all inside [0,1000].
     REQUIRE (full.size() == 4);
     CHECK (full[0] == Catch::Approx (0.0));
@@ -110,7 +111,7 @@ TEST_CASE ("waveform: slice markers map into the visible window")
 
     // Half-zoom hides boundaries at 0 and anything before frame 500.
     ui.visibleStartNorm = 0.5;
-    const auto half = ui::computeSliceMarkerX (slices, 0, 1000, ui, 200.0);
+    const auto half = ui::computeSliceMarkerX (boundaries, 0, 1000, ui, 200.0);
     REQUIRE (half.size() == 2);   // 800 and 1000
     CHECK (half[0] == Catch::Approx (120.0));   // (800-500)/500 * 200
     CHECK (half[1] == Catch::Approx (200.0));

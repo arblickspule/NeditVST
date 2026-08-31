@@ -1,13 +1,13 @@
-// Paint-overlay geometry for the style-probability band (see
-// ProbBandGeometry.h): the mapping that turns a frame-space drag into a
-// style column + weight must match what the vertical bars use.
+// Nedit -- UI-layer tests: paint-overlay geometry for the style-probability
+// band (see ui/ProbBandGeometry.h): the mapping that turns a frame-space
+// drag into a style column + weight must match what the vertical bars use.
 
-#include "plugin/ProbBandGeometry.h"
+#include "ui/ProbBandGeometry.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-namespace nedit::plugin::ui {
+namespace nedit::ui {
 
 TEST_CASE ("prob band geometry: column from frame x clamps to the band")
 {
@@ -44,4 +44,4 @@ TEST_CASE ("prob band geometry: value from y clamps like the vertical bars")
     CHECK (probValueFromY (100.0, 50.0, 50.0) == Catch::Approx (0.0f));
 }
 
-} // namespace nedit::plugin::ui
+} // namespace nedit::ui

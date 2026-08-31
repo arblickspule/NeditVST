@@ -8,6 +8,7 @@
 
 #include "plugin/NeditProcessor.h"
 #include "plugin/NeditEditor.h"
+#include "ui/TimingGrey.h"
 
 #include "vstgui/lib/controls/ccontrol.h"
 
@@ -447,8 +448,8 @@ TEST_CASE ("editor: mode switch fires on the first click")
 
 TEST_CASE ("timing ribbon: option menus enable exactly with their mode")
 {
-    using nedit::plugin::timingGreyState;
-    using nedit::plugin::TimingGreyState;
+    using nedit::ui::timingGreyState;
+    using nedit::ui::TimingGreyState;
 
     // Slice Length: RESET EVERY rides SL, the Clock trio is greyed.
     const TimingGreyState sl = timingGreyState (state::TriggerMode::sliceLength);

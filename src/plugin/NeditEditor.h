@@ -46,18 +46,10 @@ class SequencerTransportBar;
 
 } // namespace ui
 
-// Per-mode enabled/grey mapping for the Generate timing option menus. Each
-// menu is enabled EXACTLY when its mode is selected: RESET EVERY rides Slice
-// Length; CLOCK REFERENCE + the two sweep scopes ride Clock. Pure + free so
-// the mode->grey contract is unit-testable without a widget tree.
-struct TimingGreyState
-{
-    bool resetBarsGreyed = false;
-    bool clockRefGreyed = false;
-    bool tapeScopeGreyed = false;
-    bool filterScopeGreyed = false;
-};
-[[nodiscard]] TimingGreyState timingGreyState (state::TriggerMode mode) noexcept;
+// NOTE: TimingGreyState / timingGreyState(mode) (the per-mode enable/grey
+// contract for the Generate timing option menus) live in the framework-free
+// UI layer in src/ui/TimingGrey.h (namespace nedit::ui) so they unit-test
+// without a widget tree.
 
 class NeditEditor : public Steinberg::Vst::VSTGUIEditor,
                     public VSTGUI::IControlListener
