@@ -602,7 +602,30 @@ TEST_CASE ("sequenced: next active column caps the note", "[scheduler][seq]")
     CHECK (fx.scheduler.renderer().currentPick().halfSliceFold);   // sequenced half-window
 }
 
-TEST_CASE ("sequenced: cell overrides beat the fallback parameters", "[scheduler][seq]")
+TEST_CASE ("sequenced: scratch plays one Rate cycle, not a grid step", "[scheduler][seq][scratch]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, static_cast<std::int8_t> (PlaybackStyle::scratch));
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+    const auto& pick = fx.scheduler.renderer().currentPick();
+
+    // Scratch must declare ONE full Rate cycle (default Rate = 16n), NOT the
+    // natural slice/step length (44100) the generic path used to hand it --
+    // that was the sequencer-only bug: the whip never completed within its
+    // window. With only column 0 filled the next active column is the
+    // pattern wrap (16 steps, 88200), so the cycle is not capped here.
+    const double expectedCycle = tempo::scratchCycleLengthHostSamples (
+        kNoteValue16n, 44100, 120.0, kRate, 1.0);
+    CHECK_THAT (pick.pickLengthHostSamples, WithinAbs (expectedCycle, 2.0));
+    CHECK (pick.useDurationGate);   // fold style ends by declared window
+    CHECK_FALSE (pick.pickLengthHostSamples > 44000.0);   // was the natural length
+}
+
+TEST_CASE ("sequenced: cell overrides beat the generated slider params", "[scheduler][seq]")
 {
     Fixture fx ({ Slice { 0, 44100 } });
     fx.state.triggerMode = TriggerMode::sequenced;
@@ -615,7 +638,29 @@ TEST_CASE ("sequenced: cell overrides beat the fallback parameters", "[scheduler
 
     const auto& params = fx.scheduler.renderer().currentPick().params;
     CHECK_THAT (params.grainSizeMs, WithinAbs (25.0f, 1e-6f));   // override wins
-    CHECK_THAT (params.grainSpeed, WithinAbs (fx.state.sequencer.fallbackParams.grainSpeed, 1e-6f));
+    CHECK_THAT (params.grainSpeed,
+                WithinAbs (fx.state.generate.styleParams.grainSpeed, 1e-6f));
+}
+
+TEST_CASE ("sequenced: notes without overrides use the generate (slider) params",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, static_cast<std::int8_t> (PlaybackStyle::flanger));
+
+    // A slider value on the Generate/Sequence bands flows into the cell:
+    // the pick's params come from generate.styleParams (the surface the UI
+    // edits), NOT the sequencer's own fallback copy.
+    fx.state.generate.styleParams.set (StyleParamId::flangerDelayMs, 8.5f);
+    fx.state.sequencer.fallbackParams.set (StyleParamId::flangerDelayMs, 1.0f);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& params = fx.scheduler.renderer().currentPick().params;
+    CHECK_THAT (params.flangerDelayMs, WithinAbs (8.5f, 1e-6f));
 }
 
 TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-step",

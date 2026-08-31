@@ -172,6 +172,44 @@ public:
     // keeping the dimensions and the fallback params.
     void clearSequence();
 
+    // --- Sequencer step-grid cell edits (UI thread, publish-only) --------
+    // All bounds-check against the working grid dimensions and enforce the
+    // grid's monophonic invariant (at most one filled row per column).
+
+    // Write (styleOrdinal >= 0) or clear (styleOrdinal < 0) the cell at
+    // (row, column). Writing clears any other filled row in that column
+    // (and its overrides/extensions). Returns whether anything changed.
+    [[nodiscard]] bool setSequencerCell (int row, int column, int styleOrdinal);
+    // Extend/contract the cell's declared length by `deltaSteps` (grows or
+    // shrinks the per-cell extension, never below the natural length).
+    // Extending clears conflicting cells in other rows of the covered
+    // columns. Returns whether anything changed.
+    [[nodiscard]] bool setSequencerCellExtension (int row, int column, int deltaSteps);
+    // Set the style the palette paints with (selectedDrawingStyle).
+    void setSelectedDrawingStyle (int styleOrdinal);
+
+    // Write (or replace) one per-cell parameter override for the cell at
+    // (row, column). `value` is clamped to the parameter's own range
+    // (discrete params to a valid option index) before storing, keyed by
+    // StyleParamId. Returns whether anything changed.
+    [[nodiscard]] bool setSequencerCellOverride (int row, int column,
+                                                 state::StyleParamId id, float value);
+    // Remove a single per-cell parameter override (falls back to the
+    // generated slider params at playback). Returns whether anything changed.
+    [[nodiscard]] bool clearSequencerCellOverride (int row, int column,
+                                                   state::StyleParamId id);
+
+    // Sequencer transport/dimension controls (editor-local, publish-only).
+    // Pattern length sets patternLengthBarsIndex; grid resolution sets
+    // stepResolutionIndex. Both are grid DIMENSIONS, so they resize the
+    // working grid via the documented reset-on-dimension-change contract.
+    [[nodiscard]] bool setSequencerPatternLength (int index);
+    [[nodiscard]] bool setSequencerStepResolution (int index);
+    // Pattern-recall timing: PatternSwitchTiming ordinal (0/1/2) + the
+    // note-value index of the switch interval (armed only in setInterval).
+    [[nodiscard]] bool setSequencerSwitchTiming (int ordinal);
+    [[nodiscard]] bool setSequencerSwitchInterval (int index);
+
     // Audition toggle — gates whether the scheduler produces audio.
     void setAuditionEnabled (bool enabled);
 
@@ -239,6 +277,11 @@ private:
     // keep their value; a split inherits its parent slice's value). Then
     // publishes the new state snapshot.
     void rebuildSlicesPreservingWeights();
+    // Derive the sequencer working-grid dimensions from the current slice
+    // count + step resolution + pattern length; resets the grid when they
+    // change (documented reset-on-dimension-change contract). Caller
+    // publishes. Returns whether the dimensions changed.
+    bool resizeSequencerGridForSample();
     // Clamp a requested marker frame into the trim and, when snap is true,
     // pull it to the nearest transient (shared by add + move).
     [[nodiscard]] std::int64_t resolveManualFrame (std::int64_t frame, bool snap) const;

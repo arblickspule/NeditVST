@@ -193,6 +193,13 @@ inline constexpr std::array<const char*, 2> kCurveShapeNames { {
     "Linear", "Exponential"
 } };
 
+// Pattern-recall timing (the Sequencer page's pattern-switch timing). Order
+// matches PatternSwitchTiming's numeric values (immediate 0, setInterval 1,
+// endOfPattern 2).
+inline constexpr std::array<const char*, 3> kPatternSwitchTimingNames { {
+    "Immediate", "Set Interval", "End of Pattern"
+} };
+
 // ---------------------------------------------------------------------------
 // Bar-count option tables
 // ---------------------------------------------------------------------------

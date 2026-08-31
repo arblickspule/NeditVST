@@ -32,7 +32,8 @@
 //
 //   Sequenced: the step grid advances on per-sample ppq boundaries. A
 //     filled column triggers its cell's style DIRECTLY (no weighted draw)
-//     with fallbackParams + that cell's overrides merged; durations come
+//     with generate.styleParams (the UI slider surface) + that cell's
+//     overrides merged; durations come
 //     from the cell's DECLARED length (natural length in steps, or its
 //     Shift+drag extension), capped by the next active column anywhere in
 //     the grid (anticipatory fade). Subdivide slices a step into retriggers
@@ -125,7 +126,10 @@ public:
 
     // The step index most recently crossed in Sequenced mode (-1 before
     // the first boundary). UI-facing playhead signal.
-    [[nodiscard]] int playingStepIndex() const noexcept { return playingStepIndex_; }
+    [[nodiscard]] int playingStepIndex() const noexcept
+    {
+        return playingStepIndex_.load (std::memory_order_relaxed);
+    }
 
     // MIDI dispatch entry point (Sequenced mode): arm a pattern-bank
     // recall. When the bank slot is empty the pending request is dropped
@@ -303,7 +307,10 @@ private:
 
     // Sequenced runtime.
     int sequencedLastStepIndex_ = -1;
-    int playingStepIndex_ = -1;
+    // UI-facing playhead signal (the editor polls this from the idle timer
+    // while the audio thread crosses step boundaries -- atomic so the cross-
+    // thread read is well-defined, never a torn/wrong value).
+    std::atomic<int> playingStepIndex_ { -1 };
     int pendingPatternNote_ = -1;
     bool patternIntervalArmed_ = false;
     double patternIntervalBoundaryPpq_ = 0.0;

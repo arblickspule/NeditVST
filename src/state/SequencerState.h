@@ -9,8 +9,12 @@
 //     parameter NAME strings)
 //   * the randomizer owns its own style-weight table instead of reading
 //     Generate's
-//   * fallbackParams: steps without an override read these, owned by the
-//     sequencer (the original silently read the shared globals)
+//   * fallbackParams is KEPT (serialized, sanitized) but is no longer the
+//     audio default for a step without an override: the scheduler now reads
+//     generate.styleParams (the slider/dropdown surface the UI edits) as the
+//     merged base, per-cell overrides stack on top. fallbackParams remains
+//     as a carried field for schema/forward-compat and any future per-
+//     sequencer scope (lead-dev decision 2026-08-30).
 //   * the pattern bank IS serialized (the original never persisted it)
 //   * loop-length edits must NOT reset the grid (original stale coupling);
 //     the grid resets only when its own dimensions change

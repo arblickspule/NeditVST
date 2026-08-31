@@ -107,6 +107,38 @@ void clearGrid (state::SequencerState& state) noexcept
     state.extensions.clear();
 }
 
+SequencerDims computeSequencerDims (int sliceCount, int stepResolutionIndex,
+                                    int patternLengthBarsIndex) noexcept
+{
+    SequencerDims dims;
+    dims.rows = std::clamp (sliceCount, 0, state::kMaxSequencerRows);
+
+    const double stepBeats = noteValueBeats (stepResolutionIndex);
+    // 4 beats to a bar; steps per bar = that divided by the step value.
+    int stepsPerBar = stepBeats > 0.0
+                          ? static_cast<int> (std::lround (4.0 / stepBeats))
+                          : 16;
+    stepsPerBar = std::max (1, stepsPerBar);
+
+    int bars = 1;
+    if (patternLengthBarsIndex >= 0
+        && patternLengthBarsIndex < static_cast<int> (state::kPatternLengthBarsValues.size()))
+        bars = state::kPatternLengthBarsValues[static_cast<std::size_t> (patternLengthBarsIndex)];
+
+    dims.columns = std::clamp (stepsPerBar * bars, 0, state::kMaxSequencerColumns);
+    return dims;
+}
+
+bool resizeGrid (state::SequencerState& state, SequencerDims dims) noexcept
+{
+    if (dims.rows == state.rows && dims.columns == state.columns)
+        return false;
+    state.rows = dims.rows;
+    state.columns = dims.columns;
+    clearGrid (state);   // documented reset-on-dimension-change contract
+    return true;
+}
+
 RandomizeResult randomizeSequence (state::SequencerState& st,
                                    std::span<const Slice> slices,
                                    double sampleSampleRate,

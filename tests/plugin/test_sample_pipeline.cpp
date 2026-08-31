@@ -3,6 +3,7 @@
 // analyze -> slices -> scheduler -> rendered output energy).
 
 #include <plugin/NeditProcessor.h>
+#include <plugin/NeditEditor.h>
 #include <plugin/SampleManager.h>
 #include <plugin/WavDecoder.h>
 #include <plugin/WaveformView.h>
@@ -332,6 +333,311 @@ TEST_CASE ("sample manager: load file -> analysis -> state metadata")
     const auto failed = manager.loadFile (junk.path, {});
     CHECK_FALSE (failed.has_value());
     CHECK (manager.acquire()->slices.size() == result->sample->slices.size());
+}
+
+TEST_CASE ("shell: loading a sample establishes the sequencer grid dimensions")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const auto& seq = processor.debugUiState().sequencer;
+    const int sliceCount = processor.debugSliceCount();
+    // rows = min(sliceCount, kMaxSequencerRows); default 16n + 1 bar => 16 cols.
+    CHECK (seq.rows == std::min (sliceCount, nedit::state::kMaxSequencerRows));
+    CHECK (seq.columns == 16);
+    CHECK (seq.grid.size()
+           == static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns));
+}
+
+TEST_CASE ("shell: sequencer cell writes enforce monophony and clear cleanly")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const auto cell = [&] (int row, int col) {
+        const auto& s = processor.debugUiState().sequencer;
+        return static_cast<int> (s.grid[static_cast<std::size_t> (row)
+                                         * static_cast<std::size_t> (s.columns)
+                                         + static_cast<std::size_t> (col)]);
+    };
+
+    REQUIRE (processor.debugUiState().sequencer.rows >= 2);
+
+    // Write style 3 at (row 0, col 0).
+    CHECK (processor.setSequencerCell (0, 0, 3));
+    CHECK (cell (0, 0) == 3);
+
+    // Writing a DIFFERENT row in the SAME column clears the first (monophony).
+    CHECK (processor.setSequencerCell (1, 0, 5));
+    CHECK (cell (1, 0) == 5);
+    CHECK (cell (0, 0) == -1);
+
+    // Re-writing the same style over itself is a no-op (returns false).
+    CHECK_FALSE (processor.setSequencerCell (1, 0, 5));
+
+    // Clearing drops the cell.
+    CHECK (processor.setSequencerCell (1, 0, -1));
+    CHECK (cell (1, 0) == -1);
+
+    // Out-of-range / bad style rejected.
+    CHECK_FALSE (processor.setSequencerCell (999, 0, 1));
+    CHECK_FALSE (processor.setSequencerCell (0, 0, 99));
+}
+
+TEST_CASE ("shell: sequencer cell extension grows, clamps and needs a filled cell")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const auto extAt = [&] (int row, int col) -> int {
+        const auto& s = processor.debugUiState().sequencer;
+        const auto flat = static_cast<std::uint32_t> (row)
+                        * static_cast<std::uint32_t> (s.columns)
+                        + static_cast<std::uint32_t> (col);
+        const auto it = s.extensions.find (flat);
+        return it != s.extensions.end() ? static_cast<int> (it->second) : 0;
+    };
+
+    // Extension on an EMPTY cell is rejected.
+    CHECK_FALSE (processor.setSequencerCellExtension (0, 0, 3));
+
+    // Fill then extend.
+    CHECK (processor.setSequencerCell (0, 0, 0));
+    CHECK (processor.setSequencerCellExtension (0, 0, 3));
+    CHECK (extAt (0, 0) == 3);
+
+    // Negative delta clamps at 0 and erases the entry.
+    CHECK (processor.setSequencerCellExtension (0, 0, -10));
+    CHECK (extAt (0, 0) == 0);
+}
+
+TEST_CASE ("shell: per-cell parameter override setters clamp and key by cell")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // Fill a cell (style 4 = filterDown) at (row 0, col 0).
+    REQUIRE (processor.setSequencerCell (0, 0, 4));
+
+    const auto& seq = processor.debugUiState().sequencer;
+    const auto ovAt = [&] (int row, int col, nedit::state::StyleParamId id) -> bool {
+        const auto flat = static_cast<std::uint32_t> (row)
+                        * static_cast<std::uint32_t> (seq.columns)
+                        + static_cast<std::uint32_t> (col);
+        const auto cit = seq.overrides.find (flat);
+        if (cit == seq.overrides.end())
+            return false;
+        return cit->second.count (id) > 0;
+    };
+
+    using nedit::state::StyleParamId;
+
+    // Continuous param clamps into range and is keyed by StyleParamId.
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::filterResonance, 99.0f));
+    REQUIRE (ovAt (0, 0, StyleParamId::filterResonance));
+    CHECK (seq.overrides.at (0).at (StyleParamId::filterResonance) == Catch::Approx (10.0f));
+
+    // Discrete param rounds + clamps to a valid option index.
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::filterType, 42.0f));
+    REQUIRE (ovAt (0, 0, StyleParamId::filterType));
+    CHECK (seq.overrides.at (0).at (StyleParamId::filterType) == Catch::Approx (2.0f));
+
+    // Idempotent re-write returns false.
+    CHECK_FALSE (processor.setSequencerCellOverride (0, 0, StyleParamId::filterResonance, 10.0f));
+
+    // Empty cell / invalid param id rejected.
+    CHECK_FALSE (processor.setSequencerCellOverride (1, 0, StyleParamId::filterResonance, 1.0f));
+    CHECK_FALSE (processor.setSequencerCellOverride (
+        0, 0, static_cast<StyleParamId> (200), 0.5f));
+
+    // Clearing one override; clearing the last prunes the cell entry.
+    CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterType));
+    CHECK_FALSE (ovAt (0, 0, StyleParamId::filterType));
+    CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterResonance));
+    CHECK (seq.overrides.count (0) == 0);
+}
+
+TEST_CASE ("shell: selected drawing style persists and range-checks")
+{
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+
+    processor.setSelectedDrawingStyle (7);
+    CHECK (processor.debugUiState().sequencer.selectedDrawingStyle == 7);
+
+    processor.setSelectedDrawingStyle (99);   // rejected, unchanged
+    CHECK (processor.debugUiState().sequencer.selectedDrawingStyle == 7);
+
+    processor.setSelectedDrawingStyle (-1);    // rejected, unchanged
+    CHECK (processor.debugUiState().sequencer.selectedDrawingStyle == 7);
+}
+
+TEST_CASE ("shell: sequencer transport setters persist, clamp and resize")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    const auto colsOf = [&] { return processor.debugUiState().sequencer.columns; };
+    const auto rowsOf = [&] { return processor.debugUiState().sequencer.rows; };
+    const int defaultCols = colsOf();
+    const int defaultRows = rowsOf();
+
+    using nedit::state::PatternSwitchTiming;
+
+    // Pattern length: sets the index + resizes the grid (dimension change;
+    // more bars => more columns; rows depend only on slice count).
+    CHECK (processor.debugUiState().sequencer.patternLengthBarsIndex == 0);
+    CHECK (colsOf() == defaultCols);
+    REQUIRE (processor.setSequencerPatternLength (2));     // 4 bars
+    CHECK (processor.debugUiState().sequencer.patternLengthBarsIndex == 2);
+    CHECK (colsOf() > defaultCols);
+    CHECK (rowsOf() == defaultRows);
+    CHECK (processor.setSequencerPatternLength (0));       // back to 1 bar
+    CHECK (colsOf() == defaultCols);
+    CHECK_FALSE (processor.setSequencerPatternLength (99)); // out of range
+    CHECK_FALSE (processor.setSequencerPatternLength (-1));
+
+    // Grid interval: sets the note-value index + resizes the grid.
+    const int pre = colsOf();
+    REQUIRE (processor.setSequencerStepResolution (9));
+    CHECK (processor.debugUiState().sequencer.stepResolutionIndex == 9);
+    CHECK (colsOf() != pre);
+    CHECK_FALSE (processor.setSequencerStepResolution (200));
+    CHECK_FALSE (processor.setSequencerStepResolution (-1));
+
+    // Switch timing: ordinal into PatternSwitchTiming (0..2).
+    CHECK (processor.debugUiState().sequencer.patternSwitchTiming
+           == PatternSwitchTiming::immediate);   // default
+    REQUIRE (processor.setSequencerSwitchTiming (1));      // set interval
+    CHECK (processor.debugUiState().sequencer.patternSwitchTiming
+           == PatternSwitchTiming::setInterval);
+    CHECK (processor.setSequencerSwitchTiming (2));        // end of pattern
+    CHECK (processor.debugUiState().sequencer.patternSwitchTiming
+           == PatternSwitchTiming::endOfPattern);
+    CHECK (processor.setSequencerSwitchTiming (0));        // back to immediate
+    CHECK (processor.debugUiState().sequencer.patternSwitchTiming
+           == PatternSwitchTiming::immediate);
+    CHECK_FALSE (processor.setSequencerSwitchTiming (7));  // rejected
+    CHECK_FALSE (processor.setSequencerSwitchTiming (-1));
+
+    // Switch interval: note-value index.
+    REQUIRE (processor.setSequencerSwitchInterval (5));
+    CHECK (processor.debugUiState().sequencer.patternSwitchIntervalIndex == 5);
+    CHECK_FALSE (processor.setSequencerSwitchInterval (5));   // idempotent
+    CHECK_FALSE (processor.setSequencerSwitchInterval (200));
+}
+
+TEST_CASE ("editor: clear and randomize buttons act on the sequencer grid")
+{
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // Seed a small deterministic pattern (two cells, different styles).
+    REQUIRE (processor.setSequencerCell (0, 0, 1));
+    REQUIRE (processor.setSequencerCell (1, 2, 5));
+
+    nedit::plugin::NeditEditor editor (&processor);
+
+    // Stand-in for the real CTextButtons: a real one needs the platform
+    // (font/gradient), but valueChanged is the entry point the buttons'
+    // kKickStyle click sequence drives.
+    struct FakeControl : VSTGUI::CControl
+    {
+        FakeControl (const VSTGUI::CRect& r, VSTGUI::IControlListener* l, int32_t t)
+            : CControl (r, l, t) {}
+        void draw (VSTGUI::CDrawContext*) override {}
+        VSTGUI::CBaseObject* newCopy () const override { return new FakeControl (*this); }
+        VSTGUI::CMouseEventResult onMouseDown (VSTGUI::CPoint&, const VSTGUI::CButtonState&) override
+        {
+            return VSTGUI::kMouseEventHandled;
+        }
+    };
+
+    FakeControl clearBtn (VSTGUI::CRect (0, 0, 4, 4), &editor,
+                          nedit::plugin::NeditEditor::kTagSeqClear);
+    FakeControl randBtn (VSTGUI::CRect (0, 0, 4, 4), &editor,
+                         nedit::plugin::NeditEditor::kTagSeqRandomize);
+    const auto doClick = [] (FakeControl& btn, nedit::plugin::NeditEditor& ed) {
+        btn.setValue (1.0f);
+        ed.valueChanged (&btn);
+        btn.setValue (0.0f);
+        ed.valueChanged (&btn);
+    };
+
+    const auto monophonic = [&] {
+        const auto& seq = processor.debugUiState().sequencer;
+        for (int c = 0; c < seq.columns; ++c)
+        {
+            int filled = 0;
+            for (int r = 0; r < seq.rows; ++r)
+                if (seq.grid.at (static_cast<std::size_t> (r) * static_cast<std::size_t> (seq.columns)
+                                 + static_cast<std::size_t> (c)) != -1)
+                    ++filled;
+            if (filled > 1)
+                return false;
+        }
+        return true;
+    };
+
+    // Clear empties what we painted (deterministic).
+    doClick (clearBtn, editor);
+    CHECK (processor.debugUiState().sequencer.grid
+           == std::vector<std::int8_t> (
+               static_cast<std::size_t> (processor.debugUiState().sequencer.rows)
+                   * static_cast<std::size_t> (processor.debugUiState().sequencer.columns),
+               -1));
+
+    // Randomize runs the real handler: the grid stays within dims and
+    // monophonic (placement is RNG-seeded per call, so contents aren't
+    // asserted here -- the seeded engine tests own that). Then Clear
+    // leaves it empty again.
+    doClick (randBtn, editor);
+    REQUIRE (processor.debugUiState().sequencer.grid.size()
+             == static_cast<std::size_t> (processor.debugUiState().sequencer.rows)
+                    * static_cast<std::size_t> (processor.debugUiState().sequencer.columns));
+    CHECK (monophonic());
+    doClick (clearBtn, editor);
+    CHECK (processor.debugUiState().sequencer.grid
+           == std::vector<std::int8_t> (
+               static_cast<std::size_t> (processor.debugUiState().sequencer.rows)
+                   * static_cast<std::size_t> (processor.debugUiState().sequencer.columns),
+               -1));
 }
 
 TEST_CASE ("shell: loaded click track renders audible picks through process()")

@@ -55,6 +55,32 @@ struct RandomizeResult
     int passes = 0;       // round-robin passes actually run
 };
 
+// Derived working-grid dimensions.
+struct SequencerDims
+{
+    int rows = 0;
+    int columns = 0;
+
+    bool operator== (const SequencerDims&) const = default;
+};
+
+// Derive the working grid's dimensions from the sample + pattern settings:
+//   rows    = min(sliceCount, kMaxSequencerRows)  -- one row per slice
+//   columns = stepsPerBar(stepResolutionIndex) * patternLengthBars,
+//             capped at kMaxSequencerColumns
+// where stepsPerBar = round(4 beats / step-note-value-beats). Pure so the
+// dimension contract is unit-testable without the shell.
+[[nodiscard]] SequencerDims computeSequencerDims (int sliceCount,
+                                                  int stepResolutionIndex,
+                                                  int patternLengthBarsIndex) noexcept;
+
+// Set state.rows/columns to `dims`; when they DIFFER from the current
+// dimensions the working grid (cells + overrides + extensions) is reset via
+// clearGrid -- the documented "grid resets when its own dimensions change"
+// contract (SequencerState.h). Returns whether the dimensions changed.
+// The pattern bank is untouched.
+bool resizeGrid (state::SequencerState& state, SequencerDims dims) noexcept;
+
 // Default per-attempt placement density. 0.5 is denser (and more useful
 // out of the box) than the original's 0.35, but every call can override.
 inline constexpr float kDefaultPlacementProbability = 0.5f;

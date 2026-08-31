@@ -15,6 +15,7 @@
 #include <engine/Tempo.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -263,8 +264,22 @@ bool NeditProcessor::requestSampleLoad (const std::string& path)
     // Slice weights are parallel to the derived slice list and reset when
     // slices rebuild -- fresh analysis means equal probability everywhere.
     uiState_.generate.sliceWeights.assign (result->sample->slices.size(), 1.0f);
+    // Establish the sequencer working-grid dimensions from the new slice
+    // count (rows) + the current step resolution / pattern length (columns).
+    resizeSequencerGridForSample();
     provider_.publish (uiState_);
     return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::resizeSequencerGridForSample()
+{
+    const auto loaded = sampleManager_.acquire();
+    const int sliceCount = loaded != nullptr ? static_cast<int> (loaded->slices.size()) : 0;
+    const auto dims = engine::seq::computeSequencerDims (
+        sliceCount, uiState_.sequencer.stepResolutionIndex,
+        uiState_.sequencer.patternLengthBarsIndex);
+    return engine::seq::resizeGrid (uiState_.sequencer, dims);
 }
 
 //------------------------------------------------------------------------
@@ -282,6 +297,11 @@ void NeditProcessor::setActiveTab (state::UiTab tab)
     if (static_cast<unsigned> (tab) > 3)
         return;
     uiState_.ui.activeTab = tab;
+    // Tab drives the scheduler-facing mode: selecting a tab transfers audio
+    // control to that mode (Generate keeps its remembered sliceLength/clock
+    // sub-choice). This is what makes clicking SEQUENCER actually run the
+    // sequenced scheduler. tab<->mode round-trips through the state helpers.
+    uiState_.triggerMode = state::triggerModeForTab (tab, uiState_.generate.generateMode);
     provider_.publish (uiState_);
 }
 
@@ -540,6 +560,10 @@ void NeditProcessor::setGenerateMode (state::TriggerMode mode)
     // scheduler-facing mode -- otherwise flipping the ribbon would change
     // UI-only state and the audio would keep the old mode.
     uiState_.triggerMode = mode;
+    // Keep the tab<->mode invariant: setting a Generate sub-mode implies the
+    // Generate tab (idempotent -- the ribbon lives on that tab -- but keeps
+    // the rule "any triggerMode write moves the tab" true everywhere).
+    uiState_.ui.activeTab = state::tabForTriggerMode (mode);
     provider_.publish (uiState_);
 }
 
@@ -628,6 +652,202 @@ void NeditProcessor::clearSequence()
 {
     engine::seq::clearGrid (uiState_.sequencer);
     provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerCell (int row, int column, int styleOrdinal)
+{
+    auto& seq = uiState_.sequencer;
+    if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns
+        || styleOrdinal < -1 || styleOrdinal >= state::kNumPlaybackStyles)
+        return false;
+
+    const auto flat = static_cast<std::size_t> (row) * static_cast<std::size_t> (seq.columns)
+                    + static_cast<std::size_t> (column);
+
+    if (styleOrdinal < 0)
+    {
+        // Clear: drop the cell + its overrides/extensions.
+        if (seq.grid[flat] < 0)
+            return false;
+        seq.grid[flat] = -1;
+        seq.overrides.erase (static_cast<std::uint32_t> (flat));
+        seq.extensions.erase (static_cast<std::uint32_t> (flat));
+        provider_.publish (uiState_);
+        return true;
+    }
+
+    // Writing the same style over itself is a no-op (paint-on-paint erases
+    // in the UI, which issues a clear instead).
+    if (seq.grid[flat] == static_cast<std::int8_t> (styleOrdinal))
+        return false;
+
+    // Monophony: drop every other filled row in this column (and their
+    // overrides/extensions) before writing.
+    for (int otherRow = 0; otherRow < seq.rows; ++otherRow)
+    {
+        if (otherRow == row)
+            continue;
+        const auto otherFlat = static_cast<std::size_t> (otherRow)
+                             * static_cast<std::size_t> (seq.columns)
+                             + static_cast<std::size_t> (column);
+        if (seq.grid[otherFlat] >= 0)
+        {
+            seq.grid[otherFlat] = -1;
+            seq.overrides.erase (static_cast<std::uint32_t> (otherFlat));
+            seq.extensions.erase (static_cast<std::uint32_t> (otherFlat));
+        }
+    }
+
+    seq.grid[flat] = static_cast<std::int8_t> (styleOrdinal);
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerCellExtension (int row, int column, int deltaSteps)
+{
+    auto& seq = uiState_.sequencer;
+    if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns
+        || seq.grid[static_cast<std::size_t> (row) * static_cast<std::size_t> (seq.columns)
+                    + static_cast<std::size_t> (column)] < 0)
+        return false;
+
+    const auto flat = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (seq.columns)
+                    + static_cast<std::uint32_t> (column);
+
+    int ext = 0;
+    if (const auto it = seq.extensions.find (flat); it != seq.extensions.end())
+        ext = static_cast<int> (it->second);
+
+    ext = std::clamp (ext + deltaSteps, 0, 256);
+    if (ext == 0)
+        seq.extensions.erase (flat);
+    else
+        seq.extensions[flat] = static_cast<std::uint16_t> (ext);
+
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+void NeditProcessor::setSelectedDrawingStyle (int styleOrdinal)
+{
+    if (styleOrdinal < 0 || styleOrdinal >= state::kNumPlaybackStyles)
+        return;
+    if (uiState_.sequencer.selectedDrawingStyle == styleOrdinal)
+        return;
+    uiState_.sequencer.selectedDrawingStyle = styleOrdinal;
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerCellOverride (int row, int column,
+                                               state::StyleParamId id, float value)
+{
+    if (! state::isValidStyleParamId (static_cast<int> (id)))
+        return false;
+    auto& seq = uiState_.sequencer;
+    if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns
+        || seq.grid[static_cast<std::size_t> (row) * static_cast<std::size_t> (seq.columns)
+                    + static_cast<std::size_t> (column)] < 0)
+        return false;
+
+    const auto flat = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (seq.columns)
+                    + static_cast<std::uint32_t> (column);
+
+    const auto& info = state::styleParamInfo (id);
+    const float clamped = info.discrete
+        ? static_cast<float> (state::clampValue (
+            static_cast<int> (std::lround (value)), 0, info.numOptions - 1))
+        : state::clampValue (value, info.minValue, info.maxValue);
+
+    auto& cell = seq.overrides[flat];
+    const auto it = cell.find (id);
+    if (it != cell.end() && it->second == clamped)
+        return false;
+    cell[id] = clamped;
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::clearSequencerCellOverride (int row, int column,
+                                                 state::StyleParamId id)
+{
+    if (! state::isValidStyleParamId (static_cast<int> (id)))
+        return false;
+    auto& seq = uiState_.sequencer;
+    if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns)
+        return false;
+
+    const auto flat = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (seq.columns)
+                    + static_cast<std::uint32_t> (column);
+    const auto cellIt = seq.overrides.find (flat);
+    if (cellIt == seq.overrides.end())
+        return false;
+    const auto erased = cellIt->second.erase (id) > 0;
+    if (cellIt->second.empty())
+        seq.overrides.erase (cellIt);
+    if (erased)
+        provider_.publish (uiState_);
+    return erased;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerPatternLength (int index)
+{
+    if (index < 0
+        || index >= static_cast<int> (state::kPatternLengthBarsValues.size()))
+        return false;
+    if (uiState_.sequencer.patternLengthBarsIndex == index)
+        return false;
+    uiState_.sequencer.patternLengthBarsIndex = index;
+    // Pattern length is a grid DIMENSION: resizing the working grid resets
+    // it to the new column count (the documented reset-on-dimension-change
+    // contract -- analogous to a sample load).
+    resizeSequencerGridForSample();
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerStepResolution (int index)
+{
+    if (! state::isValidNoteValueIndex (index))
+        return false;
+    if (uiState_.sequencer.stepResolutionIndex == index)
+        return false;
+    uiState_.sequencer.stepResolutionIndex = index;
+    resizeSequencerGridForSample();
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerSwitchTiming (int ordinal)
+{
+    using state::PatternSwitchTiming;
+    if (ordinal < static_cast<int> (PatternSwitchTiming::immediate)
+        || ordinal > static_cast<int> (PatternSwitchTiming::endOfPattern))
+        return false;
+    if (static_cast<int> (uiState_.sequencer.patternSwitchTiming) == ordinal)
+        return false;
+    uiState_.sequencer.patternSwitchTiming = static_cast<PatternSwitchTiming> (ordinal);
+    provider_.publish (uiState_);
+    return true;
+}
+
+//------------------------------------------------------------------------
+bool NeditProcessor::setSequencerSwitchInterval (int index)
+{
+    if (! state::isValidNoteValueIndex (index))
+        return false;
+    if (uiState_.sequencer.patternSwitchIntervalIndex == index)
+        return false;
+    uiState_.sequencer.patternSwitchIntervalIndex = index;
+    provider_.publish (uiState_);
+    return true;
 }
 
 //------------------------------------------------------------------------

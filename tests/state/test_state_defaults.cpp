@@ -131,6 +131,35 @@ TEST_CASE ("ui defaults", "[defaults]")
     CHECK (ui.visibleEndNorm == 1.0);
 }
 
+TEST_CASE ("tab <-> trigger-mode mapping", "[defaults][mapping]")
+{
+    // Every tab resolves to exactly one mode; Generate carries its ribbon
+    // sub-choice.
+    CHECK (triggerModeForTab (UiTab::sequence, TriggerMode::sliceLength)
+           == TriggerMode::sequenced);
+    CHECK (triggerModeForTab (UiTab::control, TriggerMode::clock)
+           == TriggerMode::control);
+    CHECK (triggerModeForTab (UiTab::perform, TriggerMode::sliceLength)
+           == TriggerMode::performance);
+    CHECK (triggerModeForTab (UiTab::generate, TriggerMode::sliceLength)
+           == TriggerMode::sliceLength);
+    CHECK (triggerModeForTab (UiTab::generate, TriggerMode::clock)
+           == TriggerMode::clock);
+
+    // Every mode resolves back to the tab that owns it; both Generate
+    // sub-modes land on the Generate tab.
+    CHECK (tabForTriggerMode (TriggerMode::sliceLength) == UiTab::generate);
+    CHECK (tabForTriggerMode (TriggerMode::clock)       == UiTab::generate);
+    CHECK (tabForTriggerMode (TriggerMode::sequenced)   == UiTab::sequence);
+    CHECK (tabForTriggerMode (TriggerMode::performance) == UiTab::perform);
+    CHECK (tabForTriggerMode (TriggerMode::control)     == UiTab::control);
+
+    // Round-trip: tab -> mode -> tab is the identity for every tab.
+    for (auto tab : { UiTab::generate, UiTab::sequence, UiTab::control, UiTab::perform })
+        for (auto gm : { TriggerMode::sliceLength, TriggerMode::clock })
+            CHECK (tabForTriggerMode (triggerModeForTab (tab, gm)) == tab);
+}
+
 TEST_CASE ("previously-shared state is now independent", "[defaults][pitfalls]")
 {
     PluginState state;

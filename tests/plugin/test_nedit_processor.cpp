@@ -296,6 +296,35 @@ TEST_CASE ("shell: active-tab writes persist in UiState")
     CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);
 }
 
+TEST_CASE ("shell: selecting a tab transfers control to that mode")
+{
+    RunningPlugin fx;
+
+    // Default: Generate tab, sliceLength mode.
+    CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::sliceLength);
+
+    // Selecting the Sequence tab must switch the engine to the sequenced
+    // scheduler -- this is the "transfer control to the sequencer" contract.
+    fx.processor.setActiveTab (state::UiTab::sequence);
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::sequenced);
+
+    fx.processor.setActiveTab (state::UiTab::control);
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::control);
+
+    fx.processor.setActiveTab (state::UiTab::perform);
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::performance);
+
+    // Back to Generate: the tab carries the remembered sub-mode. Put the
+    // ribbon on Clock first, then return via the tab.
+    fx.processor.setGenerateMode (state::TriggerMode::clock);
+    CHECK (fx.processor.debugUiState().ui.activeTab == state::UiTab::generate);  // ribbon keeps the tab
+    fx.processor.setActiveTab (state::UiTab::sequence);                          // leave...
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::sequenced);
+    fx.processor.setActiveTab (state::UiTab::generate);                          // ...and return
+    CHECK (fx.processor.debugUiState().triggerMode == state::TriggerMode::clock);
+}
+
 TEST_CASE ("shell: style-probability writes persist in GenerateState")
 {
     RunningPlugin fx;

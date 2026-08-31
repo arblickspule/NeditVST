@@ -849,14 +849,261 @@ HARDENING entries below).
   Tests: sequenced working-pattern release defers to the next block and
   reverts to the working grid; out-of-range resetBars/clockRef indices
   schedule normally with a finite window clock (test_scheduler.cpp).
-- Test totals: default build 196/196 (53 state + 136 engine + 7 ui);
-  plugin build 241/241 (state round-trip gained a v1 forward-compat case,
+- Test totals: default build 212/212 (54 state + 140 engine + 18 ui);
+  plugin build 265/265 (54 state + 140 engine + 18 ui + 53 plugin:
+  state round-trip gained a v1 forward-compat case,
   the editor gained active-tab + style-weight persistence cases, the
   Generate mode-switch gained a click-replay test proving the FIRST click
   flips the mode via the real valueChanged handler, the palette gained a
-  plain/dotted/triplet partition check, and the subdivision quick-clears
-  gained a click-replay + group-zero test — see
-  `tests/plugin/test_nedit_processor.cpp`), zero warnings.
+  plain/dotted/triplet partition check, the subdivision quick-clears
+  gained a click-replay + group-zero test, and the sequencer gained the
+  slider-params + scratch-cycle cases — see test_scheduler.cpp below;
+  the per-cell override setters gained clean tests (clamping +
+  StyleParamId keying + empty-cell/invalid-id rejection + clear pruning)
+  in test_sample_pipeline.cpp — see below;
+  the sequencer transport setters gained a clean test (index persistence +
+  out-of-range rejection + grid resize on pattern-length/grid-interval
+  dimension changes, rows untouched) in test_sample_pipeline.cpp;
+  the CLEAR/RANDOMIZE buttons gained a click-replay test (real valueChanged
+  dispatch: Clear empties the grid, Randomize keeps it monophonic/in-range
+  then Clear empties again) in test_sample_pipeline.cpp;
+  see `tests/plugin/test_nedit_processor.cpp`; the step grid added the ui
+  geometry suite + the sequencer cell-setter/dims cases + the per-cell
+  override-menu classification suite (submenu vs mode-submenu vs slider
+  per applicableStyleParams) — see below), zero warnings.
+- Live DAW testing (Bitwig) round 2 — step-grid follow-ups (2026-08-30):
+  - **STALE DEPLOY GOTCHA (re-confirmed).** "Sequencer tab still empty" was
+    a stale `~/.vst3` bundle predating the grid, NOT a code bug. `cmake
+    --build build` refreshes `build/nedit.vst3` but the DAW loads
+    `~/.vst3/nedit.vst3` — you MUST `cmake --build build --target deploy`
+    (and rescan; Bitwig caches verdicts in
+    `~/.BitwigStudio/cache/vst3-metadata-*`). Always deploy after editor
+    changes before asking the user to retest.
+  - Empty-state grid: `SequencerGridView::drawEmptyHint` now draws a
+    placeholder 16×4 lattice + a centred "SEQUENCER — load a sample…"
+    caption so the tab clearly reads as a grid before a sample exists
+    (was a near-invisible inset box).
+  - Tab switch is now immediate: the `kTagTabBar` valueChanged handler
+    calls `syncTabBar()` directly (was idle-timer only).
+  - **Grid paint toggle BUG FIXED.** Single notes toggled on at mouse-down
+    then back OFF at mouse-up. Cause: `applyPaintAt` used a per-cell toggle
+    (`cur==paintStyle_ ? -1 : paintStyle_`) AND `onMouseUp` re-applies at the
+    release cell via `onMouseMoved`, so the release re-toggled the just-
+    painted cell off. The paint/erase ROLE is already decided once at the
+    press (`erase_`), so `applyPaintAt` now just writes `paintStyle_` (paint)
+    or `-1` (erase) with no per-cell toggle; `setSequencerCell` already
+    treats writing the same style over itself as a no-op, so the mouse-up
+    re-apply is harmless. Notes stay put.
+- Sequencer scratch BUG FIXED (2026-08-30) — "scratch broken, only in
+  sequencer mode". Real cause: `VoiceScheduler::mergeCell` (the Sequenced
+  step path) gave EVERY style the same `pickLength =
+  min(declaredLengthHostSamples, samplesUntilNextActiveStep)` (the grid
+  step's natural duration), so a scratch cell's declared window was its
+  step length instead of ONE Rate cycle — the whip never completed within
+  its window (the "grainy blip" sound). The Clock/Performance paths always
+  used `pickLength = scratchCycleHostSamples` for scratch (capped by their
+  tick/segment window); the Sequenced path was the only straggler. FIX:
+  scratch now declares `min(scratchCycleHostSamples,
+  samplesUntilNextActiveStep)` in `mergeCell` too (the anticipatory-fade
+  cap still applies). The lead-dev's "dropdown params default null" lead
+  was a red herring: `pick.params = params` is a full copy, the sequencer
+  merges valid fallbackParams (`scratchRate`=16n, curves=linear, all
+  sanitized), and the mini-dropdowns sync state→menu via `toNormalized`/
+  `COptionMenu::setValue`. Regression test: "sequenced: scratch plays one
+  Rate cycle, not a grid step" (asserts pickLength == the tempo-computed
+  cycle, ~5512 samples, and NOT the 44100 natural length).
+- Sequencer follow-ups (2026-08-30, lead-dev trio — "dropdowns blank, scratch
+  sounds like fwd/bkwd not pitch, notes ignore the sliders"):
+  - **BLANK MINI-DROPDOWN FIXED.** Every `ParamMiniMenu` ("the dropdowns
+    don't populate until we change them") started with VSTGUI's
+    `COptionMenu::currentIndex == -1`, so `getCurrent()` returned nullptr
+    and the row drew with NO label. `syncStyleProbs` only pushes when the
+    state value differs from the menu's own value (dedup gate `abs(norm -
+    getValueNormalized()) > 1e-3`), so every param whose state default is
+    index 0 (all curve/mode/type dropdowns: linear, fixed, lowpass…) never
+    got its first `setValue` and stayed blank forever. FIX: the
+    `ParamMiniMenu` ctor now ends with `setValue (0.f)` — pre-selects the
+    first entry so the row always shows the current option (currentIndex is
+    never left at -1); sync then corrects non-zero state defaults. `setValue`
+    does not echo a valueChanged, so the publish path is untouched.
+  - **SCRATCH DEFAULT CURVES → Ease In-Out.** `scratchForwardCurve` /
+    `scratchBackwardCurve` defaulted to `linear` (as the original), which
+    scans the fold at constant speed and flips direction at the turnaround —
+    reads as "fwd/bkwd position switching", not a pitch whip. Both defaults
+    are now `EasingCurve::easeInEaseOut` (smoothstep): velocity 0 at each
+    turnaround, speed hump mid-leg — "the speed hump a real scratch stroke
+    traces" (see engine/Easing.h). Deliberate lead-dev deviation from the
+    original's linear; the easeInEaseOut enum value is 3, so the info-table
+    defaults for Forward/Backward Curve moved 0.0f → 3.0f (the info-table-
+    agrees-with-struct-defaults test enforces this pair). The curve dropdowns
+    populate now (see above), so further tuning is a menu pick away.
+  - **SEQUENCER SPEAKS WITH THE SLIDERS.** Sequenced notes used
+    `SequencerState.fallbackParams` as their merged base, so painting a
+    flanger cell played the DEFAULT flanger even after the user had moved
+    the band's sliders. `mergeCell` (Scheduler.cpp) now merges
+    `generate.styleParams` (the Generate/Sequence slider+dropdown surface)
+    + per-cell overrides on top. This is a READ coupling, not the original's
+    aliasing: generate.styleParams has a single writer (the UI sliders), and
+    cell overrides (incl. the randomizer's per-cell rolls) still win.
+    `fallbackParams` stays serialized/sanitized but is no longer the audio
+    default (comments updated in StyleParameters.h / SequencerState.h /
+    Scheduler.h). Tests: "sequenced: cell overrides beat the generated
+    slider params" (renamed; base is now generate.styleParams) + NEW
+    "sequenced: notes without overrides use the generate (slider) params"
+    (slider flangerDelayMs 8.5 flows into the pick even though the sequencer
+    fallback says 1.0).
+- Tab ⇄ trigger-mode coupling (2026-08-30) — "transfer control to a mode by
+  selecting its tab". `TriggerMode` is FLAT (no "generate" wrapper — the two
+  Generate sub-modes ARE the sliceLength/clock entries), so the tab↔mode map
+  is 1:1 except the Generate tab, which resolves through
+  `generate.generateMode`. Two orthogonal state fields stay in lockstep:
+  `PluginState.triggerMode` (scheduler-facing, the ONLY thing the engine
+  dispatches on) and `UiState.activeTab` (visible tab).
+  - Single source of truth: pure `state::tabForTriggerMode(mode)` /
+    `triggerModeForTab(tab, generateMode)` in `UiState.h` (tested in
+    `test_state_defaults.cpp`: full map both ways + tab→mode→tab identity).
+  - Tab drives mode: `NeditProcessor::setActiveTab` now also writes
+    `triggerMode = triggerModeForTab(tab, generateMode)`. This is what makes
+    clicking SEQUENCER actually run `runSequenced` (before, the tab was
+    cosmetic and the engine kept the old mode — there is NO other in-editor
+    control for sequenced/performance/control; only host automation of
+    param 100 reached them).
+  - Mode drives tab: the `kParamTriggerMode` fold (`ParameterSurface::
+    applyNormalized`) now also sets `ui.activeTab = tabForTriggerMode(tm)`,
+    so a host automating the mode moves the visible tab (editor's
+    `syncTabBar` picks it up from the published state). `setGenerateMode`
+    also pins `activeTab = generate` for invariant completeness (idempotent).
+  - Editor: the tab-click handler routes through `setParam(kParamTriggerMode,
+    …)` (host edit protocol: begin/setParamNormalized/performEdit/endEdit)
+    rather than a publish-only `setActiveTab`, so the host RECORDS/reflects
+    the change and can't later re-push a stale value that snaps the mode
+    back; the fold sets triggerMode + the Generate sub-mode mirror +
+    activeTab together. `setActiveTab` stays a complete standalone API (sets
+    both fields) for tests/programmatic use.
+  - Tests: `surface: non-style params` asserts activeTab follows the
+    automated mode (control/sliceLength/sequenced); `shell: selecting a tab
+    transfers control to that mode` asserts each tab sets its mode and that
+    returning to Generate restores the remembered sub-mode.
+- Sequencer step grid (2026-08-29, Sequence tab) — the piano-roll step grid
+  is live (was a "step grid · pattern controls (pending)" placeholder):
+  - `src/ui/SequencerGridGeometry.h` (nedit_ui, framework-free, tested in
+    `tests/ui/test_sequencer_geometry.cpp`, 10 cases): PROCEDURAL sizing —
+    `computeSequencerLayout(viewW, viewH, rows, cols)` spreads rows to fill
+    the viewport when they fit at >= `kMinSequencerRowH` (14px), else fixes
+    the min height and SCROLLS (`visibleRows`/`maxScroll`); piano-roll
+    hit-testing (`rowFromBottomY` = row 0 at the BOTTOM, ceil-band mapping
+    with the leftover top strip clamped to the top visible row;
+    `columnFromX`); `naturalStepsForSlice` (slice duration quantized to the
+    step grid) + `computeCellBars` (the tested bar-span spec: natural
+    length raised by the per-cell extension, clamped to the next active
+    column = the engine's anticipatory fade). Everything derives from the
+    viewport + dims so the editor can retune sizes freely (no hardcoded
+    pixels). GOTCHA baked into the tests: the palette's 16n = 0.25 beats
+    (a 16th note), NOT 1 beat — natural-length math uses `kNoteValue4n`
+    (1.0) for "1 step = 1 beat" reasoning.
+  - `engine::seq::computeSequencerDims` / `resizeGrid`
+    (`SequenceRandomizer.{h,cpp}`, +2 tests): the sequencer grid
+    dimensions were NEVER derived before (the grid was 0x0, so the
+    sequencer/randomizer couldn't function). rows = min(sliceCount,
+    kMaxSequencerRows); columns = stepsPerBar(stepResolution) *
+    patternLengthBars, capped at kMaxSequencerColumns. `resizeGrid` resets
+    the grid ONLY when the dims change (the documented
+    reset-on-dimension-change contract). `NeditProcessor::
+    resizeSequencerGridForSample()` calls it on every sample load
+    (publish-only; before the publish in requestSampleLoad).
+  - `NeditProcessor` cell setters (UI thread, publish-only, +4 plugin
+    tests): `setSequencerCell(row,col,style)` writes/clears a cell and
+    ENFORCES MONOPHONY (writing a cell drops every other filled row in that
+    column + its overrides/extensions); `setSequencerCellExtension(row,col,
+    delta)` grows/shrinks the per-cell extension (clamped 0..256, erased at
+    0, needs a filled cell); `setSelectedDrawingStyle(style)`. All
+    `[[nodiscard]] bool` where a no-op returns false.
+  - `ui::SequencerGridView` (NeditEditor.cpp): a `CControl` rendering the
+    grid over `SequencerGridGeometry` + the live `SequencerState`/slices.
+    Draws: inset panel, per-bar column dividers + faint per-beat shading
+    (stepsPerBar = round(4 / stepBeats)), row separators, active cells as
+    style-coloured bars spanning their declared length (mirrors
+    `computeCellBars`), per-cell override triangle + extension tick, a
+    live `kAccentBright` playhead column from
+    `debugScheduler().playingStepIndex()`, and a scroll-knob hint when
+    rows are clipped. Interactions: LEFT-drag paints
+    `selectedDrawingStyle` (painting the same style erases — toggle decided
+    once at press so the drag stays consistent), RIGHT-drag erases,
+    SHIFT+drag extends the grabbed cell's declared length, WHEEL scrolls.
+    Edits call the processor setters directly (UI thread); the grid never
+    uses the host edit protocol (tag `kTagSequencerGrid` = 1030, editor-
+    local, filtered by begin/endEdit). The geometry helpers live in
+    `nedit::ui` (nedit_ui) but the editor's namespace is
+    `nedit::plugin::ui`, so a using-block bridges them.
+  - Threading: `VoiceScheduler::playingStepIndex_` is now
+    `std::atomic<int>` (relaxed load/store) — it is read from the editor's
+    idle timer while the audio thread crosses step boundaries; the plain
+    int was a latent data race. The editor repaints the grid on the idle
+    tick only when the playing step MOVES (or the sample changed);
+    paint/extension edits self-invalidate.
+  - Wiring: created in `open()` below the shared 208px style band (band
+    bottom + 16px gap to the card inner bottom), `setVisible` toggled by
+    `syncTabBar` (Sequence tab only).
+  - Style-paint palette (2026-08-30): a thin 18px strip (`kPaletteH`) at the
+    top of the grid view, 9 columns aligned to the probability band above
+    (same bandW/9, same left — view rect == band rect, so the division
+    lands on the same column pitch). Per the lead-dev's "coloured line +
+    salmon indicator" ask: each column draws a short horizontal line in its
+    style's `kStyleColours` colour as the "label", and the selected drawing
+    style gets a `kAccentMutedHi` salmon underline at the strip's bottom.
+    A click in the strip calls `NeditProcessor::setSelectedDrawingStyle`
+    (the real paint-picker being an open layout call — this is the minimal
+    in-grid alternative). The palette always draws (even in the empty
+    state, so a style can be picked before a sample loads); `gridRect(r)`
+    is the view minus the strip, and ALL grid geometry (layout height, row
+    hit-testing in onMouseDown/onMouseMoved, bar/playhead/scroll-knob
+    drawing) operates in that sub-rect so the strip never steals a row.
+  - Sequencer transport bar (2026-08-30, Sequence tab bottom): the four
+    inputs are live — `PatternLengthStepper` (a `BarsStepper`-style spinner
+    over `kPatternLengthBarsValues` = {1,2,4}, tag 1031) + three themed
+    `COptionMenu` drop-ups (grid interval = `stepResolutionIndex` note value,
+    tag 1032; switch timing = `PatternSwitchTiming` ordinal, tag 1033; switch
+    interval = `patternSwitchIntervalIndex` note value, tag 1034). A
+    `SequencerTransportBar` scrim draws the divider line + all four captions
+    (the drop-ups can't draw their own caption row). Editor-local, routed
+    through publish-only setters `setSequencerPatternLength` /
+    `setSequencerStepResolution` (both grid DIMENSIONS → call
+    `resizeSequencerGridForSample()`, the documented reset-on-dimension-change
+    contract, so more bars/finer steps widen the grid) / `setSequencerSwitch
+    Timing` / `setSequencerSwitchInterval` (clamped + idempotent-false).
+    `syncSequencerTransport` (idle + tab-sync + the switch-timing handler,
+    which re-arms immediately like the mode switch) pushes state→controls and
+    ENABLES the switch-interval dropdown only while timing == Set Interval
+    (else mouse-disabled + grey). Grid bottom shrunk to reserve the 48px bar.
+    The grid is shown Sequence-only via syncTabBar with the transport bar.
+  - BUG FIX (2026-08-30): switching to the Sequence tab crashed (segfault on
+    the first transport-bar draw). ROOT CAUSE: `SequencerTransportBar` held a
+    `const Caption*` into a stack-local `captions[4]` array in `open()`; the
+    pointer dangled the moment `open()` returned, so every draw dereferenced
+    freed stack memory. FIX: the scrim now owns a `std::vector<Caption>` copy
+    (drawn from the caller's array in its ctor). Two latent bugs found in the
+    same review and fixed: (1) the three dropdowns were created but NEVER
+    `frame->addView`-ed, so they were invisible/non-functional; (2) the scrim
+    was added LAST (on top), so VSTGUI's topmost-view hit-testing would have
+    handed the stepper/dropdown clicks to the flat scrim — it is now added
+    BEFORE the controls so they stay on top, and its caption band sits above
+    the control boxes (no overlap).
+  - Clear / Randomize buttons (same pass, right-aligned beyond the four
+    controls): two graphite-outlined CTextButtons (tags 1035/1036, public
+    header constexprs `kTagSeqClear`/`kTagSeqRandomize` so tests drive them).
+    Momentary actions routed through `pressedEdge` (CTextButton double-fires
+    under kKickStyle) → `clearSequence()` / `randomizeSequence()`, then the
+    grid repaints. Randomize's mouse-enable tracks `hasSample()`
+    (dedup'd via `lastSeqRandomizeEnabled_` in syncSequencerTransport); Clear
+    always live. Tests: click-replay proving Clear empties the painted grid
+    and Randomize keeps the grid monophonic/in-range (contents are RNG-
+    seeded per call — the seeded engine tests own placement correctness).
+  - NOT YET (next Sequencer pass, needs a lead-dev layout call): The shared
+    style-probability band currently shown on the Sequence tab maps to
+    `generate.styleWeights` (a Generate concept) — whether it doubles as
+    the paint palette or stays separate is moot for now (the dedicated
+    in-grid palette strip above covers style selection; the prob band's
+    fate is a layout call).
 - SequenceRandomizer (2026-08-29, engine, `src/engine/SequenceRandomizer.
   h/.cpp` + `tests/engine/test_sequence_randomizer.cpp`): the "Randomize
   Sequence" generator lifted off the audio thread as a pure, seedable
@@ -883,6 +1130,63 @@ HARDENING entries below).
   only-weighted style, parameter-randomize excludes Subdivide/Volume +
   clamps ranges, multi-column natural spans, degenerate inputs, clearGrid
   keeps dimensions.
+- Per-cell parameter overrides (2026-08-30, Sequencer tab) — right-click a
+  filled cell for a parameter popup + in-place value slider, faithful to
+  the original SequencerGrid's showParameterMenuForCell/getParameterSlider
+  Bounds flow.
+  - Turned OFF the right-click-erase gesture (left-drag erase-as-paint-same-
+    style already covers clearing notes) and repurposed right-click on an
+    OCCUPIED cell to open the override menu (the original's popup gesture;
+    empty-cell right-click still erases).
+  - Pure menu spec `ui::cellOverrideMenuEntries(style)` in
+    `src/ui/SequencerGridGeometry.h` (framework-free, unit-tested):
+    `CellOverrideMenuEntry{id, kind}` per applicable param (Subdivide +
+    Volume always appended, faithful to the original). Kind from the
+    vocabulary flags: `slider` = continuous OR Subdivide (discrete +
+    steppedSlider) → a plain entry that opens the in-place drag slider;
+    `submenu` = discrete non-stepped (Filter Type, Curve Shape, all *Mode/
+    curve dropdowns) → a submenu of the param's own option names that
+    writes the override directly; `modeSubmenu` = swept (Sample Rate
+    Reduction, Bit Depth, Delay/Mix/Feedback, Volume) → a submenu of the
+    paired *Mode (id+1) choices first, picking one writes the mode
+    override AND opens the value slider.
+  - `NeditProcessor::setSequencerCellOverride(row,col,id,value)` (clamps
+    continuous into range, rounds+clamps discrete to an option index,
+    keyed by StyleParamId, filled-cell only, publish-only) +
+    `clearSequencerCellOverride(row,col,id)` (prunes the cell entry when
+    empty, publish-only). The engine's `mergeCell` already merges these
+    per-cell maps over `generate.styleParams`, so overrides are live —
+    no engine change needed.
+  - `SequencerGridView` (NeditEditor.cpp) builds a transient `COptionMenu`
+    popup on right-click using `CCommandMenuItem::setActions` leaf lambdas
+    capturing (row, col, id, optionIndex). In-place slider = a live
+    `OverrideEdit` state drawn in `draw()` as a 120px box centred on the
+    step's column at that row (salmon fill fraction = value t, hairline
+    border, `name: value` label via `paramReadoutFormat` / option name),
+    pointer-capture drag in onMouseDown/Moved, committed + closed on
+    onMouseUp/Cancel; reads the current override (or the param's global
+    default) via `currentCellValue`. Pressing the palette strip dismisses
+    the slider. Discrete (incl. Subdivide) values map 0..numOptions-1 and
+    snap via the option-name label; the processor rounds on store.
+  - LIFETIME GOTCHA (real, fixed): `CMenuItem::setSubmenu(COptionMenu*)`
+    stores a RAW pointer WITHOUT retaining it, and submenu CCommandMenuItems
+    are owned by each submenu's own `menuItems` list — so a `new`+`forget`
+    submenu would dangle the moment openCellMenu returned. `SequencerGridView`
+    now holds the whole tree (top + submenus) in a member
+    `std::vector<VSTGUI::SharedPointer<COptionMenu>> menuMenus_`, cleared in
+    the popup's callback after the frame removes the top menu; the CCommand
+    item lambdas capture `this` (the grid view owns/outlives the popup on the
+    UI thread). Also: the positional `popup(CFrame*, CPoint, cb)` overload
+    requires the menu NOT attached (fresh heap menu is fine) and needs the
+    press point passed through openCellMenu.
+  - Tests: +1 ui (`cell override menu: per-style param entries with Subdivide
+    + Volume` — kind/modeId classification across styles, Subdivide→slider,
+    Volume→modeSubmenu with volumeMode, swept→modeSubmenu with the right
+    modeId, every menu ends Subdivide+Volume) + 1 plugin (`per-cell parameter
+    override setters clamp and key by cell` — continuous clamp, discrete
+    round+clamp, idempotent false, empty-cell/invalid-id rejection, single-
+    param clear + last-param prune) in test_sample_pipeline.cpp (needs a
+    loaded sample to seed the grid).
 
 ## Rules of engagement
 

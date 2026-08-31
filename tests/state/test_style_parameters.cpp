@@ -23,6 +23,11 @@ std::vector<StyleParamId> applicable (PlaybackStyle style)
 
 TEST_CASE ("defaults match the original global values", "[styleparams]")
 {
+    // NOTE: scratchForwardCurve/scratchBackwardCurve default to
+    // easeInEaseOut (smoothstep), a deliberate lead-dev deviation from the
+    // original's linear -- linear reads as constant-speed fwd/bkwd position
+    // scanning at the turnaround (a click), not a pitch whip. Ease-In-Out
+    // gives the speed hump a real scratch stroke traces (see engine/Easing.h).
     const StyleParameters params;
 
     CHECK (params.filterResonance == 2.0f);
@@ -36,8 +41,8 @@ TEST_CASE ("defaults match the original global values", "[styleparams]")
     CHECK (params.bitDepth == 5.0f);
     CHECK (params.bitDepthMode == SweepMode::fixed);
     CHECK (params.scratchRate == kNoteValue16n);
-    CHECK (params.scratchForwardCurve == EasingCurve::linear);
-    CHECK (params.scratchBackwardCurve == EasingCurve::linear);
+    CHECK (params.scratchForwardCurve == EasingCurve::easeInEaseOut);
+    CHECK (params.scratchBackwardCurve == EasingCurve::easeInEaseOut);
     CHECK (params.flangerDelayMs == 2.0f);
     CHECK (params.flangerMix == 0.5f);
     CHECK (params.flangerFeedback == 0.3f);

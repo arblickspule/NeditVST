@@ -111,10 +111,18 @@ TEST_CASE ("surface: non-style params write through and round trip")
 
     applyNormalized (s, kParamTriggerMode, 1.0f);           // last mode = control
     CHECK (s.triggerMode == state::TriggerMode::control);
+    // Mode drives tab: automating the trigger mode moves the visible tab so
+    // the editor's syncTabBar follows a host automation lane.
+    CHECK (s.ui.activeTab == state::UiTab::control);
     CHECK_THAT (toNormalized (s, kParamTriggerMode), WithinAbs (1.0f, kEps));
 
     applyNormalized (s, kParamTriggerMode, 0.0f);
     CHECK (s.triggerMode == state::TriggerMode::sliceLength);
+    CHECK (s.ui.activeTab == state::UiTab::generate);
+
+    applyNormalized (s, kParamTriggerMode, 0.5f);           // sequenced
+    CHECK (s.triggerMode == state::TriggerMode::sequenced);
+    CHECK (s.ui.activeTab == state::UiTab::sequence);
 
     // The top-level Generate modes double as generate.generateMode (the
     // ribbon aliases the same two entries), so a top-bar selection must

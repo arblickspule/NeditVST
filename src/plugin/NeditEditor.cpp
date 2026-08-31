@@ -7,6 +7,8 @@
 #include "ProbBandGeometry.h"
 #include "WaveformView.h"
 
+#include "ui/SequencerGridGeometry.h"
+
 #include "state/StyleParameters.h"
 
 #include "engine/Tempo.h"
@@ -117,6 +119,11 @@ constexpr CColor mixColor (const CColor& a, const CColor& b, double t) noexcept
 // shown on the Generate and Sequence tabs (spec: 208px, 9 columns).
 constexpr double kCardPad = 12.0;
 constexpr double kStyleBandH = 208.0;
+
+// Sequencer transport bar (bottom of the Sequence tab): pattern length
+// spinner + grid interval / switch timing / switch interval dropdowns.
+constexpr double kSeqTransportH = 48.0;
+constexpr double kSeqTransportCaptionH = 12.0;
 
 // Generate-page Timing section geometry (below the style-probability band).
 constexpr double kTimingModeBtnH = 36.0;        // SL | Clock switch
@@ -277,6 +284,12 @@ constexpr auto kTagGrainSize = static_cast<VSTGUI_INT32> (1008);
 constexpr auto kTagGrainSpeed = static_cast<VSTGUI_INT32> (1009);
 constexpr auto kTagTabBar = static_cast<VSTGUI_INT32> (1010);
 constexpr auto kTagStyleProbBase = static_cast<VSTGUI_INT32> (1011); // + style index
+// Sequencer transport bar (bottom of the Sequence tab).
+constexpr auto kTagSeqPatternLength = static_cast<VSTGUI_INT32> (1031);
+constexpr auto kTagSeqGridInterval  = static_cast<VSTGUI_INT32> (1032);
+constexpr auto kTagSeqSwitchTiming  = static_cast<VSTGUI_INT32> (1033);
+constexpr auto kTagSeqSwitchInterval = static_cast<VSTGUI_INT32> (1034);
+// kTagSeqClear (1035) / kTagSeqRandomize (1036) come from NeditEditor.h.
 
 Steinberg::ViewRect kEditorRect (0, 0, kEditorWidth, kEditorHeight);
 
@@ -505,6 +518,199 @@ private:
 
     bool hoverMinus_ = false;
     bool hoverPlus_ = false;
+};
+
+// ── Pattern length spinner (Sequencer transport bar) ───────────────────
+// A BarsStepper-style +/- stepper but over the discrete pattern-length
+// table kPatternLengthBarsValues = {1, 2, 4} (state's
+// patternLengthBarsIndex 0..2). The box shows the bar count; a step wraps
+// at the ends of the table. Publishes through valueChanged.
+class PatternLengthStepper : public CControl
+{
+public:
+    PatternLengthStepper (const CRect& size, IControlListener* l, int32_t t)
+        : CControl (size, l, t)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new PatternLengthStepper (getViewSize(), getListener(), getTag());
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        const CRect box (r.left, r.top + kBoxTop, r.right, r.top + kBoxTop + kBoxH);
+        const CRect minusBox (box.left, box.top, box.left + kStepperArmW, box.bottom);
+        const CRect plusBox (box.right - kStepperArmW, box.top, box.right, box.bottom);
+
+        dc->setDrawMode (kAliasing);
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+
+        dc->setFillColor (kSurface2);
+        dc->drawRect (box, kDrawFilled);
+
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawLine (CPoint (minusBox.right, minusBox.top),
+                      CPoint (minusBox.right, minusBox.bottom));
+        dc->drawLine (CPoint (plusBox.left, plusBox.top),
+                      CPoint (plusBox.left, plusBox.bottom));
+
+        if (hoverMinus_)
+        {
+            dc->setFillColor (kSurface3);
+            dc->drawRect (minusBox, kDrawFilled);
+        }
+        if (hoverPlus_)
+        {
+            dc->setFillColor (kSurface3);
+            dc->drawRect (plusBox, kDrawFilled);
+        }
+
+        dc->setFont (kNormalFontBig);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("-", minusBox, kCenterText);
+        dc->drawString ("+", plusBox, kCenterText);
+
+        dc->setFontColor (kTextPrimary);
+        char buf[16];
+        std::snprintf (buf, sizeof (buf), "%d", currentBars());
+        dc->drawString (buf, CRect (minusBox.right, box.top, plusBox.left, box.bottom),
+                        kCenterText);
+
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (box, kDrawStroked);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        if (! buttons.isLeftButton())
+            return kMouseEventNotHandled;
+
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const CRect box (0, kBoxTop, getViewSize().getWidth(), kBoxTop + kBoxH);
+        if (! box.pointInside (local))
+            return kMouseEventNotHandled;
+
+        const int n = static_cast<int> (state::kPatternLengthBarsValues.size());
+        int idx = currentIndex();
+        int next = idx;
+        if (local.x <= kStepperArmW)
+            next = (idx - 1 + n) % n;
+        else if (local.x >= getViewSize().getWidth() - kStepperArmW)
+            next = (idx + 1) % n;
+        else
+            return kMouseEventNotHandled;
+
+        if (next != idx)
+        {
+            setValueNormalized (static_cast<float> (next) / static_cast<float> (n - 1));
+            hoverFollow (where);
+            invalid();
+            valueChanged();
+        }
+        else
+        {
+            hoverFollow (where);
+        }
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        hoverFollow (where);
+        return kMouseEventNotHandled;
+    }
+
+private:
+    [[nodiscard]] int currentIndex() const noexcept
+    {
+        const int n = static_cast<int> (state::kPatternLengthBarsValues.size());
+        const int idx = static_cast<int> (
+            std::lround (getValueNormalized() * static_cast<float> (n - 1)));
+        return idx < 0 ? 0 : (idx >= n ? n - 1 : idx);
+    }
+
+    [[nodiscard]] int currentBars() const noexcept
+    {
+        return state::kPatternLengthBarsValues[static_cast<std::size_t> (currentIndex())];
+    }
+
+    void hoverFollow (const CPoint& where) noexcept
+    {
+        const CPoint local (where.x - getViewSize().left, where.y - getViewSize().top);
+        const bool inBox = local.y >= kBoxTop && local.y < kBoxTop + kBoxH;
+        const bool hMinus = inBox && local.x <= kStepperArmW;
+        const bool hPlus = inBox && local.x >= getViewSize().getWidth() - kStepperArmW;
+        if (hMinus != hoverMinus_ || hPlus != hoverPlus_)
+        {
+            hoverMinus_ = hMinus;
+            hoverPlus_ = hPlus;
+            invalid();
+        }
+    }
+
+    bool hoverMinus_ = false;
+    bool hoverPlus_ = false;
+};
+
+// ── Sequencer transport bar scrim ──────────────────────────────────────
+// Draws the divider line + the caption row above the four transport
+// controls (pattern length spinner + the three dropdowns). The controls
+// themselves are sibling boxes overlaid on this view; putting the captions
+// here keeps them aligned with the COptionMenus, which can't draw their own
+// caption row.
+class SequencerTransportBar : public CView
+{
+public:
+    struct Caption
+    {
+        const char* label;
+        double left;
+        double right;
+    };
+
+    // Owns a COPY of the captions -- the caller's array is usually a
+    // stack-local in open(), so holding the pointer would dangle the moment
+    // open() returns (crash on the first Sequence-tab draw).
+    SequencerTransportBar (const CRect& size, const Caption* captions, std::size_t count)
+        : CView (size), captions_ (captions, captions + count)
+    {
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+
+        // Divider line above the section.
+        dc->setDrawMode (kAliasing);
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawLine (CPoint (r.left, r.top), CPoint (r.right, r.top));
+
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        for (const auto& c : captions_)
+            dc->drawString (c.label,
+                            CRect (c.left, r.top + 2, c.right, r.top + kSeqTransportCaptionH),
+                            kLeftText);
+
+        setDirty (false);
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new SequencerTransportBar (getViewSize(), captions_.data(), captions_.size());
+    }
+
+private:
+    std::vector<Caption> captions_;
 };
 
 // ── BPM field: drag-to-scrub readout over the manualTempoBpm param ────
@@ -1572,6 +1778,14 @@ public:
     {
         for (int i = 0; i < paramRowOptionCount (t); ++i)
             addEntry (paramRowOptionName (t, i));
+        // COptionMenu starts with currentIndex == -1, so getCurrent() returns
+        // nullptr and the row draws BLANK until something calls setValue.
+        // syncStyleProbs only pushes when the state value differs from the
+        // menu's (dedup gate skips state defaults of index 0), so a default-0
+        // param never populated its row. Pre-select the first entry so the
+        // row always shows the current option; sync then corrects non-zero
+        // state defaults (setValue does not echo a valueChanged).
+        setValue (0.f);
     }
 
     CBaseObject* newCopy () const override
@@ -1813,6 +2027,796 @@ private:
     int activeColumnIndex_ = 0;
 };
 
+// The framework-free step-grid geometry lives in nedit::ui (nedit_ui);
+// bring the helpers into this nedit::plugin::ui scope so the control reads
+// them unqualified.
+using nedit::ui::clampSequencerScroll;
+using nedit::ui::columnFromX;
+using nedit::ui::computeSequencerLayout;
+using nedit::ui::naturalStepsForSlice;
+using nedit::ui::noteValueBeats;
+using nedit::ui::rowFromBottomY;
+using nedit::ui::SequencerGridLayout;
+
+// ── Sequencer step grid (Sequence tab). ─────────────────────────────────
+// A piano-roll step grid (slice 0 at the BOTTOM): procedural sizing
+// (everything derives from the viewport + grid dims via the pure
+// SequencerGridGeometry helpers), vertical scrolling when the slice count
+// exceeds the viewport, beat-bar shading, active cells rendered as bars
+// spanning their declared length (mirroring the engine's Sequenced pick,
+// including the anticipatory clamp), per-cell extension + override
+// markers, and a live playhead column. Interactions: left-drag paints the
+// selected drawing style (painting over the same style erases), right-drag
+// erases, Shift+drag extends the grabbed cell's declared length, wheel
+// scrolls.
+class SequencerGridView : public CControl
+{
+public:
+    SequencerGridView (const CRect& size, IControlListener* l, int32_t t,
+                       NeditEditor* editor)
+        : CControl (size, l, t), editor_ (editor)
+    {
+    }
+
+    CBaseObject* newCopy () const override
+    {
+        return new SequencerGridView (getViewSize(), getListener(), getTag(), editor_);
+    }
+
+    // Height of the style-palette bar reserved at the top of the grid view
+    // (a thin strip of 9 colour lines aligned to the probability band above,
+    // with a salmon indicator under the selected drawing style).
+    static constexpr double kPaletteH = 18.0;
+
+    [[nodiscard]] int scroll() const noexcept { return scrollRows_; }
+
+    void setScroll (int rows) noexcept
+    {
+        const int clamped = std::max (0, rows);
+        if (clamped != scrollRows_)
+        {
+            scrollRows_ = clamped;
+            invalid();
+        }
+    }
+
+    void draw (CDrawContext* dc) override
+    {
+        const CRect r = getViewSize();
+        dc->setDrawMode (kAliasing);
+
+        const NeditProcessor* owner = editor_->owner();
+        const auto& seq = owner->uiStateView().sequencer;
+        auto loaded = owner->acquireLoadedSample();
+        const int totalRows = loaded != nullptr ? seq.rows : 0;
+
+        rebuildLayout (totalRows);
+
+        // Inset panel: slightly brighter than the card + hairline.
+        dc->setFillColor (kSurface2);
+        dc->drawRect (r, kDrawFilled);
+        dc->setFrameColor (kOutline);
+        dc->setLineWidth (1);
+        dc->drawRect (r, kDrawStroked);
+
+        // Style-palette strip (aligned to the probability band's columns):
+        // a coloured line per style, salmon indicator under the selected one.
+        const int drawingStyle = seq.selectedDrawingStyle;
+        drawPalette (dc, r, drawingStyle);
+
+        if (layout_.visibleRows <= 0 || layout_.totalCols <= 0)
+        {
+            drawEmptyHint (dc, gridRect (r));
+            setDirty (false);
+            return;
+        }
+
+        // ── Beat-bar column shading: every bar boundary (a whole bar's
+        // worth of steps) gets a subtly brighter band + a divider line so
+        // the grid reads in bars regardless of step resolution. ──
+        const double stepsPerBarD = noteValueBeats (seq.stepResolutionIndex) > 0.0
+                                        ? 4.0 / noteValueBeats (seq.stepResolutionIndex)
+                                        : 4.0;
+        const int stepsPerBar = std::max (1, static_cast<int> (std::lround (stepsPerBarD)));
+
+        const CRect g = gridRect (r);
+
+        for (int col = 0; col < layout_.totalCols; ++col)
+        {
+            const double x = r.left + static_cast<double> (col) * layout_.colWidth;
+            if (col % stepsPerBar == 0)
+            {
+                if (col > 0)
+                {
+                    dc->setFrameColor (kOutline);
+                    dc->setLineWidth (1);
+                    dc->drawLine (CPoint (x, g.top), CPoint (x, g.bottom));
+                }
+            }
+            else if ((col / std::max (1, stepsPerBar / 4)) % 2 == 0)
+            {
+                // Faint per-beat shading inside the bar.
+                dc->setFillColor (mixColor (kSurface2, kSurface1, 0.4));
+                dc->drawRect (CRect (x, g.top + 1, x + layout_.colWidth, g.bottom - 1),
+                              kDrawFilled);
+            }
+        }
+
+        if (loaded != nullptr)
+            drawBars (dc, g, *loaded, seq);
+
+        // ── Playhead column (bright vertical line on the current step) ──
+        const int playingStep = owner->debugScheduler().playingStepIndex();
+        if (playingStep >= 0 && playingStep < layout_.totalCols)
+        {
+            const double x = r.left + static_cast<double> (playingStep) * layout_.colWidth;
+            dc->setFrameColor (kAccentBright);
+            dc->setLineWidth (1);
+            dc->drawLine (CPoint (x, g.top), CPoint (x, g.bottom));
+        }
+
+        // ── Scroll hint when rows are clipped ──
+        if (layout_.scrolls)
+        {
+            const double trackH = g.getHeight();
+            const double knobH = trackH * static_cast<double> (layout_.visibleRows)
+                                 / static_cast<double> (layout_.totalRows);
+            const double knobTop = g.top
+                                   + (trackH - knobH)
+                                         * static_cast<double> (scrollRows_)
+                                         / static_cast<double> (layout_.maxScroll > 0
+                                                                    ? layout_.maxScroll
+                                                                    : 1);
+            dc->setFillColor (kTextDisabled);
+            dc->drawRect (CRect (g.right - 4, knobTop, g.right - 2, knobTop + std::max (8.0, knobH)),
+                          kDrawFilled);
+        }
+
+        // ── In-place override slider overlay ──
+        if (edit_.active)
+            drawEditSlider (dc, r);
+
+        setDirty (false);
+    }
+
+    CMouseEventResult onMouseDown (CPoint& where, const CButtonState& buttons) override
+    {
+        const NeditProcessor* owner = editor_->owner();
+        const auto& seq = owner->uiStateView().sequencer;
+        auto loaded = owner->acquireLoadedSample();
+        rebuildLayout (loaded != nullptr ? seq.rows : 0);
+
+        // Click in the style-palette strip selects the drawing style (and
+        // dismisses an open override slider without further edits).
+        const CRect r = getViewSize();
+        if (where.y >= r.top && where.y < r.top + kPaletteH)
+        {
+            finishEditSlider();
+            const double colW = r.getWidth()
+                                / static_cast<double> (state::kNumPlaybackStyles);
+            const int style = static_cast<int> ((where.x - r.left) / colW);
+            if (style >= 0 && style < static_cast<int> (state::kNumPlaybackStyles)
+                && style != seq.selectedDrawingStyle)
+            {
+                editor_->owner()->setSelectedDrawingStyle (style);
+                invalid();
+            }
+            return kMouseEventHandled;
+        }
+
+        if (layout_.visibleRows <= 0)
+            return kMouseEventNotHandled;
+
+        // An in-place override slider is live: a press inside the grid band
+        // starts the drag (pointer-capture style) so the user can scrub a
+        // value before releasing; the edit commits on release.
+        if (edit_.active)
+        {
+            editDragging_ = true;
+            editSliderFromX (where.x);
+            return kMouseEventHandled;
+        }
+
+        const int col = columnFromX (layout_, where.x, r.left);
+        const int row = rowFromBottomY (layout_, where.y, r.top + kPaletteH,
+                                        r.bottom, scrollRows_);
+        if (row < 0 || col < 0)
+            return kMouseEventNotHandled;
+
+        if (buttons.isShiftSet())
+        {
+            // Extension gesture: capture the grabbed cell + its base length.
+            if (gridAt (row, col) >= 0)
+            {
+                grabRow_ = row;
+                grabCol_ = col;
+                lastDelta_ = 0;
+                extending_ = true;
+                return kMouseEventHandled;
+            }
+            return kMouseEventNotHandled;
+        }
+
+        // Paint or erase gesture. Toggle decided once at the press so the
+        // drag stays consistent: painting the same style on the first cell
+        // means we're erasing.
+        const int first = gridAt (row, col);
+        if (buttons.isRightButton())
+        {
+            // Right-click on an OCCUPIED cell opens the per-cell parameter
+            // override menu (the original's popup gesture). An already-set
+            // cell re-pops the menu; left-drag erase is the dedicated way to
+            // clear a note.
+            if (first >= 0)
+            {
+                openCellMenu (row, col, where);
+                return kMouseEventHandled;
+            }
+            erase_ = true;
+        }
+        else if (buttons.isLeftButton())
+        {
+            erase_ = false;
+            const int drawingStyle = owner->uiStateView().sequencer.selectedDrawingStyle;
+            erase_ = (first == drawingStyle && first >= 0);
+            paintStyle_ = drawingStyle;
+        }
+        else
+        {
+            return kMouseEventNotHandled;
+        }
+
+        dragging_ = true;
+        applyPaintAt (row, col);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseMoved (CPoint& where, const CButtonState&) override
+    {
+        const NeditProcessor* owner = editor_->owner();
+        const auto& seq = owner->uiStateView().sequencer;
+        auto loaded = owner->acquireLoadedSample();
+        rebuildLayout (loaded != nullptr ? seq.rows : 0);
+
+        const CRect r = getViewSize();
+
+        if (edit_.active)
+        {
+            if (editDragging_)
+                editSliderFromX (where.x);
+            return kMouseEventHandled;
+        }
+
+        if (extending_)
+        {
+            const int col = columnFromX (layout_, where.x, r.left);
+            if (col < 0)
+                return kMouseEventHandled;
+            const int delta = col - grabCol_;
+            if (delta != lastDelta_)
+            {
+                if (editor_->owner()->setSequencerCellExtension (
+                        grabRow_, grabCol_, delta - lastDelta_))
+                    lastDelta_ = delta;
+                invalid();
+            }
+            return kMouseEventHandled;
+        }
+
+        if (! dragging_)
+            return kMouseEventNotHandled;
+
+        const int col = columnFromX (layout_, where.x, r.left);
+        const int row = rowFromBottomY (layout_, where.y, r.top + kPaletteH,
+                                        r.bottom, scrollRows_);
+        if (row < 0 || col < 0)
+            return kMouseEventHandled;
+        applyPaintAt (row, col);
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
+    {
+        onMouseMoved (where, buttons);
+        if (edit_.active)
+            finishEditSlider();
+        editDragging_ = false;
+        dragging_ = false;
+        extending_ = false;
+        return kMouseEventHandled;
+    }
+
+    CMouseEventResult onMouseCancel () override
+    {
+        dragging_ = false;
+        extending_ = false;
+        editDragging_ = false;
+        finishEditSlider();
+        return kMouseEventHandled;
+    }
+
+    void onMouseWheelEvent (MouseWheelEvent& event) override
+    {
+        if (event.deltaY == 0.0)
+            return;
+        const auto& seq = editor_->owner()->uiStateView().sequencer;
+        auto loaded = editor_->owner()->acquireLoadedSample();
+        rebuildLayout (loaded != nullptr ? seq.rows : 0);
+        if (! layout_.scrolls)
+            return;
+
+        const int steps = event.deltaY < 0.0 ? -1 : 1;
+        setScroll (scrollRows_ + steps);
+        event.consumed = true;
+    }
+
+private:
+    [[nodiscard]] int gridAt (int row, int column) const noexcept
+    {
+        const auto& seq = editor_->owner()->uiStateView().sequencer;
+        if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns)
+            return -1;
+        return seq.grid[static_cast<std::size_t> (row) * static_cast<std::size_t> (seq.columns)
+                        + static_cast<std::size_t> (column)];
+    }
+
+    void rebuildLayout (int totalRows) noexcept
+    {
+        const CRect r = getViewSize();
+        layout_ = computeSequencerLayout (r.getWidth(),
+                                          r.getHeight() - kPaletteH,
+                                          totalRows, rowsEffectiveColumns());
+        scrollRows_ = clampSequencerScroll (layout_, scrollRows_);
+    }
+
+    // The grid's sub-rect: the view minus the palette strip at its top. All
+    // row/bar/playhead geometry operates in this area.
+    [[nodiscard]] CRect gridRect (const CRect& r) const noexcept
+    {
+        return CRect (r.left, r.top + kPaletteH, r.right, r.bottom);
+    }
+
+    void drawPalette (CDrawContext* dc, const CRect& r, int selected)
+    {
+        const int n = static_cast<int> (state::kNumPlaybackStyles);
+        const double colW = r.getWidth() / static_cast<double> (n);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const double x0 = r.left + static_cast<double> (i) * colW;
+            const double cx = x0 + colW * 0.5;
+
+            // The "label": a short horizontal line in the style's colour.
+            const CColor& base = kStyleColours[static_cast<std::size_t> (i)];
+            dc->setFillColor (base);
+            dc->drawRect (CRect (cx - colW * 0.15, r.top + 3.0,
+                                 cx + colW * 0.15, r.top + 6.0),
+                          kDrawFilled);
+
+            // Salmon selection indicator under the active style.
+            if (i == selected)
+            {
+                dc->setFillColor (kAccentMutedHi);
+                dc->drawRect (CRect (x0 + 2.0, r.top + kPaletteH - 3.0,
+                                     x0 + colW - 2.0, r.top + kPaletteH - 1.0),
+                              kDrawFilled);
+            }
+        }
+    }
+
+    [[nodiscard]] int rowsEffectiveColumns() const noexcept
+    {
+        return editor_->owner()->uiStateView().sequencer.columns;
+    }
+
+    void applyPaintAt (int row, int column)
+    {
+        // The gesture's role (paint vs erase) is decided ONCE at the press
+        // (see onMouseDown): erase_ means "clear these cells", otherwise we
+        // write the selected style. Do NOT toggle per cell: the old per-cell
+        // toggle, combined with onMouseUp re-applying at the release cell,
+        // turned a single note back off on mouse-up. The processor's setter
+        // already treats writing the same style over itself as a no-op, so
+        // re-applying at the release cell is harmless here.
+        NeditProcessor* owner = editor_->owner();
+        if (owner->setSequencerCell (row, column, erase_ ? -1 : paintStyle_))
+            invalid();
+    }
+
+    void drawEmptyHint (CDrawContext* dc, const CRect& r)
+    {
+        // Draw a placeholder lattice (a default bar of 16 steps x 4 rows) so
+        // the Sequence tab clearly reads as a step grid even before a sample
+        // exists, then a centred call-to-action over it.
+        constexpr int kEmptyCols = 16;
+        constexpr int kEmptyRows = 4;
+        const double colW = r.getWidth() / static_cast<double> (kEmptyCols);
+        const double rowH = r.getHeight() / static_cast<double> (kEmptyRows);
+
+        dc->setLineWidth (1);
+        for (int c = 1; c < kEmptyCols; ++c)
+        {
+            const double x = r.left + static_cast<double> (c) * colW;
+            dc->setFrameColor (c % 4 == 0 ? kOutline : mixColor (kOutline, kSurface2, 0.5));
+            dc->drawLine (CPoint (x, r.top), CPoint (x, r.bottom));
+        }
+        dc->setFrameColor (mixColor (kOutline, kSurface2, 0.5));
+        for (int rr = 1; rr < kEmptyRows; ++rr)
+        {
+            const double y = r.top + static_cast<double> (rr) * rowH;
+            dc->drawLine (CPoint (r.left, y), CPoint (r.right, y));
+        }
+
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("SEQUENCER — load a sample to populate the step grid",
+                        CRect (r.left, r.top + r.getHeight() * 0.5 - 8,
+                               r.right, r.top + r.getHeight() * 0.5 + 8),
+                        kCenterText);
+    }
+
+    void drawBars (CDrawContext* dc, const CRect& r, const LoadedSample& loaded,
+                   const state::SequencerState& seq)
+    {
+        const double originalBpm = engine::tempo::calculatedOriginalBpm (
+            editor_->owner()->uiStateView().sample);
+
+        // Visible row bands, bottom-up; band b shows slice scrollRows_ + b.
+        for (int b = 0; b < layout_.visibleRows; ++b)
+        {
+            const int row = scrollRows_ + b;
+            if (row >= layout_.totalRows || row >= static_cast<int> (loaded.slices.size()))
+                break;
+
+            const double rowBottom = r.bottom - static_cast<double> (b) * layout_.rowHeight;
+            const double rowTop = rowBottom - layout_.rowHeight;
+
+            // Row separator.
+            dc->setFrameColor (kOutline);
+            dc->setLineWidth (1);
+            dc->drawLine (CPoint (r.left, rowBottom), CPoint (r.right, rowBottom));
+
+            // Scan this row's cells directly (monophonic rows, one style).
+            // Use the SampleState's rate + tempo (exactly what the engine's
+            // Sequenced scheduler reads) so the bars match what plays.
+            const std::int64_t sliceFrames = loaded.slices[static_cast<std::size_t> (row)].lengthFrames();
+            const double sampleRate = editor_->owner()->uiStateView().sample.sampleSampleRate;
+
+            for (int col = 0; col < layout_.totalCols; ++col)
+            {
+                const int style = gridAt (row, col);
+                if (style < 0)
+                    continue;
+
+                const auto cell = static_cast<std::uint32_t> (row)
+                                * static_cast<std::uint32_t> (layout_.totalCols)
+                                + static_cast<std::uint32_t> (col);
+
+                const double stepBeats = noteValueBeats (seq.stepResolutionIndex);
+                int declared = naturalStepsForSlice (sliceFrames, sampleRate, originalBpm,
+                                                     stepBeats);
+                if (const auto it = seq.extensions.find (cell); it != seq.extensions.end())
+                    declared = std::max (declared, static_cast<int> (it->second));
+
+                int end = std::min (layout_.totalCols, col + declared);
+                for (int c = col + 1; c < end; ++c)
+                {
+                    if (anyColumnActive (c))
+                    {
+                        end = c;
+                        break;
+                    }
+                }
+
+                drawBar (dc, r, rowTop, rowBottom, col, end, style);
+                drawMarkers (dc, r, rowTop, col, end, style, seq, cell);
+            }
+        }
+    }
+
+    [[nodiscard]] bool anyColumnActive (int column) const noexcept
+    {
+        if (column >= layout_.totalCols)
+            return false;
+        for (int rr = 0; rr < layout_.totalRows; ++rr)
+        {
+            if (gridAt (rr, column) >= 0)
+                return true;
+        }
+        return false;
+    }
+
+    void drawBar (CDrawContext* dc, const CRect& r, double rowTop, double rowBottom,
+                  int col, int end, int style)
+    {
+        const double left = r.left + static_cast<double> (col) * layout_.colWidth;
+        const double width = static_cast<double> (end - col) * layout_.colWidth - 1.0;
+        const double inset = 1.0;
+        const CColor& base = kStyleColours[static_cast<std::size_t> (style)];
+        const CColor fill = mixColor (base, kSurface2, 0.12);   // tone it toward the panel
+
+        dc->setFillColor (fill);
+        dc->drawRect (CRect (left, rowTop + inset, left + std::max (0.0, width),
+                             rowBottom - inset),
+                      kDrawFilled);
+        dc->setFrameColor (base);
+        dc->setLineWidth (1);
+        dc->drawRect (CRect (left, rowTop + inset, left + std::max (0.0, width),
+                             rowBottom - inset),
+                      kDrawStroked);
+    }
+
+    void drawMarkers (CDrawContext* dc, const CRect& r, double rowTop,
+                      int col, int end, int style, const state::SequencerState& seq,
+                      std::uint32_t cell)
+    {
+        const double left = r.left + static_cast<double> (col) * layout_.colWidth;
+        const double top = rowTop + 2.0;
+        constexpr double size = 4.0;
+
+        // Extended tail (declared > natural) renders brighter than the head.
+        const auto& base = kStyleColours[static_cast<std::size_t> (style)];
+
+        // Per-cell override marker: a small accent triangle in the top-right.
+        if (const auto it = seq.overrides.find (cell); it != seq.overrides.end())
+        {
+            (void) it;
+            const double cx = left + static_cast<double> (end - col) * layout_.colWidth - 8.0;
+            dc->setFillColor (kAccentMutedHi);
+            drawTriangle (dc, CPoint (cx, top), CPoint (cx + size - 1, top),
+                          CPoint (cx, top + size - 1));
+        }
+
+        // Extension marker: brighten the bar start if this cell is extended.
+        if (const auto it = seq.extensions.find (cell); it != seq.extensions.end())
+        {
+            (void) it;
+            dc->setFillColor (base);
+            dc->drawRect (CRect (left + 1.0, top, left + 4.0, top + 3.0), kDrawFilled);
+        }
+    }
+
+    void drawTriangle (CDrawContext* dc, const CPoint& a, const CPoint& b, const CPoint& c)
+    {
+        auto* path = dc->createGraphicsPath();
+        if (path == nullptr)
+            return;
+        path->beginSubpath (a);
+        path->addLine (b);
+        path->addLine (c);
+        path->closeSubpath();
+        dc->setDrawMode (kAntiAliasing);
+        dc->drawGraphicsPath (path, CDrawContext::kPathFilled);
+        path->forget();
+        dc->setDrawMode (kAliasing);
+    }
+
+    // ── Per-cell parameter override: context menu + in-place value slider ──
+    // Width of the in-place drag slider (centred on the step's column).
+    static constexpr double kEditSliderW = 120.0;
+
+    // The live state of the in-place slider while a value is being scrubbed.
+    struct OverrideEdit
+    {
+        bool active = false;
+        int row = 0;
+        int col = 0;
+        state::StyleParamId id {};
+        float value = 0.0f;      // current stored value / option index
+        double minValue = 0.0;   // slider mapping space
+        double maxValue = 1.0;
+        double left = 0.0;       // slider x-extent (view-space)
+        double right = 0.0;
+    };
+
+    // The current override value for a cell param, falling back to the
+    // parameter's global default when the cell has no override.
+    [[nodiscard]] float currentCellValue (int row, int col, state::StyleParamId id) const noexcept
+    {
+        const auto& seq = editor_->owner()->uiStateView().sequencer;
+        const auto flat = static_cast<std::uint32_t> (row)
+                        * static_cast<std::uint32_t> (seq.columns)
+                        + static_cast<std::uint32_t> (col);
+        if (const auto cit = seq.overrides.find (flat); cit != seq.overrides.end())
+            if (const auto it = cit->second.find (id); it != cit->second.end())
+                return it->second;
+        return state::styleParamInfo (id).defaultValue;
+    }
+
+    // Centred on the step's column, clamped inside the view.
+    void editSliderBounds (int col, const CRect& r, double& left, double& right) const noexcept
+    {
+        const double center = r.left + (static_cast<double> (col) + 0.5) * layout_.colWidth;
+        left  = std::max (r.left + 2.0, center - kEditSliderW * 0.5);
+        right = std::min (r.right - 2.0, center + kEditSliderW * 0.5);
+    }
+
+    void beginEditSlider (int row, int col, state::StyleParamId id)
+    {
+        const auto& info = state::styleParamInfo (id);
+        if (! info.discrete && info.minValue == info.maxValue)
+            return;
+        edit_.active = true;
+        edit_.row = row;
+        edit_.col = col;
+        edit_.id = id;
+        edit_.value = currentCellValue (row, col, id);
+        edit_.minValue = info.discrete ? 0.0 : static_cast<double> (info.minValue);
+        edit_.maxValue = info.discrete ? static_cast<double> (info.numOptions - 1)
+                                       : static_cast<double> (info.maxValue);
+        const CRect r = getViewSize();
+        editSliderBounds (col, r, edit_.left, edit_.right);
+        invalid();
+    }
+
+    void editSliderFromX (double x) noexcept
+    {
+        if (! edit_.active)
+            return;
+        const double span = std::max (1.0, edit_.right - edit_.left);
+        const double t = state::clampValue ((x - edit_.left) / span, 0.0, 1.0);
+        const double v = edit_.minValue + t * (edit_.maxValue - edit_.minValue);
+        edit_.value = static_cast<float> (v);
+        (void) editor_->owner()->setSequencerCellOverride (
+            edit_.row, edit_.col, edit_.id, edit_.value);
+        invalid();
+    }
+
+    void finishEditSlider() noexcept
+    {
+        if (edit_.active)
+        {
+            edit_.active = false;
+            invalid();
+        }
+    }
+
+    // `name: value` label for the in-place slider (option name for discrete
+    // params, a formatted raw value for continuous ones).
+    [[nodiscard]] std::string editSliderLabel() const
+    {
+        const auto& info = state::styleParamInfo (edit_.id);
+        if (info.discrete)
+        {
+            const int idx = static_cast<int> (std::lround (edit_.value));
+            const char* name = state::styleParamOptionName (edit_.id, idx);
+            return std::string (info.name) + ": "
+                 + (name != nullptr ? name : "-");
+        }
+        char buf[64];
+        std::snprintf (buf, sizeof (buf), paramReadoutFormat (edit_.id), edit_.value);
+        return std::string (info.name) + ": " + buf;
+    }
+
+    void drawEditSlider (CDrawContext* dc, const CRect& r)
+    {
+        if (edit_.minValue == edit_.maxValue)
+            return;
+        const double rowIndex = static_cast<double> (edit_.row - scrollRows_);
+        const double rowBottom = r.bottom - rowIndex * layout_.rowHeight;
+        const double rowTop = rowBottom - layout_.rowHeight;
+
+        // A compact box centred on the step's column at that row.
+        const double boxW = edit_.right - edit_.left;
+        const double boxX = edit_.left;
+        const double boxTop = rowTop + 1.0;
+        const double boxBottom = rowBottom - 1.0;
+
+        // Tint the box toward the panel so it reads as an overlay, not a cell.
+        dc->setFillColor (mixColor (kAccent, kSurface2, 0.35));
+        dc->drawRect (CRect (boxX, boxTop, boxX + boxW, boxBottom), kDrawFilled);
+        dc->setFrameColor (kAccentBright);
+        dc->setLineWidth (1);
+        dc->drawRect (CRect (boxX, boxTop, boxX + boxW, boxBottom), kDrawStroked);
+
+        // Fill fraction = t of the current value.
+        const double t = (edit_.value - edit_.minValue)
+                         / std::max (1e-9, edit_.maxValue - edit_.minValue);
+        const double fillX = boxX + static_cast<double> (t) * boxW;
+        dc->setFillColor (kAccentBright);
+        dc->drawRect (CRect (boxX, boxTop, std::max (boxX, fillX), boxBottom), kDrawFilled);
+
+        // `name: value` label, clipped inside the box.
+        const std::string label = editSliderLabel();
+        dc->setFont (kNormalFontSmall);
+        dc->setFontColor (kTextPrimary);
+        dc->drawString (label.c_str(),
+                        CRect (boxX + 4.0, boxTop, boxX + boxW - 4.0, boxBottom),
+                        kLeftText, true);
+    }
+
+    // The right-click context menu for an occupied cell: one entry per
+    // applicable style parameter (Subdivide + Volume included always).
+    // Continuous / stepped entries open the in-place slider; discrete
+    // params present a submenu of option names that writes the override
+    // directly; swept params present a submenu of their *Mode choices first
+    // and then open the value slider.
+    void openCellMenu (int row, int col, const CPoint& where)
+    {
+        const int style = gridAt (row, col);
+        if (style < 0)
+            return;
+        const auto styleEnum = static_cast<state::PlaybackStyle> (style);
+        const auto entries = nedit::ui::cellOverrideMenuEntries (styleEnum);
+
+        // All menus (top + submenus) live in menuMenus_ so the CMenuItems'
+        // raw submenu pointers stay valid until the popup finishes; the
+        // callback releases them. CMenuItem::setSubmenu does NOT retain its
+        // submenu, so a plain new/forget would dangle.
+        auto* top = new COptionMenu (CRect (0, 0, 0, 0), nullptr, -1);
+        menuMenus_.clear();
+        menuMenus_.emplace_back (top);
+
+        for (const auto& e : entries)
+        {
+            const auto& info = state::styleParamInfo (e.id);
+            const UTF8String title = static_cast<UTF8String> (info.name);
+
+            if (e.kind == nedit::ui::CellOverrideMenuKind::slider)
+            {
+                auto* item = new CCommandMenuItem (CCommandMenuItem::Desc (title, -1));
+                item->setActions (
+                    [this, row, col, id = e.id] (CCommandMenuItem*) {
+                        beginEditSlider (row, col, id);
+                    });
+                top->addEntry (item);
+                continue;
+            }
+
+            // submenu or modeSubmenu: a submenu of option names.
+            const auto pid = e.kind == nedit::ui::CellOverrideMenuKind::modeSubmenu ? e.modeId : e.id;
+            const int optCount = std::max (1, state::styleParamInfo (pid).numOptions);
+            auto* sub = new COptionMenu (CRect (0, 0, 0, 0), nullptr, -1);
+            menuMenus_.emplace_back (sub);
+            for (int o = 0; o < optCount; ++o)
+            {
+                const char* oname = state::styleParamOptionName (pid, o);
+                auto* leaf = new CCommandMenuItem (
+                    CCommandMenuItem::Desc (UTF8String (oname != nullptr ? oname : ""), -1));
+                leaf->setActions (
+                    [this, row, col, e, o] (CCommandMenuItem*) {
+                        if (e.kind == nedit::ui::CellOverrideMenuKind::modeSubmenu)
+                        {
+                            // Write the mode override, then ask for the value.
+                            (void) editor_->owner()->setSequencerCellOverride (
+                                row, col, e.modeId, static_cast<float> (o));
+                            beginEditSlider (row, col, e.id);
+                        }
+                        else
+                        {
+                            (void) editor_->owner()->setSequencerCellOverride (
+                                row, col, e.id, static_cast<float> (o));
+                        }
+                    });
+                sub->addEntry (leaf);
+            }
+            top->addEntry (sub, title);
+        }
+
+        top->setStyle (COptionMenu::kPopupStyle);
+        top->popup (getFrame(), where, [this] (COptionMenu*) {
+            menuMenus_.clear ();
+        });
+    }
+
+    NeditEditor* editor_ = nullptr;
+    SequencerGridLayout layout_;   // cached for draw/hit-testing
+    int scrollRows_ = 0;               // scroll offset (rows)
+    bool dragging_ = false;
+    bool erase_ = false;
+    int paintStyle_ = 0;
+    bool extending_ = false;
+    int grabRow_ = 0;
+    int grabCol_ = 0;
+    int lastDelta_ = 0;
+    OverrideEdit edit_;                         // in-place override slider
+    bool editDragging_ = false;                 // slider drag in progress
+    // Owns the live right-click menu tree (top + submenus) until its popup
+    // callback fires. CMenuItems hold raw submenu pointers that must stay
+    // valid through display.
+    std::vector<VSTGUI::SharedPointer<COptionMenu>> menuMenus_;
+};
+
 // ── Performance-page tab strip (GENERATE / SEQUENCER / CONTROL / ───────
 // PERFORMANCE). 48px tall per spec deviation in AGENTS. Container-less
 // underline tabs (design-language.md §6): active = salmon label + 2px
@@ -2035,7 +3039,7 @@ private:
     {
         return tab == state::UiTab::generate
                    ? ""   // the timing section fills the space below the band
-                   : "step grid · pattern controls (pending)";
+                   : "";  // the step grid fills the space below the band
     }
 
     [[nodiscard]] static const char* hintForTab (state::UiTab tab)
@@ -2472,6 +3476,95 @@ void NeditEditor::syncToolBarControls()
 }
 
 //------------------------------------------------------------------------
+// Theme a transport-bar dropdown: flat surface-2 button matching the
+// toolbar's boxed controls (surface-2 fill + outline frame, left-aligned
+// small text). The caller adds entries and the view to the frame.
+VSTGUI::COptionMenu* NeditEditor::makeTransportMenu (const CRect& size, int32_t tag)
+{
+    auto* menu = new VSTGUI::COptionMenu (size, this, static_cast<VSTGUI_INT32> (tag));
+    menu->setBackColor (kSurface2);
+    menu->setFrameColor (kOutline);
+    menu->setFont (kNormalFontSmall);
+    menu->setFontColor (kTextPrimary);
+    menu->setHoriAlign (kLeftText);
+    return menu;
+}
+
+//------------------------------------------------------------------------
+// Push the Sequence transport bar from state -> controls: pattern length
+// (springer index), grid interval (note-value index), switch timing
+// (PatternSwitchTiming ordinal) and switch interval (note-value index).
+// The switch-interval dropdown is ENABLED only when switch timing ==
+// Set Interval (it's meaningless otherwise); when disabled it draws grey
+// and rejects input.
+void NeditEditor::syncSequencerTransport()
+{
+    if (! seqPatternLength_ || ! seqGridInterval_ || ! seqSwitchTiming_
+        || ! seqSwitchInterval_)
+        return;
+
+    const auto& seq = owner_->uiStateView().sequencer;
+    const int nPlen = static_cast<int> (state::kPatternLengthBarsValues.size());
+
+    const int plen = seq.patternLengthBarsIndex;
+    if (plen != lastSeqPlenSync_)
+    {
+        lastSeqPlenSync_ = plen;
+        seqPatternLength_->setValueNormalized (
+            static_cast<float> (plen) / static_cast<float> (std::max (nPlen - 1, 1)));
+        seqPatternLength_->invalid();
+    }
+
+    const int grid = seq.stepResolutionIndex;
+    if (grid != lastSeqGridSync_)
+    {
+        lastSeqGridSync_ = grid;
+        seqGridInterval_->setValue (static_cast<float> (grid));
+        seqGridInterval_->invalid();
+    }
+
+    const int timing = static_cast<int> (seq.patternSwitchTiming);
+    if (timing != lastSeqSwitchTimingSync_)
+    {
+        lastSeqSwitchTimingSync_ = timing;
+        seqSwitchTiming_->setValue (static_cast<float> (timing));
+        seqSwitchTiming_->invalid();
+    }
+
+    const int swi = seq.patternSwitchIntervalIndex;
+    if (swi != lastSeqSwitchIntervalSync_)
+    {
+        lastSeqSwitchIntervalSync_ = swi;
+        seqSwitchInterval_->setValue (static_cast<float> (swi));
+        seqSwitchInterval_->invalid();
+    }
+
+    const bool swiEnabled = seq.patternSwitchTiming
+                            == state::PatternSwitchTiming::setInterval;
+    if (swiEnabled != lastSeqSwiEnabled_)
+    {
+        lastSeqSwiEnabled_ = swiEnabled;
+        seqSwitchInterval_->setMouseEnabled (swiEnabled);
+        seqSwitchInterval_->setFontColor (swiEnabled ? kTextPrimary : kTextSecondary);
+        seqSwitchInterval_->invalid();
+    }
+
+    // Randomize needs a loaded sample (it redraws from the slice list);
+    // Clear is always available.
+    if (seqRandomizeBtn_ != nullptr)
+    {
+        const bool enabled = owner_->hasSample();
+        if (enabled != lastSeqRandomizeEnabled_)
+        {
+            lastSeqRandomizeEnabled_ = enabled;
+            seqRandomizeBtn_->setMouseEnabled (enabled);
+            seqRandomizeBtn_->setTextColor (enabled ? kTextSecondary : kTextDisabled);
+            seqRandomizeBtn_->invalid();
+        }
+    }
+}
+
+//------------------------------------------------------------------------
 // Push the active performance-page tab from state to the bar + panel.
 void NeditEditor::syncTabBar()
 {
@@ -2535,6 +3628,32 @@ void NeditEditor::syncTabBar()
         zeroTripletBtn_->setVisible (showTiming);
     if (showTiming)
         syncGenerateControls();
+
+    // The step grid is Sequence-only.
+    const bool showGrid = (tab == static_cast<int> (state::UiTab::sequence));
+    if (sequencerGrid_ != nullptr)
+    {
+        sequencerGrid_->setVisible (showGrid);
+        if (showGrid)
+            sequencerGrid_->invalid();
+    }
+    // The transport bar rides with the step grid (both Sequence-only).
+    if (seqTransportScrim_ != nullptr)
+        seqTransportScrim_->setVisible (showGrid);
+    if (seqPatternLength_ != nullptr)
+        seqPatternLength_->setVisible (showGrid);
+    if (seqGridInterval_ != nullptr)
+        seqGridInterval_->setVisible (showGrid);
+    if (seqSwitchTiming_ != nullptr)
+        seqSwitchTiming_->setVisible (showGrid);
+    if (seqSwitchInterval_ != nullptr)
+        seqSwitchInterval_->setVisible (showGrid);
+    if (seqClearBtn_ != nullptr)
+        seqClearBtn_->setVisible (showGrid);
+    if (seqRandomizeBtn_ != nullptr)
+        seqRandomizeBtn_->setVisible (showGrid);
+    if (showGrid)
+        syncSequencerTransport();
 }
 
 //------------------------------------------------------------------------
@@ -3037,6 +4156,145 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
         styleProbSliders_[static_cast<std::size_t> (i)] = prob;
     }
 
+    // ── Sequencer step grid (Sequence tab only) ────────────────────────
+    // Fills the card area below the shared style band, stopping short of the
+    // bottom transport bar. Procedural sizing + vertical scrolling live in
+    // the view; here we only hand it its rect.
+    {
+        const double transportBottom = kEditorHeight - kPanelGutter - kCardPad;
+        const double transportTop = transportBottom - kSeqTransportH;
+        const double gridTop = bandTop + kStyleBandH + 16.0;
+        const double gridBottom = transportTop - 8.0;
+        seqGridTop_ = gridTop;
+        seqGridBottom_ = gridBottom;
+        auto* seqGrid = new ui::SequencerGridView (
+            CRect (bandLeft, gridTop, bandLeft + bandW, gridBottom),
+            this, kTagSequencerGrid, this);
+        frame->addView (seqGrid);
+        sequencerGrid_ = seqGrid;
+        seqGrid->setVisible (false);   // shown by syncTabBar on the Sequence tab
+    }
+
+    // ── Sequencer transport bar: pattern length spinner + grid interval / ──
+    // switch timing / switch interval dropdowns. All editor-local (route
+    // through publish-only processor setters); the switch-interval dropdown
+    // is enabled only when switch timing == Set Interval. Hidden outside the
+    // Sequence tab by syncTabBar.
+    {
+        const double transportBottom = kEditorHeight - kPanelGutter - kCardPad;
+        const double transportTop = transportBottom - kSeqTransportH;
+        const double tLeft = bandLeft;
+        const double boxTop = transportTop + kBoxTop;
+        const double boxBottom = boxTop + kBoxH;
+
+        constexpr double kCtlGap = 16.0;
+        constexpr double kPlenW = 150.0;   // pattern length spinner
+        constexpr double kGridWt = 96.0;   // grid interval
+        constexpr double kSwtW = 150.0;    // switch timing
+        constexpr double kSwiW = 120.0;    // switch interval
+
+        // Control boxes + the captions the scrim draws above them. The
+        // scrim (divider + captions) is added BEFORE the interactive
+        // controls so they stay on top for hit-testing; its caption band
+        // sits above the control boxes, so nothing overlaps.
+        ui::SequencerTransportBar::Caption captions[4];
+        double cx = tLeft;
+
+        captions[0] = { "PATTERN LENGTH", cx, cx + kPlenW };
+        captions[1] = { "GRID INTERVAL", cx + kPlenW + kCtlGap,
+                        cx + kPlenW + kCtlGap + kGridWt };
+        captions[2] = { "SWITCH TIMING", cx + kPlenW + kCtlGap + kGridWt + kCtlGap,
+                        cx + kPlenW + kCtlGap + kGridWt + kCtlGap + kSwtW };
+        captions[3] = { "SWITCH INTERVAL",
+                        cx + kPlenW + kCtlGap + kGridWt + kCtlGap + kSwtW + kCtlGap,
+                        cx + kPlenW + kCtlGap + kGridWt + kCtlGap + kSwtW + kCtlGap + kSwiW };
+
+        auto* scrim = new ui::SequencerTransportBar (
+            CRect (tLeft, transportTop, tLeft + bandW, transportBottom),
+            captions, 4);
+        frame->addView (scrim);
+        seqTransportScrim_ = scrim;
+
+        cx = tLeft;
+        auto* plen = new ui::PatternLengthStepper (
+            CRect (cx, transportTop, cx + kPlenW, transportBottom), this,
+            kTagSeqPatternLength);
+        frame->addView (plen);
+        seqPatternLength_ = plen;
+        cx += kPlenW + kCtlGap;
+
+        auto* gridInterval = makeTransportMenu (
+            CRect (cx, boxTop, cx + kGridWt, boxBottom), kTagSeqGridInterval);
+        frame->addView (gridInterval);
+        seqGridInterval_ = gridInterval;
+        cx += kGridWt + kCtlGap;
+
+        auto* swt = makeTransportMenu (
+            CRect (cx, boxTop, cx + kSwtW, boxBottom), kTagSeqSwitchTiming);
+        frame->addView (swt);
+        seqSwitchTiming_ = swt;
+        cx += kSwtW + kCtlGap;
+
+        auto* swi = makeTransportMenu (
+            CRect (cx, boxTop, cx + kSwiW, boxBottom), kTagSeqSwitchInterval);
+        frame->addView (swi);
+        seqSwitchInterval_ = swi;
+        cx += kSwiW;
+
+        // Entries: note values for grid/switch interval, timing modes for
+        // switch timing. Entry indices == state indexes.
+        for (int i = 0; i < state::kNumNoteValues; ++i)
+        {
+            gridInterval->addEntry (state::kNoteValues[static_cast<std::size_t> (i)].name);
+            swi->addEntry (state::kNoteValues[static_cast<std::size_t> (i)].name);
+        }
+        for (int i = 0; i < static_cast<int> (state::kPatternSwitchTimingNames.size()); ++i)
+            swt->addEntry (state::kPatternSwitchTimingNames[static_cast<std::size_t> (i)]);
+
+        gridInterval->setValue (static_cast<float> (
+            owner_->uiStateView().sequencer.stepResolutionIndex));
+        swt->setValue (static_cast<float> (
+            owner_->uiStateView().sequencer.patternSwitchTiming));
+        swi->setValue (static_cast<float> (
+            owner_->uiStateView().sequencer.patternSwitchIntervalIndex));
+        swi->setMouseEnabled (false);   // armed only under Set Interval
+
+        // Clear / Randomize actions (right-aligned beyond the four controls).
+        // Graphite-outlined like the toolbar buttons; Randomize needs a
+        // sample (wired in syncSequencerTransport), Clear always available.
+        constexpr double kActW = 112.0;
+        constexpr double kActGap = 12.0;
+        const double rightEdge = tLeft + bandW;
+        const double randLeft = rightEdge - kActW;
+        const double clearLeft = randLeft - kActGap - kActW;
+        auto* clearBtn = new CTextButton (
+            CRect (clearLeft, boxTop, clearLeft + kActW, boxBottom), this,
+            kTagSeqClear, "CLEAR");
+        auto* randBtn = new CTextButton (
+            CRect (randLeft, boxTop, randLeft + kActW, boxBottom), this,
+            kTagSeqRandomize, "RANDOMIZE");
+        for (auto* btn : { clearBtn, randBtn })
+        {
+            GradientColorStopMap stops;
+            stops.emplace (0., kSurface2);
+            stops.emplace (1., kSurface2);
+            btn->setGradient (CGradient::create (stops));
+            GradientColorStopMap hlStops;
+            hlStops.emplace (0., kSurface3);
+            hlStops.emplace (1., kSurface3);
+            btn->setGradientHighlighted (CGradient::create (hlStops));
+            btn->setTextColor (kTextSecondary);
+            btn->setTextColorHighlighted (kTextPrimary);
+            btn->setFrameColor (kOutline);
+            btn->setFrameColorHighlighted (kOutline);
+            btn->setRoundRadius (4);
+        }
+        frame->addView (clearBtn);
+        frame->addView (randBtn);
+        seqClearBtn_ = clearBtn;
+        seqRandomizeBtn_ = randBtn;
+    }
+
     // Every column hosts its style's params: continuous params get a 12px
     // horizontal mini-slider row directly under their caption, discrete
     // params a mini dropdown whose caption row IS the control (rows from
@@ -3193,6 +4451,7 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
                               // (ALL timing controls exist from here on)
 
     syncTabBar();   // seed the strip + panel from the restored activeTab
+    syncSequencerTransport();
 
     setIdleRate (60);
     return true;
@@ -3330,6 +4589,63 @@ void NeditEditor::valueChanged (CControl* control)
         return;
     }
 
+    // ── Sequencer transport bar (Sequence tab) ─────────────────────────
+    // All editor-local, route through publish-only setters. Grid interval
+    // and switch interval are note-value indexes; switch timing an ordinal;
+    // the pattern length is the spinner's normalized index.
+    if (control->getTag() == kTagSeqPatternLength)
+    {
+        const int n = static_cast<int> (state::kPatternLengthBarsValues.size());
+        const int idx = static_cast<int> (std::lround (
+            control->getValueNormalized() * static_cast<float> (n - 1)));
+        (void) owner_->setSequencerPatternLength (idx);
+        return;
+    }
+    if (control->getTag() == kTagSeqGridInterval)
+    {
+        (void) owner_->setSequencerStepResolution (
+            static_cast<int> (std::lround (control->getValue())));
+        return;
+    }
+    if (control->getTag() == kTagSeqSwitchTiming)
+    {
+        (void) owner_->setSequencerSwitchTiming (
+            static_cast<int> (std::lround (control->getValue())));
+        // Re-arm the switch-interval dropdown immediately (not on the next
+        // idle tick), matching the mode-switch's explicit first-click rule.
+        syncSequencerTransport();
+        return;
+    }
+    if (control->getTag() == kTagSeqSwitchInterval)
+    {
+        (void) owner_->setSequencerSwitchInterval (
+            static_cast<int> (std::lround (control->getValue())));
+        return;
+    }
+
+    // Clear / Randomize are momentary actions (CTextButton double-fires --
+    // rising edge only). Both mutate the working grid; repaint it now.
+    if (control->getTag() == kTagSeqClear)
+    {
+        if (pressedEdge (*control, lastSeqClearPressed_))
+        {
+            owner_->clearSequence();
+            if (sequencerGrid_ != nullptr)
+                sequencerGrid_->invalid();
+        }
+        return;
+    }
+    if (control->getTag() == kTagSeqRandomize)
+    {
+        if (pressedEdge (*control, lastSeqRandomizePressed_))
+        {
+            (void) owner_->randomizeSequence();
+            if (sequencerGrid_ != nullptr)
+                sequencerGrid_->invalid();
+        }
+        return;
+    }
+
     if (control->getTag() == kTagFadeIn)
     {
         owner_->setFadeInMs (10.0f * control->getValueNormalized());
@@ -3381,9 +4697,21 @@ void NeditEditor::valueChanged (CControl* control)
                          * static_cast<float> (ui::TabBar::kTabCount - 1)));
         if (ord < 0 || ord >= ui::TabBar::kTabCount)
             return;
-        owner_->setActiveTab (static_cast<state::UiTab> (ord));
+        // Selecting a tab TRANSFERS AUDIO CONTROL to that tab's mode. We drive
+        // it through the automatable trigger-mode param (not a publish-only
+        // setActiveTab) so the host records/reflects the change and won't
+        // later re-push a stale value that snaps the mode back. The fold
+        // (applyNormalized) sets triggerMode + the Generate sub-mode mirror +
+        // ui.activeTab together, so tab and mode stay in lockstep.
+        const auto tab = static_cast<state::UiTab> (ord);
+        const auto mode = state::triggerModeForTab (
+            tab, owner_->uiStateView().generate.generateMode);
+        setParam (kParamTriggerMode,
+                  static_cast<float> (static_cast<int> (mode))
+                      / static_cast<float> (state::kNumTriggerModes - 1));
         if (panelView_)
             panelView_->invalid();   // the panel area re-renders per page
+        syncTabBar();   // toggle per-tab views NOW, not on the next idle tick
         return;
     }
 
@@ -3693,6 +5021,7 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         syncToolBarControls();
         syncTabBar();
         syncGenerateControls();   // timing modes/options/interval weights
+        syncSequencerTransport(); // Sequence transport bar (deduped)
 
         if (sampleChanged && loadBtn_)
         {
@@ -3726,6 +5055,19 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         // Refresh waveform view when sample changes.
         if (sampleChanged && waveformView_)
             waveformView_->refresh();
+
+        // Live sequencer playhead: repaint the grid when the playing step
+        // moves (or the sample changed). Paint/extension edits self-
+        // invalidate, so no per-tick repaint is needed when nothing moves.
+        if (sequencerGrid_ != nullptr && sequencerGrid_->isVisible())
+        {
+            const int step = owner_->debugScheduler().playingStepIndex();
+            if (step != lastPlayingStepSync_ || sampleChanged)
+            {
+                lastPlayingStepSync_ = step;
+                sequencerGrid_->invalid();
+            }
+        }
     }
     return VSTGUIEditor::notify (sender, message);
 }

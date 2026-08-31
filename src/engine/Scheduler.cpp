@@ -652,11 +652,15 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     const auto cell = static_cast<std::uint32_t> (row) * static_cast<std::uint32_t> (view.columns)
                     + static_cast<std::uint32_t> (step);
 
-    // fallbackParams + this cell's overrides. The fallback always comes
-    // from the WORKING sequencer state -- a recalled bank snapshot swaps
-    // grid/dimensions only (the original's recall never touched global
-    // parameter values either).
-    state::StyleParameters merged = r.state.sequencer.fallbackParams;
+    // Style-param base: GENERATE's params are the one surface the user edits
+    // (the per-style sliders/dropdowns on the Generate/Sequence tabs), so a
+    // sequencer note with no per-cell override should speak with those
+    // values. This is a READ coupling -- generate.styleParams is written by
+    // the UI alone (a single writer here, unlike the original's silent
+    // aliasing), and this cell's overrides still stack on top. The working
+    // state's own copy (sequencer.fallbackParams) stays serialized but is
+    // no longer the audio default for sequenced notes.
+    state::StyleParameters merged = r.state.generate.styleParams;
 
     if (const auto it = view.overrides->find (cell); it != view.overrides->end())
         for (const auto& [id, value] : it->second)
@@ -741,7 +745,14 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     }
     else
     {
-        pickLength = std::min (declaredLengthHostSamples, samplesUntilNextActiveStep);
+        // Fold/bounce styles define their own window: scratch plays exactly
+        // ONE full Rate cycle (matching Clock/Performance, where scratch
+        // pickLength == scratchCycleHostSamples), capped by the next active
+        // column so the anticipatory fade still applies. Every other style
+        // occupies its declared step duration.
+        pickLength = style == state::PlaybackStyle::scratch
+            ? std::min (prepared.scratchCycleHostSamples, samplesUntilNextActiveStep)
+            : std::min (declaredLengthHostSamples, samplesUntilNextActiveStep);
     }
 
     // The window clock spans THIS STEP'S whole declared duration (before
@@ -886,7 +897,7 @@ void VoiceScheduler::runSequenced (Run& r)
                 && currentStepIndex != sequencedLastStepIndex_)
             {
                 sequencedLastStepIndex_ = currentStepIndex;
-                playingStepIndex_ = currentStepIndex;
+                playingStepIndex_.store (currentStepIndex, std::memory_order_relaxed);
 
                 const int rowsEffective =
                     std::min (view.rows, static_cast<int> (r.slices.size()));

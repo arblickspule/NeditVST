@@ -183,6 +183,11 @@ inline void applyNormalized (state::PluginState& s, std::uint32_t id,
             // Generate ribbon keep all their sync'd views of the same mode.
             if (tm == state::TriggerMode::sliceLength || tm == state::TriggerMode::clock)
                 s.generate.generateMode = tm;
+            // Tab and mode move in lockstep: a host automating the trigger
+            // mode moves the visible tab (the editor's syncTabBar picks this
+            // up from the published state). Generate's two sub-modes both map
+            // to the Generate tab, so this never fights the ribbon.
+            s.ui.activeTab = state::tabForTriggerMode (tm);
             break;
         }
         case kParamManualTempoEnabled:

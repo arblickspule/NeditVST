@@ -15,7 +15,7 @@
 
 #include <array>
 
-namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; }
+namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; class CRect; }
 
 #include <atomic>
 #include <memory>
@@ -40,6 +40,9 @@ class StyleProbSlider;
 class ParamMiniSlider;
 class ParamMiniMenu;
 class IntervalProbBand;
+class SequencerGridView;
+class PatternLengthStepper;
+class SequencerTransportBar;
 
 } // namespace ui
 
@@ -73,10 +76,20 @@ public:
     static constexpr std::int32_t kTagClearPlain = 1027;
     static constexpr std::int32_t kTagClearDotted = 1028;
     static constexpr std::int32_t kTagClearTriplet = 1029;
+    // Sequencer step-grid view (Sequence tab).
+    static constexpr std::int32_t kTagSequencerGrid = 1030;
+    // Sequencer transport actions (Sequence tab): clear / randomize the
+    // working step grid (momentary CTextButtons).
+    static constexpr std::int32_t kTagSeqClear = 1035;
+    static constexpr std::int32_t kTagSeqRandomize = 1036;
 
     //--- VSTGUIEditor --------------------------------------------------------
     bool PLUGIN_API open (void* parent, const VSTGUI::PlatformType& platformType) override;
     void PLUGIN_API close() override;
+
+    // The owning processor (controller-side authoritative state + the
+    // derived load sample / scheduler signals the views render).
+    [[nodiscard]] NeditProcessor* owner() const noexcept { return owner_; }
 
     // Only forward real parameter IDs to the host's edit protocol; editor-
     // local control tags (e.g. the Load button) must never reach it, or the
@@ -114,6 +127,13 @@ void runFileSelector();
     void syncStyleProbs();
     void syncGenerateControls();
     void syncToolBarControls();
+    // The Sequence-tab transport bar (pattern length / grid interval /
+    // switch timing / switch interval): pushes state -> controls and arms
+    // the switch-interval dropdown only under Set Interval.
+    void syncSequencerTransport();
+    // Builds a themed dropdown for the transport bar (surface-2 fill +
+    // outline frame, left-aligned small text). Used for the three drop-ups.
+    VSTGUI::COptionMenu* makeTransportMenu (const VSTGUI::CRect& size, int32_t tag);
     // Slice-Length/Clock mode-switch segment styling (active = accent fill,
     // like the pitch-mode toggle). styleModeSegment is the per-button rule.
     void styleModeButtons();
@@ -149,6 +169,7 @@ void runFileSelector();
     ui::GrainSlider* grainSpeedSlider_ = nullptr; // toolbar grain speed (stretch only)
     ui::TabBar* tabBar_ = nullptr;         // performance-page tab strip
     ui::PanelView* panelView_ = nullptr;   // panel area below the tab bar
+    ui::SequencerGridView* sequencerGrid_ = nullptr;   // Sequence tab step grid
     VSTGUI::CTextButton* modeSlBtn_ = nullptr;      // Generate timing mode switch
     VSTGUI::CTextButton* modeClockBtn_ = nullptr;
     ui::ParamMiniMenu* resetBarsMenu_ = nullptr;    // Slice Length -> reset bars
@@ -159,6 +180,15 @@ void runFileSelector();
     VSTGUI::CTextButton* zeroPlainBtn_ = nullptr;   // Clock subdivision quick-clear
     VSTGUI::CTextButton* zeroDottedBtn_ = nullptr;
     VSTGUI::CTextButton* zeroTripletBtn_ = nullptr;
+    ui::SequencerTransportBar* seqTransportScrim_ = nullptr; // Sequence transport scrim
+    ui::PatternLengthStepper* seqPatternLength_ = nullptr;   // pattern length spinner
+    VSTGUI::COptionMenu* seqGridInterval_ = nullptr;         // grid resolution drop-up
+    VSTGUI::COptionMenu* seqSwitchTiming_ = nullptr;         // pattern-switch timing
+    VSTGUI::COptionMenu* seqSwitchInterval_ = nullptr;       // switch interval (Set Interval only)
+    VSTGUI::CTextButton* seqClearBtn_ = nullptr;             // Sequence-tab clear grid
+    VSTGUI::CTextButton* seqRandomizeBtn_ = nullptr;         // Sequence-tab randomize
+    double seqGridTop_ = 0.0;          // grid rect handed to SequencerGridView
+    double seqGridBottom_ = 0.0;
     std::array<ui::StyleProbSlider*, state::kNumPlaybackStyles> styleProbSliders_ {};
 
     // Per-style-column param mini-sliders and mini dropdowns, indexed
@@ -196,7 +226,19 @@ void runFileSelector();
     bool lastPitchSync_ = false;     // pitch-mode toggle (timestretch on)
     bool lastPitchPressed_ = false;  // CTextButton press-edge latch
     int lastTabSync_ = -1;           // performance-page tab (state -> bar)
+    int lastPlayingStepSync_ = -2;   // sequencer playhead (engine -> grid repaint)
     std::array<float, state::kNumPlaybackStyles> lastStyleWeightsSync_ {};
+
+    // Sequencer transport bar sync dedup (state -> controls) + the
+    // switch-interval enable latch (armed only under Set Interval).
+    int lastSeqPlenSync_ = -1;            // pattern length index
+    int lastSeqGridSync_ = -1;            // grid interval (note-value index)
+    int lastSeqSwitchTimingSync_ = -1;    // PatternSwitchTiming ordinal
+    int lastSeqSwitchIntervalSync_ = -1;  // switch interval (note-value index)
+    bool lastSeqSwiEnabled_ = false;      // switch-interval dropdown enabled
+    bool lastSeqRandomizeEnabled_ = true; // randomize needs a sample
+    bool lastSeqClearPressed_ = false;    // CLEAR press-edge latches
+    bool lastSeqRandomizePressed_ = false;
 
     // Generate-page timing sync dedup (state -> controls) + press edges.
     state::TriggerMode lastGenerateModeSync_ = state::TriggerMode::sliceLength;

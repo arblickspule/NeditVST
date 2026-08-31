@@ -275,3 +275,44 @@ TEST_CASE ("clearGrid wipes cells, overrides and extensions but keeps dimensions
     REQUIRE (st.overrides.empty());
     REQUIRE (st.extensions.empty());
 }
+
+TEST_CASE ("computeSequencerDims: rows = slices, columns = stepsPerBar * bars", "[seqrand]")
+{
+    // 16n = 0.25 beats => 16 steps per bar. patternLengthBarsIndex 0 => 1 bar.
+    const auto a = computeSequencerDims (10, kNoteValue16n, 0);
+    CHECK (a.rows == 10);
+    CHECK (a.columns == 16);
+
+    // 4n = 1 beat => 4 steps per bar. patternLengthBarsIndex 2 => 4 bars.
+    const auto b = computeSequencerDims (5, kNoteValue4n, 2);
+    CHECK (b.rows == 5);
+    CHECK (b.columns == 16);
+
+    // Rows clamp to kMaxSequencerRows; columns clamp to kMaxSequencerColumns.
+    const auto c = computeSequencerDims (999, kNoteValue16n, 2);
+    CHECK (c.rows == kMaxSequencerRows);
+    CHECK (c.columns <= kMaxSequencerColumns);
+
+    // No slices => no rows.
+    const auto d = computeSequencerDims (0, kNoteValue16n, 0);
+    CHECK (d.rows == 0);
+}
+
+TEST_CASE ("resizeGrid resets the grid only when the dimensions change", "[seqrand]")
+{
+    auto st = makeState (4, 16);
+    st.grid[0] = 5;
+    st.overrides[0][StyleParamId::volume] = 0.3f;
+
+    // Same dims => no reset, cells preserved.
+    CHECK_FALSE (resizeGrid (st, { 4, 16 }));
+    CHECK (st.grid[0] == 5);
+    CHECK_FALSE (st.overrides.empty());
+
+    // Different dims => reset (cells + overrides wiped, new size).
+    CHECK (resizeGrid (st, { 6, 8 }));
+    CHECK (st.rows == 6);
+    CHECK (st.columns == 8);
+    CHECK (st.grid == std::vector<std::int8_t> (48, static_cast<std::int8_t> (-1)));
+    CHECK (st.overrides.empty());
+}

@@ -39,6 +39,7 @@ target_link_libraries(nedit_engine_tests
 
 add_executable(nedit_ui_tests
     ui/test_waveform_geometry.cpp
+    ui/test_sequencer_geometry.cpp
 )
 target_link_libraries(nedit_ui_tests
     PRIVATE nedit_ui nedit_warnings Catch2::Catch2WithMain)
