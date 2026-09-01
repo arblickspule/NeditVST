@@ -5040,10 +5040,24 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         // Sync buttons on sample presence or audition state changes.
         const bool samplePresent = owner_->hasSample();
         const bool auditionOn    = owner_->uiStateView().ui.auditionEnabled;
-        const bool sampleChanged = samplePresent != lastSampleSync_;
+        const bool presenceChanged = samplePresent != lastSampleSync_;
         const bool auditionChanged = auditionOn != lastAuditionSync_;
         lastSampleSync_ = samplePresent;
         lastAuditionSync_ = auditionOn;
+
+        // Sample-identity check: every load/rebuild publishes a NEW
+        // LoadedSample object, so comparing the previous acquire() against
+        // the current one catches replace-via-second-load (presence stays
+        // true->true; only the object differs). Holding the previous
+        // shared_ptr keeps its address alive, so the .get() comparison is
+        // exact -- no address-reuse aliasing possible.
+        const bool sampleChanged = [&] {
+            const auto loaded = owner_->acquireLoadedSample();
+            const bool objectChanged = loaded.get() != lastLoadedSample_.get();
+            lastLoadedSample_ = loaded;
+            notifySampleChanged_ = presenceChanged || objectChanged;
+            return notifySampleChanged_;
+        }();
 
         if (auditionChanged || sampleChanged)
             styleAuditionButton();

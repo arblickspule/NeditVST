@@ -335,6 +335,56 @@ TEST_CASE ("sample manager: load file -> analysis -> state metadata")
     CHECK (manager.acquire()->slices.size() == result->sample->slices.size());
 }
 
+TEST_CASE ("waveform redraw: replacing the sample via a second load is detected")
+{
+    // Issue #10: the waveform would not redraw after LOADING A SECOND SAMPLE
+    // over the first. The editor's idle timer keyed the redraw on sample
+    // PRESENCE (bool false->true), so a replacement (true->true) looked
+    // unchanged. It now keys on the published LoadedSample IDENTITY, which
+    // every load replaces -- even when the path is the same.
+
+    auto wavForLength = [] (std::int64_t frames) {
+        // A shorter/longer click track must give a different sample length,
+        // so the replacement is unambiguous even at the state level.
+        std::vector<float> click (static_cast<std::size_t> (frames), 0.0f);
+        for (std::int64_t i = 0; i + 400 < frames; i += 12000)
+            for (int n = 0; n < 400; ++n)
+                click[static_cast<std::size_t> (i + n)]
+                    = 0.9f * std::exp (-static_cast<float> (n) / 60.0f)
+                    * std::sin (static_cast<float> (n) * 0.5f);
+        return makeWav ({ click.data() }, 1, frames,
+                        static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    };
+
+    const TempFile first ("nedit_test_first.wav", wavForLength (ClickTrack::kFrames));
+    const TempFile second ("nedit_test_second.wav", wavForLength (96000));
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (first.path));
+
+    nedit::plugin::NeditEditor editor (&processor);
+
+    // First idle tick: sample went from absent to present -> change detected.
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK (editor.notifySampleChanged());
+
+    // Steady state: a tick with no new load sees the same identity -> no change.
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK_FALSE (editor.notifySampleChanged());
+
+    // THE REGRESSION: a SECOND load replaces the sample. presence stays
+    // true->true, but the LoadedSample object is a fresh identity, so the
+    // editor must report a change (and would refresh the waveform + grid).
+    REQUIRE (processor.requestSampleLoad (second.path));
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK (editor.notifySampleChanged());
+
+    // And the same-second-load again is quiet (dedup still works).
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK_FALSE (editor.notifySampleChanged());
+}
+
 TEST_CASE ("shell: loading a sample establishes the sequencer grid dimensions")
 {
     const auto click = ClickTrack::render();

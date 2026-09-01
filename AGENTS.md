@@ -1323,6 +1323,34 @@ HARDENING entries below).
   snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
   empty. 281/281 green, zero warnings.
 
+- Waveform redraw — "Doesn't update after certain ops"
+  (arblickspule/NeditVST#10, 2026-09-01): the waveform (and the sequencer
+  grid) would not repaint after REPLACING the sample via a second load.
+  ROOT CAUSE: the editor's idle timer gated the redraw on a sample
+  PRESENCE transition (`samplePresent != lastSampleSync_`). The first
+  load flips false->true and refresh fires; a second load is true->true
+  (presence unchanged) so `sampleChanged` stayed false and neither
+  `waveformView_->refresh()` nor `sequencerGrid_->invalid()` ran — the
+  very family of stale-view bugs issue #5's suffix ("certain ops") hinted
+  at. FIX: the idle timer now also compares the published sample
+  IDENTITY — `NeditEditor` holds the previous `acquireLoadedSample()`
+  (`lastLoadedSample_`, a `shared_ptr<const LoadedSample>`) and reports a
+  change when `.get()` differs. Every load/rebuild publishes a NEW
+  LoadedSample object, so replacement is detected regardless of whether
+  `samplePath` changed; holding the old shared_ptr keeps its address
+  alive so the `.get()` comparison is exact (no address-reuse aliasing).
+  `notifySampleChanged()` is a test hook exposing the decision. Editor
+  tests construct a bare `NeditEditor` (no frame — all notify-path sync
+  functions null-guard) and drive `notify(nullptr,
+  CVSTGUITimer::kMsgTimer)`, which is safe: the base
+  `VSTGUIEditor::notify` only calls `frame->idle()` when `frame` exists.
+  Test `waveform redraw: replacing the sample via a second load is
+  detected`: load A -> tick (changed), tick (quiet), load B -> tick
+  (changed), tick (quiet). VERIFIED the test FAILS on the old presence-
+  only logic at the second-load assertion and passes on the fix (the
+  built-in smoke of a good regression test). 282/282 green, zero
+  warnings.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has
