@@ -170,7 +170,7 @@ target_link_libraries(nedit_plugin
 # ---------------------------------------------------------------------------
 # .vst3 bundle assembly.
 # ---------------------------------------------------------------------------
-set(NEDIT_VST3_BUNDLE_DIR ${CMAKE_BINARY_DIR}/nedit.vst3 CACHE PATH
+set(NEDIT_VST3_BUNDLE_DIR ${CMAKE_BINARY_DIR}/NeditVST-CollabV2.vst3 CACHE PATH
     "Where to assemble the .vst3 bundle")
 
 # Module entry TUs shared by the loadable module AND the test binaries:
@@ -225,20 +225,21 @@ else()
     target_link_libraries(nedit_vst3
         PRIVATE -Wl,--whole-archive nedit_plugin -Wl,--no-whole-archive)
 endif()
-set_target_properties(nedit_vst3 PROPERTIES PREFIX "" OUTPUT_NAME "nedit")
+set_target_properties(nedit_vst3 PROPERTIES PREFIX "" OUTPUT_NAME "NeditVST-CollabV2")
 
 # .vst3 bundle assembly. The VST3 spec layout is a directory the host scans:
 #   <bundle>.vst3/Contents/<arch-dir>/<bundle>[.so|.vst3]
 # plus Contents/Resources/moduleinfo.json (Linux hosts read it; the
 # SDK's own SMTG only generates it for Linux). On mac CMake itself builds
-# the bundle wrapper (MODULE + BUNDLE -> nedit.vst3/Contents/MacOS/nedit
+# the bundle wrapper (MODULE + BUNDLE -> NeditVST-CollabV2.vst3/Contents/MacOS/NeditVST-CollabV2
 # + Info.plist + PkgInfo), so we only sign it afterwards.
 if(APPLE)
     set_target_properties(nedit_vst3 PROPERTIES
         BUNDLE TRUE
         BUNDLE_EXTENSION vst3
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.arblickspulecollab.NeditVSTCollabV2"
         # CMake would otherwise put the bundle in the target's own binary
-        # dir (build/src/plugin/nedit.vst3) so the artifact upload / deploy
+        # dir (build/src/plugin/NeditVST-CollabV2.vst3) so the artifact upload / deploy
         # path would not match Linux/Windows. A MODULE+bundle wrapper is
         # placed via LIBRARY_OUTPUT_DIRECTORY (BUNDLE_OUTPUT_DIRECTORY only
         # governs true MACOSX_BUNDLE executables), so pin both to the
@@ -253,7 +254,7 @@ if(APPLE)
     add_custom_command(TARGET nedit_vst3 POST_BUILD
         COMMAND codesign --force --deep --sign -
                 $<TARGET_BUNDLE_DIR:nedit_vst3>
-        COMMENT "Ad-hoc signing nedit.vst3 bundle")
+        COMMENT "Ad-hoc signing NeditVST-CollabV2.vst3 bundle")
 elseif(WIN32)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(NEDIT_VST3_ARCH_DIR "x86_64-win")
@@ -265,8 +266,8 @@ elseif(WIN32)
                 ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy
                 $<TARGET_FILE:nedit_vst3>
-                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.vst3
-        COMMENT "Assembling nedit.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
+                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/NeditVST-CollabV2.vst3
+        COMMENT "Assembling NeditVST-CollabV2.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
 else()
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         set(NEDIT_VST3_ARCH_DIR "aarch64-linux")
@@ -288,15 +289,15 @@ else()
         # fast-metadata-scan timeouts).
         COMMAND ${CMAKE_COMMAND} -E copy
                 $<TARGET_FILE:nedit_vst3>
-                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
+                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/NeditVST-CollabV2.so
         COMMAND ${CMAKE_STRIP} --strip-unneeded
-                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/nedit.so
+                ${NEDIT_VST3_BUNDLE_DIR}/Contents/${NEDIT_VST3_ARCH_DIR}/NeditVST-CollabV2.so
         # Some hosts (Bitwig) require Contents/Resources/moduleinfo.json;
         # generate it from the real factory of the just-built module.
         COMMAND nedit_moduleinfotool
                 ${NEDIT_VST3_BUNDLE_DIR}
                 ${NEDIT_VST3_BUNDLE_DIR}/Contents/Resources/moduleinfo.json
-        COMMENT "Assembling nedit.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
+        COMMENT "Assembling NeditVST-CollabV2.vst3 bundle in ${NEDIT_VST3_BUNDLE_DIR}")
 endif()
 
 if(NEDIT_IS_LINUX)
@@ -322,11 +323,11 @@ if(NEDIT_IS_LINUX)
     set(NEDIT_USER_VST3_DIR "$ENV{HOME}/.vst3" CACHE PATH
         "Where `deploy` installs the .vst3 bundle")
     add_custom_target(deploy
-        COMMAND ${CMAKE_COMMAND} -E rm -rf ${NEDIT_USER_VST3_DIR}/nedit.vst3
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${NEDIT_USER_VST3_DIR}/NeditVST-CollabV2.vst3
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${NEDIT_VST3_BUNDLE_DIR} ${NEDIT_USER_VST3_DIR}/nedit.vst3
+                ${NEDIT_VST3_BUNDLE_DIR} ${NEDIT_USER_VST3_DIR}/NeditVST-CollabV2.vst3
         DEPENDS nedit_vst3
-        COMMENT "Deploying nedit.vst3 to ${NEDIT_USER_VST3_DIR}")
+        COMMENT "Deploying NeditVST-CollabV2.vst3 to ${NEDIT_USER_VST3_DIR}")
 endif()
 
 message(STATUS "Nedit: plugin target enabled (SDK: ${VST3_SDK_DIR})")

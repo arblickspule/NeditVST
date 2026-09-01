@@ -9,17 +9,17 @@
 
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 
-BEGIN_FACTORY_DEF ("Nedit Project",                                   // vendor
-                   "https://github.com/nedrush/NeditVST",             // upstream project
+BEGIN_FACTORY_DEF ("arblickspule-collab",                              // vendor
+                   "https://github.com/arblickspule/NeditVST",        // fork project
                    "nedit-project@localhost")                         // contact
 
 //------------------------------------------------------------------------
-// Nedit -- generative sample slicer. Combined component+controller, so
-// classFlags is 0 (single-component effects cannot be distributed).
-DEF_CLASS2 (INLINE_UID (0x9547773A, 0x0C7D4168, 0x80EB880D, 0xABB4697F),
+// NeditVST-CollabV2 -- generative sample slicer. Combined component+controller,
+// so classFlags is 0 (single-component effects cannot be distributed).
+DEF_CLASS2 (INLINE_UID (0x9DCAB3BE, 0x7259C555, 0x17774997, 0xECA6E5F6),
             PClassInfo::kManyInstances,
             kVstAudioEffectClass,
-            "Nedit",
+            "NeditVST-CollabV2",
             0,
             "Instrument|Sampler",
             "0.1.0",
