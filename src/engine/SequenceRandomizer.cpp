@@ -228,10 +228,19 @@ RandomizeResult randomizeSequence (state::SequencerState& st,
 
             for (int col = 0; col < columns; ++col)
             {
+                // A bar's span NEVER wraps past the grid's end back to column
+                // 0 -- the span is clamped at `columns` (NeditVST#9: the
+                // original clamps too, jmin(columns, col + naturalSteps)).
+                // Wrapping would make the claimed length extend past the
+                // on-grid bar and let a later note land inside that wrapped
+                // region, so the next random note wouldn't respect the
+                // previous bar's length.
+                const int spanEnd = std::min (columns, col + natural);
+
                 bool free = true;
-                for (int k = 0; k < natural; ++k)
+                for (int c = col; c < spanEnd; ++c)
                 {
-                    if (columnOccupied[static_cast<std::size_t> ((col + k) % columns)])
+                    if (columnOccupied[static_cast<std::size_t> (c)])
                     {
                         free = false;
                         break;
@@ -309,9 +318,13 @@ RandomizeResult randomizeSequence (state::SequencerState& st,
                 }
             }
 
-            // Claim this bar's whole span so nothing lands inside it.
-            for (int k = 0; k < natural; ++k)
-                columnOccupied[static_cast<std::size_t> ((bestStart + k) % columns)] = true;
+            // Claim this bar's whole span so nothing lands inside it. The
+            // span is clamped at the grid's end (no wrap-around), matching
+            // the free-check above -- a bar near the right edge occupies
+            // [bestStart, columns) and no later note wraps in from column 0.
+            const int claimEnd = std::min (columns, bestStart + natural);
+            for (int c = bestStart; c < claimEnd; ++c)
+                columnOccupied[static_cast<std::size_t> (c)] = true;
 
             ++result.cellsPlaced;
             placedAnythingThisPass = true;

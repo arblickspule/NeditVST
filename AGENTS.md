@@ -1263,7 +1263,34 @@ HARDENING entries below).
   sequencer grid` now seeds the band to Flanger-only via the public setters,
   clicks RANDOMIZE, and asserts
   `debugUiState().sequencer.randomizeStyleWeights ==
-  debugUiState().generate.styleWeights`. 272/272 green, zero warnings.
+  debugUiState().generate.styleWeights`. 273/273 green, zero warnings.
+
+- Randomize edge-column spans — "Random lengths exceed slice length"
+  (arblickspule/NeditVST#9, 2026-09-01): Random notes must be set to the
+  slice length (snapped to grid) and the next random note must respect that
+  claimed span. ROOT CAUSE in `SequenceRandomizer::randomizeSequence`: the
+  span free-check AND the claim-loop wrapped past the grid's end back to
+  column 0 via `(col + k) % columns`. The original clamps the span at the
+  grid edge (`jmin(columns, column + naturalSteps)`, PluginProcessor.cpp:
+  4315/4401) and never wraps. The wrap made a near-edge bar's claimed length
+  extend past its on-grid bar and phantom-claim low columns, so a later note
+  couldn't land where it should (the "next note doesn't respect that length"
+  symptom), and it wrongly REJECTED a bar that should legally occupy the
+  last `natural` columns of the grid when the wrapped partner column was
+  already claimed (fragmenting the grid and shortening placements).
+  FIX: both the free-check and the claim now clamp the span at `columns`
+  (`spanEnd = min(columns, col + natural)`), exactly like the original — a
+  near-edge bar occupies `[col, min(col+natural, columns))` and the next
+  note can't wrap in from column 0. (`nearestOccupiedDistance`, the
+  spacing-aware tiebreaker, is left circular — it only ranks candidate free
+  spans, never changes which columns a bar claims.) Test:
+  `randomize: a bar can occupy the grid's edge columns` (2 rows / 3 columns
+  / 2-step slices, density 1.0): the first bar claims [0,2), the only
+  remaining span is the right edge [2, min(3,4)); the fix lets that second
+  cell place (cellsPlaced >= 2 and column 2 occupied), while the OLD
+  wrap-around free-check rejected it (its wrapped partner is column 0,
+  already claimed → cellsPlaced == 1; verified the test FAILS on the old
+  code and passes on the fix). 273/273 green, zero warnings.
 
 ## Rules of engagement
 

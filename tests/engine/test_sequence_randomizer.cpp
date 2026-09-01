@@ -12,6 +12,7 @@
 #include <state/Types.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -231,6 +232,44 @@ TEST_CASE ("randomize: natural length spans multiple columns", "[seqrand]")
                 ++fills;
         REQUIRE (fills <= 1);
     }
+}
+
+// NeditVST#9: "Random notes should be set to the slices length (snapped to
+// grid) and the next random note should respect that length." A random bar
+// must be placeable in the last `natural` columns of the grid (its start
+// column's span is clamped at the grid edge, so the note reaches its full
+// slice length and the next note respects that claimed span). The original
+// clamps the span at the grid end (jmin(columns, col+natural)) -- a
+// WRAP-around free-check that also demanded the wrapped low columns be free
+// wrongly rejects such edge placements and fragments the grid, so random
+// notes don't respect the surrounding length.
+TEST_CASE ("randomize: a bar can occupy the grid's edge columns", "[seqrand]")
+{
+    // 2 rows, 3 columns, every slice 2 steps: the first bar claims columns
+    // [0,2) (furthest-free tie -> column 0). The ONLY remaining 2-column
+    // span is [2, min(3, 2+2)) = [2,3) -- the right edge. density 1.0.
+    // Under the OLD wrap-around free-check that span is rejected (its
+    // wrapped partner column is (2+1)%3 = 0, already claimed), so only 1
+    // cell places; with the clamp fix the edge bar places too (2 cells).
+    auto st = makeState (2, 3);
+
+    std::vector<Slice> sa;
+    for (int i = 0; i < 2; ++i)
+        sa.push_back (makeSlice (i * 11025, (i + 1) * 11025));  // 2 steps each
+
+    const auto res = randomizeSequence (st, slicesFor (sa), 44100.0, 120.0, 4242u, 1.0f);
+
+    // The two rows should BOTH place: column 0 and the right-edge column 2.
+    REQUIRE (res.cellsPlaced >= 2);
+
+    // A bar occupies the right edge (column 2) -- reachable only with the
+    // non-wrapping clamp.
+    bool edgeOccupied = false;
+    for (int r = 0; r < st.rows; ++r)
+        if (st.grid[static_cast<std::size_t> (r) * static_cast<std::size_t> (st.columns)
+                    + static_cast<std::size_t> (st.columns - 1)] >= 0)
+            edgeOccupied = true;
+    CHECK (edgeOccupied);
 }
 
 TEST_CASE ("randomize: degenerate inputs are safe and clear the grid", "[seqrand]")
