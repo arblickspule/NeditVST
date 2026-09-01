@@ -627,11 +627,42 @@ TEST_CASE ("editor: clear and randomize buttons act on the sequencer grid")
     // monophonic (placement is RNG-seeded per call, so contents aren't
     // asserted here -- the seeded engine tests own that). Then Clear
     // leaves it empty again.
+    //
+    // NeditVST#4: Randomize must reach for the styles the probability band
+    // shows (the band is the ONLY style-probability UI). At press time the
+    // handler snapshots generate.styleWeights into the sequencer's decoupled
+    // randomizeStyleWeights, so non-forward picks are possible.
+    // Seed the band: only Flanger weighted (Forward's default 1.0 lowered
+    // to 0 so Randomize would otherwise only ever reach Forward). This also
+    // proves setStyleWeight was the UI path -- the readonly debug view stays
+    // const, so all state edits go through the public setters.
+    for (int i = 0; i < nedit::state::kNumPlaybackStyles; ++i)
+        processor.setStyleWeight (i, 0.0f);
+    processor.setStyleWeight (static_cast<int> (nedit::state::PlaybackStyle::flanger), 1.0f);
+
     doClick (randBtn, editor);
     REQUIRE (processor.debugUiState().sequencer.grid.size()
              == static_cast<std::size_t> (processor.debugUiState().sequencer.rows)
                     * static_cast<std::size_t> (processor.debugUiState().sequencer.columns));
     CHECK (monophonic());
+    // #4: at press time the band's weights were snapshotted into the
+    // sequencer's decoupled table, so Randomize can reach Flanger.
+    CHECK (processor.debugUiState().sequencer.randomizeStyleWeights
+           == processor.debugUiState().generate.styleWeights);
+    // Stronger: the GRID itself must obey the snapshot -- every filled cell
+    // is Flanger (Forward's weight is 0 and the total weight is nonzero, so
+    // there is no fallback), proving the randomized pattern is no longer
+    // forward-only.
+    {
+        const auto& grid = processor.debugUiState().sequencer.grid;
+        for (const auto cell : grid)
+        {
+            if (cell < 0)
+                continue;
+            INFO ("non-forward populated cell = " << static_cast<int> (cell));
+            CHECK (cell == static_cast<std::int8_t> (nedit::state::PlaybackStyle::flanger));
+        }
+    }
     doClick (clearBtn, editor);
     CHECK (processor.debugUiState().sequencer.grid
            == std::vector<std::int8_t> (

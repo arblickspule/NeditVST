@@ -198,3 +198,153 @@ TEST_CASE ("full pipeline: detector + merge on synthetic audio", "[slicebuilder]
     CHECK (std::llabs (slices[3].startFrame - 66150) <= 64);
     CHECK (slices.back().endFrame == 88200);
 }
+
+// --- filterGhostSlices: issue #5 (silent/empty sequencer rows) ------------
+
+// Audio with steady content across the whole document (so RMS of any real
+// slice is far above the 5% silent-tail threshold).
+std::vector<float> steadyAudio (std::int64_t frames)
+{
+    std::vector<float> a (static_cast<std::size_t> (frames), 0.0f);
+    for (std::int64_t i = 0; i < frames; ++i)
+        a[static_cast<std::size_t> (i)] = (i / 1200) % 2 == 0 ? 1.0f : 0.0f;
+    return a;
+}
+
+const float* pointerTo (const std::vector<float>& v)
+{
+    return v.data();
+}
+
+TEST_CASE ("ghost filter: a sub-15ms leading sliver merges into the next slice", "[slicebuilder]")
+{
+    const auto audio = steadyAudio (48000);
+    const float* channels[] = { pointerTo (audio) };
+
+    // [0,30) is the detector's range-start prepend artifact (~0.7ms at
+    // 44.1k); the real first onset is at 30. Merging must produce a slice
+    // tiling [0, trimEnd) with the attack frames retained.
+    const std::vector<Slice> raw = { { 0, 30 }, { 30, 24000 }, { 24000, 48000 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 48000, kRate, nullptr);
+
+    REQUIRE (filtered.size() == 2);
+    CHECK (filtered[0] == Slice { 0, 24000 });   // sliver merged: tiles the trim
+    CHECK (filtered[1] == Slice { 24000, 48000 });
+}
+
+TEST_CASE ("ghost filter: a leading slice at or beyond 15ms is a real slice, kept", "[slicebuilder]")
+{
+    const auto audio = steadyAudio (48000);
+    const float* channels[] = { pointerTo (audio) };
+
+    // 30ms = 1323 frames > kLeadingSliverMaxMs -> genuine boundary.
+    const std::vector<Slice> raw = { { 0, 1323 }, { 1323, 24000 }, { 24000, 48000 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 48000, kRate, nullptr);
+    CHECK (filtered == raw);
+}
+
+TEST_CASE ("ghost filter: a manual boundary inside the sliver keeps it", "[slicebuilder]")
+{
+    const auto audio = steadyAudio (48000);
+    const float* channels[] = { pointerTo (audio) };
+
+    const std::vector<Slice> raw = { { 0, 30 }, { 30, 24000 }, { 24000, 48000 } };
+
+    // The user explicitly placed a boundary at frame 10: the "sliver" is
+    // their deliberate beat-start cut, not the auto artifact.
+    const std::vector<nedit::state::SamplePoint> manual = { { 7, 10 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 48000, kRate, &manual);
+    CHECK (filtered == raw);
+}
+
+TEST_CASE ("ghost filter: an all-silent final tail slice is dropped", "[slicebuilder]")
+{
+    // Content fills only the first half; [48000,96000) is pure silence
+    // (e.g. a loop whose trim was extended past the actual content, or a
+    // final bar that is a complete rest).
+    std::vector<float> audio (96000, 0.0f);
+    for (std::int64_t i = 0; i < 48000; ++i)
+        audio[static_cast<std::size_t> (i)] = 1.0f;
+    const float* channels[] = { pointerTo (audio) };
+
+    const std::vector<Slice> raw = { { 0, 24000 }, { 24000, 48000 }, { 48000, 96000 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 96000, kRate, nullptr);
+
+    REQUIRE (filtered.size() == 2);
+    CHECK (filtered[0] == Slice { 0, 24000 });
+    CHECK (filtered[1] == Slice { 24000, 48000 });   // silent rest: not a row
+}
+
+TEST_CASE ("ghost filter: a final slice with real content (snare + rest) is kept", "[slicebuilder]")
+{
+    // Last slice [48000,96000) opens with a real snare hit (~520ms at 44.1k
+    // of ~1.0 amplitude); the rest is silence. It is NOT silent, so rows
+    // must keep it -- dropping it would remove an actual beat.
+    std::vector<float> audio (96000, 0.0f);
+    for (std::int64_t i = 0; i < 48000; ++i)
+        audio[static_cast<std::size_t> (i)] = 1.0f;
+    for (std::int64_t i = 48000; i < 52000; ++i)
+        audio[static_cast<std::size_t> (i)] = 1.0f;
+    const float* channels[] = { pointerTo (audio) };
+
+    const std::vector<Slice> raw = { { 0, 24000 }, { 24000, 48000 }, { 48000, 96000 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 96000, kRate, nullptr);
+    CHECK (filtered == raw);
+}
+
+TEST_CASE ("ghost filter: degenerate inputs pass through unchanged", "[slicebuilder]")
+{
+    const auto audio = steadyAudio (48000);
+    const float* channels[] = { pointerTo (audio) };
+
+    // Empty slice list.
+    CHECK (filterGhostSlices ({}, channels, 1, 0, 48000, kRate, nullptr).empty());
+
+    // No channels / no audio reference.
+    const std::vector<Slice> raw = { { 0, 30 }, { 30, 24000 } };
+    CHECK (filterGhostSlices (raw, nullptr, 0, 0, 24000, kRate, nullptr) == raw);
+
+    // Single slice spanning the whole trim: never split or touch it.
+    const std::vector<Slice> single = { { 0, 48000 } };
+    CHECK (filterGhostSlices (single, channels, 1, 0, 48000, kRate, nullptr) == single);
+}
+
+TEST_CASE ("ghost filter: never returns an empty list", "[slicebuilder]")
+{
+    // Content only in [0,30): the leading sliver merges away AND the tail
+    // [30,48000) is silent. Dropping both would yield an empty slice list;
+    // the tail must be kept so there is always at least one row.
+    std::vector<float> audio (48000, 0.0f);
+    for (std::int64_t i = 0; i < 30; ++i)
+        audio[static_cast<std::size_t> (i)] = 1.0f;
+    const float* channels[] = { pointerTo (audio) };
+
+    const std::vector<Slice> raw = { { 0, 30 }, { 30, 48000 } };
+
+    const auto filtered = filterGhostSlices (raw, channels, 1, 0, 48000, kRate, nullptr);
+
+    REQUIRE (filtered.size() == 1);
+    CHECK (filtered[0] == Slice { 0, 48000 });   // whole trim, one slice survives
+}
+
+TEST_CASE ("ghost filter: stereo audio sums for the silence check", "[slicebuilder]")
+{
+    // Left channel carries the loud content, right channel is silent.
+    // The RMS must be computed over the mono-ish sum, not one channel.
+    std::vector<float> left (96000, 0.0f);
+    for (std::int64_t i = 0; i < 52000; ++i)
+        left[static_cast<std::size_t> (i)] = 1.0f;
+    std::vector<float> right (96000, 0.0f);
+    const float* channels[] = { left.data(), right.data() };
+
+    const std::vector<Slice> raw = { { 0, 24000 }, { 24000, 48000 }, { 48000, 96000 } };
+
+    // Left has real content in [48000,52000), so the final slice is kept.
+    const auto filtered = filterGhostSlices (raw, channels, 2, 0, 96000, kRate, nullptr);
+    CHECK (filtered == raw);
+}

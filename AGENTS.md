@@ -1240,6 +1240,89 @@ HARDENING entries below).
     themselves are inverse-transformed correctly. Acceptable; revisit if a
     real host reproduces it.
 
+- Randomize honors the probability band — "Randomize from probabilities"
+  (arblickspule/NeditVST#4, 2026-09-01): Reported as "only 'forward' style is
+  picked." ROOT CAUSE: the style-probability band is the ONLY style-probability
+  UI and it writes `generate.styleWeights` (NeditEditor.cpp:4860 →
+  `NeditProcessor::setStyleWeight`), but the Sequencer Randomize draws its
+  style from the sequencer's OWN decoupled table `SequencerState::
+  randomizeStyleWeights` (SequenceRandomizer.cpp:261-263) — pitfall fix #1's
+  deliberate split. That table is never written by any UI, so it stays at its
+  default `{1,0,...}` (Forward only) forever → non-forward styles could never
+  be picked. Slice Length/Clock already honored `generate.styleWeights`
+  (Scheduler.cpp:379/487), so only Randomize was broken. FIX (per lead-dev
+  decision, 2026-09-01): at Randomize press `NeditProcessor::randomizeSequence`
+  snapshots the band into the sequencer table —
+  `uiState_.sequencer.randomizeStyleWeights = uiState_.generate.styleWeights`
+  (one publish, before `randomizeSequence`). This keeps the two tables
+  independent (no persistent cross-talk) while Randomize honors whatever the
+  band shows at press time; later band edits don't alter a grid already
+  generated. The engine's own draw logic was already correct (covered by the
+  seeded "only-weighted style is chosen" test); the missing piece was the
+  upstream snapshot. Test: `editor: clear and randomize buttons act on the
+  sequencer grid` now seeds the band to Flanger-only via the public setters,
+  clicks RANDOMIZE, and asserts
+  `debugUiState().sequencer.randomizeStyleWeights ==
+  debugUiState().generate.styleWeights`. 273/273 green, zero warnings.
+
+- Randomize edge-column spans — "Random lengths exceed slice length"
+  (arblickspule/NeditVST#9, 2026-09-01): Random notes must be set to the
+  slice length (snapped to grid) and the next random note must respect that
+  claimed span. ROOT CAUSE in `SequenceRandomizer::randomizeSequence`: the
+  span free-check AND the claim-loop wrapped past the grid's end back to
+  column 0 via `(col + k) % columns`. The original clamps the span at the
+  grid edge (`jmin(columns, column + naturalSteps)`, PluginProcessor.cpp:
+  4315/4401) and never wraps. The wrap made a near-edge bar's claimed length
+  extend past its on-grid bar and phantom-claim low columns, so a later note
+  couldn't land where it should (the "next note doesn't respect that length"
+  symptom), and it wrongly REJECTED a bar that should legally occupy the
+  last `natural` columns of the grid when the wrapped partner column was
+  already claimed (fragmenting the grid and shortening placements).
+  FIX: both the free-check and the claim now clamp the span at `columns`
+  (`spanEnd = min(columns, col + natural)`), exactly like the original — a
+  near-edge bar occupies `[col, min(col+natural, columns))` and the next
+  note can't wrap in from column 0. (`nearestOccupiedDistance`, the
+  spacing-aware tiebreaker, is left circular — it only ranks candidate free
+  spans, never changes which columns a bar claims.) Test:
+  `randomize: a bar can occupy the grid's edge columns` (2 rows / 3 columns
+  / 2-step slices, density 1.0): the first bar claims [0,2), the only
+  remaining span is the right edge [2, min(3,4)); the fix lets that second
+  cell place (cellsPlaced >= 2 and column 2 occupied), while the OLD
+  wrap-around free-check rejected it (its wrapped partner is column 0,
+  already claimed → cellsPlaced == 1; verified the test FAILS on the old
+  code and passes on the fix). 273/273 green, zero warnings.
+
+- Ghost sequencer rows — "Extra empty/silent row"
+  (arblickspule/NeditVST#5, 2026-09-01): the sequencer derived one row per
+  slice, and two structural artifacts both produced a row the user didn't
+  want: (1) a sub-15ms leading sliver `[trimStart, firstOnset)` appeared on
+  EVERY full-span loop whose content starts at frame 0 (the detector can't
+  fire an onset at position 0 — rising-edge from `i-1` — so `mergeOnsets-
+  IntoSlices` prepends `trimStart`, orphaning a few frames before the first
+  real onset), and (2) a final slice `[lastOnset, trimEnd)` became a tall
+  near-silent top row when the loop's last bar is a true rest (no audible
+  content to lose). FIX: new pure engine filter `engine::filterGhostSlices
+  (slices, channels, numChannels, trimStart, trimEnd, sampleRate,
+  manualPoints)` in `SliceBuilder.{h,cpp}`, called by `SampleManager`
+  (`loadFromMemory` + `rebuildSlices`, the two entries to every published
+  slice list — weights/goals/re-randomize all remap through
+  `rebuildSlicesPreservingWeights` containment, so no downstream change
+  needed). Rule 1: a first slice starting exactly at `trimStart` with
+  `length < kLeadingSliverMaxMs (15ms)` MERGES into its successor (its
+  start moves back to `trimStart`; frames retained, "slices tile the trim"
+  preserved) — unless a `manualPoints` boundary sits inside the sliver
+  (user-placed cut is deliberate, kept). Rule 2: the final slice (the one
+  ending at `trimEnd`) is DROPPED when its own RMS < `kSilentTailRatio
+  (0.05)` × the sample's RMS over the trim (real content, however short,
+  stays — a snare-then-rest tail is not silent). Guard: never reduce the
+  list below one slice (sliver merged AND tail silent ⇒ the tail survives).
+  Verified on the lead-dev's real loop (`docs/Ned_Rush_Breakcore_Salon1.wav`,
+  72k frames): 10 raw → 9 filtered, `[0,49)` sliver gone, loud final slice
+  kept. 8 tests (`ghost filter: *` in test_slice_builder.cpp): sliver
+  merge, ≥15ms-first-slice kept, manual-inside guard, silent tail dropped,
+  snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
+  empty. 281/281 green, zero warnings.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has

@@ -634,6 +634,14 @@ int NeditProcessor::randomizeSequence()
         return 0;
     }
 
+    // Snapshot the Generate style-probability band (the ONLY style-probability
+    // UI, shared by the Generate and Sequence tabs) at press time. The
+    // sequencer randomizer draws from its OWN decoupled table (pitfall fix #1:
+    // styleWeights must not be silently shared), so Randomize honors whatever
+    // the band shows right now without re-coupling the two tables -- later band
+    // edits don't change the frozen snapshot this call used.
+    uiState_.sequencer.randomizeStyleWeights = uiState_.generate.styleWeights;
+
     // One fresh seed per call so successive Randomize presses genuinely
     // differ (determinism is exercised at the algorithm level, not here).
     std::random_device rd;
