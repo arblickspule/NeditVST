@@ -1240,6 +1240,31 @@ HARDENING entries below).
     themselves are inverse-transformed correctly. Acceptable; revisit if a
     real host reproduces it.
 
+- Randomize honors the probability band — "Randomize from probabilities"
+  (arblickspule/NeditVST#4, 2026-09-01): Reported as "only 'forward' style is
+  picked." ROOT CAUSE: the style-probability band is the ONLY style-probability
+  UI and it writes `generate.styleWeights` (NeditEditor.cpp:4860 →
+  `NeditProcessor::setStyleWeight`), but the Sequencer Randomize draws its
+  style from the sequencer's OWN decoupled table `SequencerState::
+  randomizeStyleWeights` (SequenceRandomizer.cpp:261-263) — pitfall fix #1's
+  deliberate split. That table is never written by any UI, so it stays at its
+  default `{1,0,...}` (Forward only) forever → non-forward styles could never
+  be picked. Slice Length/Clock already honored `generate.styleWeights`
+  (Scheduler.cpp:379/487), so only Randomize was broken. FIX (per lead-dev
+  decision, 2026-09-01): at Randomize press `NeditProcessor::randomizeSequence`
+  snapshots the band into the sequencer table —
+  `uiState_.sequencer.randomizeStyleWeights = uiState_.generate.styleWeights`
+  (one publish, before `randomizeSequence`). This keeps the two tables
+  independent (no persistent cross-talk) while Randomize honors whatever the
+  band shows at press time; later band edits don't alter a grid already
+  generated. The engine's own draw logic was already correct (covered by the
+  seeded "only-weighted style is chosen" test); the missing piece was the
+  upstream snapshot. Test: `editor: clear and randomize buttons act on the
+  sequencer grid` now seeds the band to Flanger-only via the public setters,
+  clicks RANDOMIZE, and asserts
+  `debugUiState().sequencer.randomizeStyleWeights ==
+  debugUiState().generate.styleWeights`. 272/272 green, zero warnings.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has
