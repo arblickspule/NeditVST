@@ -7,6 +7,7 @@
 #include "WaveformView.h"
 
 #include "ui/ProbBandGeometry.h"
+#include "ui/FitGeometry.h"
 #include "ui/SequencerGridGeometry.h"
 #include "ui/TimingGrey.h"
 
@@ -4440,6 +4441,12 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
     syncTabBar();   // seed the strip + panel from the restored activeTab
     syncSequencerTransport();
 
+    // Fit the 960x800 design into whatever viewport the host actually
+    // granted (scale down / centre up; identity when it matches). The
+    // host may call onSize() again after this -- the transform is
+    // recomputed there and here.
+    refitToHostSize();
+
     setIdleRate (60);
     return true;
 }
@@ -4484,6 +4491,45 @@ void PLUGIN_API NeditEditor::close()
         frame->close();
         frame = nullptr;
     }
+}
+
+//------------------------------------------------------------------------
+Steinberg::tresult PLUGIN_API NeditEditor::onSize (Steinberg::ViewRect* newSize)
+{
+    // Let the base apply the host's size to the CFrame (frame->setSize),
+    // then re-fit the design into the new viewport. Order matters: the
+    // transform is derived FROM the post-resize frame size.
+    const auto result = VSTGUIEditor::onSize (newSize);
+    refitToHostSize();
+    return result;
+}
+
+//------------------------------------------------------------------------
+void NeditEditor::refitToHostSize()
+{
+    if (frame == nullptr || frame->getPlatformFrame() == nullptr)
+        return;
+
+    const double frameW = frame->getWidth();
+    const double frameH = frame->getHeight();
+
+    const auto fit = nedit::ui::computeEditorFit (
+        frameW, frameH,
+        static_cast<double> (kEditorWidth),
+        static_cast<double> (kEditorHeight));
+
+    // Install the transform: all rendering (cviewcontainer.cpp drawRect
+    // pushes getTransform()) AND hit-testing (mouse coordinates are
+    // inverse-transformed into design space) are scaled/centred together,
+    // so every absolute-coordinate control keeps working unchanged.
+    frame->setTransform (CGraphicsTransform ()
+                             .translate (fit.offsetX, fit.offsetY)
+                             .scale (fit.scale, fit.scale));
+
+    // The design rect may now sit inside a larger viewport; repaint the
+    // whole frame so the margins (and any previously clipped content) get
+    // the kWindowBase background / first real paint.
+    frame->invalid();
 }
 
 //------------------------------------------------------------------------

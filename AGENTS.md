@@ -1188,6 +1188,58 @@ HARDENING entries below).
     param clear + last-param prune) in test_sample_pipeline.cpp (needs a
     loaded sample to seed the grid).
 
+- Host-size fit — "Mac missing UI: all UI elements missing after the waveform
+  view" (arblickspule/NeditVST#21, 2026-09-01):
+  - ROOT CAUSE (verified in the pinned VSTGUI 4.15.x): the editor layout is a
+    hardcoded 960x800 design (NeditEditor.cpp `kEditorWidth`/`kEditorHeight`,
+    `kEditorRect`) and nothing derives from the frame size. The size path is
+    `VSTGUIEditor::attached()` → `plugFrame->resizeView(this, 960x800)` →
+    the host may grant LESS → `VSTGUIEditor::onSize` (vstguieditor.cpp:193)
+    → `CFrame::setSize` → `NSViewFrame::setSize` → `[nsView setFrame:r]`.
+    Children keep absolute y-coords, so a shorter viewport clips every view
+    below the cut — the app bar + toolbar + waveform (y0-192) survive and
+    "everything after the waveform view" disappears. Cork poppin' y=192 is
+    just that tester's viewport height, not a magic number. Ruled out by
+    source inspection: the VSTGUI 4.14.x CALayer-resize-redraw bug (#357) is
+    already fixed in our submodule (`5db27225`, post-#383; nsviewframe.mm:
+    1516-1517 keeps `caLayer.frame` in sync on resize), the `drawLayer`
+    coordinate flip (nsviewframe.mm:1389) uses `layer.bounds.size.height`
+    which tracks the resized frame, and our `notify` forwards the idle timer
+    to `VSTGUIEditor::notify` → `frame->idle()` (NeditEditor.cpp). macOS CI
+    never launches the editor (build.yml = build + ctest only), so nothing
+    caught it.
+  - FIX: fit the design into whatever viewport the host grants, instead of
+    clipping. Pure helper `ui::computeEditorFit(frameW, frameH, designW,
+    designH)` in `src/ui/FitGeometry.h` (framework-free, tested): smaller
+    window → scale down to fit (`scale = min(w/960, h/800)`, clamped ≥ 0.2,
+    never upscales; even a clamped scale is pinned inside the window);
+    larger window → native 1.0 scale, recentred (margins + the 192x960 gutters
+    get the existing `kWindowBase` CFrame background, set at open()).
+    Wire-up in `NeditEditor`: `onSize()` override calls
+    `VSTGUIEditor::onSize` (applies the host size) THEN `refitToHostSize()`,
+    which installs `frame->setTransform(CGraphicsTransform().translate(
+    offsetX, offsetY).scale(scale, scale))` + `frame->invalid()`. The CFrame
+    transform is the clean seam: `CViewContainer::drawRect` (cviewcontainer.
+    cpp:843) pushes `getTransform()` onto the draw context and transforms the
+    clip/client rects back by its inverse, and CFrame's mouse dispatch
+    inverse-transforms pointer positions (cframe.cpp:780) — so ALL ~50
+    absolute-coordinate controls keep operating in design space untouched;
+    only presentation + hit-testing are scaled/centred together.
+    `SequencerGridView::rebuildLayout` uses its OWN view rect (not the
+    frame's), so it stays in design space. Called at the end of `open()`
+    (identity at that point — the host hasn't shrunk us yet) and from every
+    `onSize`. No allocation on the audio thread (UI-thread-only).
+  - Tests: 7 new ui cases (`test_fit_geometry.cpp`): exact-design identity,
+    half-height shrink (0.5x, centred), width-bound shrink, 2x window =
+    native + centred, wider-not-taller native, min-scale clamp containment,
+    degenerate inputs. 272/272 green, zero warnings.
+  - Known (minor) trade-off of the fit transform: under a window genuinely
+    smaller than the design, `COptionMenu` popups are positioned from frame
+    coords and do not account for the scale, so a right-click override menu
+    could appear misaligned relative to the shrunk grid; the click targets
+    themselves are inverse-transformed correctly. Acceptable; revisit if a
+    real host reproduces it.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has

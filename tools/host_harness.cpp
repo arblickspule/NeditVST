@@ -555,6 +555,16 @@ int main (int argc, char** argv)
                         std::printf ("[harness] wrote %s (%u frames)\n", dumpPath, n);
                     }
                 }
+                STEP("onSize shrink/restore round-trip (host-size fit)");
+                {
+                    Steinberg::ViewRect full (0, 0, 960, 800);
+                    Steinberg::ViewRect small (0, 0, 960, 480);
+                    view->onSize (&small);   // NeditEditor::onSize -> refit -> scale 0.5
+                    host.pump (20);
+                    view->onSize (&full);    // back to design size -> identity
+                    host.pump (20);
+                    std::printf ("[harness] onSize round-trip done\n");
+                }
                 STEP("removed editor");
                 view->removed();
                 xcb_destroy_window (conn, win); xcb_flush (conn);

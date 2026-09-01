@@ -38,6 +38,7 @@ target_link_libraries(nedit_engine_tests
             Catch2::Catch2WithMain)
 
 add_executable(nedit_ui_tests
+    ui/test_fit_geometry.cpp
     ui/test_waveform_geometry.cpp
     ui/test_sequencer_geometry.cpp
     ui/test_prob_band_geometry.cpp

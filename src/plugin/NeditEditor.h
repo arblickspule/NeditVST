@@ -78,6 +78,11 @@ public:
     //--- VSTGUIEditor --------------------------------------------------------
     bool PLUGIN_API open (void* parent, const VSTGUI::PlatformType& platformType) override;
     void PLUGIN_API close() override;
+    // Hosts don't always honor the requested 960x800 editor size. Re-fit the
+    // design into whatever viewport was granted (scale down when smaller,
+    // centre + native size when larger) by updating the CFrame transform.
+    // See ui::computeEditorFit / refitToHostSize().
+    Steinberg::tresult PLUGIN_API onSize (Steinberg::ViewRect* newSize) override;
 
     // The owning processor (controller-side authoritative state + the
     // derived load sample / scheduler signals the views render).
@@ -142,6 +147,12 @@ void runFileSelector();
     // Host edit protocol for an editor-originated param change:
     // beginEdit / setParamNormalized / performEdit / endEdit.
     void setParam (std::uint32_t id, float normalized);
+    // Places the 960x800 design inside the host-granted frame: reads
+    // frame->getViewSize(), computes the fit via ui::computeEditorFit and
+    // installs it as the CFrame transform (scales drawing + hit-testing,
+    // keeps every control in design coordinates). Called at the end of
+    // open() and from onSize().
+    void refitToHostSize();
 
     NeditProcessor* owner_ = nullptr;
     WaveformView* waveformView_ = nullptr;
