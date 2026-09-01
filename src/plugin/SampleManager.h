@@ -101,6 +101,13 @@ public:
         loaded->audio = audioPtr;
         loaded->analysis = detector;
         loaded->slices = engine::buildSlices (*detector, updated);
+        loaded->slices = engine::filterGhostSlices (loaded->slices,
+                                                    channelPointers.data(),
+                                                    numChannels,
+                                                    updated.trimStartFrame,
+                                                    updated.trimEndFrame,
+                                                    audioPtr->sampleRate,
+                                                    &updated.manualPoints);
 
         slot_.store (loaded, std::memory_order_release);
 
@@ -126,6 +133,12 @@ public:
         next->analysis = cur->analysis;   // share (immutable)
         next->slices = engine::buildSlices (*cur->analysis, sample);
 
+        const auto channelPointers = buildChannelPointers (*cur->audio);
+        next->slices = engine::filterGhostSlices (
+            next->slices, channelPointers.empty() ? nullptr : channelPointers.data(),
+            cur->audio->channelCount(), sample.trimStartFrame, sample.trimEndFrame,
+            cur->audio->sampleRate, &sample.manualPoints);
+
         slot_.store (next, std::memory_order_release);
         return next;
     }
@@ -147,6 +160,19 @@ public:
     }
 
 private:
+    // Channel-pointer table over a decoded buffer (for filterGhostSlices'
+    // RMS reads). Empty-buffer safe; the returned vector is trivially small.
+    [[nodiscard]] static std::vector<const float*>
+        buildChannelPointers (const DecodedAudio& audio)
+    {
+        if (audio.channels.empty())
+            return {};
+        auto ptrs = std::vector<const float*> (audio.channels.size());
+        for (std::size_t c = 0; c < audio.channels.size(); ++c)
+            ptrs[c] = audio.channels[c].data();
+        return ptrs;
+    }
+
     engine::AtomicSharedPtr<const LoadedSample> slot_;
 };
 

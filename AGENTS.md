@@ -1292,6 +1292,37 @@ HARDENING entries below).
   already claimed → cellsPlaced == 1; verified the test FAILS on the old
   code and passes on the fix). 273/273 green, zero warnings.
 
+- Ghost sequencer rows — "Extra empty/silent row"
+  (arblickspule/NeditVST#5, 2026-09-01): the sequencer derived one row per
+  slice, and two structural artifacts both produced a row the user didn't
+  want: (1) a sub-15ms leading sliver `[trimStart, firstOnset)` appeared on
+  EVERY full-span loop whose content starts at frame 0 (the detector can't
+  fire an onset at position 0 — rising-edge from `i-1` — so `mergeOnsets-
+  IntoSlices` prepends `trimStart`, orphaning a few frames before the first
+  real onset), and (2) a final slice `[lastOnset, trimEnd)` became a tall
+  near-silent top row when the loop's last bar is a true rest (no audible
+  content to lose). FIX: new pure engine filter `engine::filterGhostSlices
+  (slices, channels, numChannels, trimStart, trimEnd, sampleRate,
+  manualPoints)` in `SliceBuilder.{h,cpp}`, called by `SampleManager`
+  (`loadFromMemory` + `rebuildSlices`, the two entries to every published
+  slice list — weights/goals/re-randomize all remap through
+  `rebuildSlicesPreservingWeights` containment, so no downstream change
+  needed). Rule 1: a first slice starting exactly at `trimStart` with
+  `length < kLeadingSliverMaxMs (15ms)` MERGES into its successor (its
+  start moves back to `trimStart`; frames retained, "slices tile the trim"
+  preserved) — unless a `manualPoints` boundary sits inside the sliver
+  (user-placed cut is deliberate, kept). Rule 2: the final slice (the one
+  ending at `trimEnd`) is DROPPED when its own RMS < `kSilentTailRatio
+  (0.05)` × the sample's RMS over the trim (real content, however short,
+  stays — a snare-then-rest tail is not silent). Guard: never reduce the
+  list below one slice (sliver merged AND tail silent ⇒ the tail survives).
+  Verified on the lead-dev's real loop (`docs/Ned_Rush_Breakcore_Salon1.wav`,
+  72k frames): 10 raw → 9 filtered, `[0,49)` sliver gone, loud final slice
+  kept. 8 tests (`ghost filter: *` in test_slice_builder.cpp): sliver
+  merge, ≥15ms-first-slice kept, manual-inside guard, silent tail dropped,
+  snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
+  empty. 281/281 green, zero warnings.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has
