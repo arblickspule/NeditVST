@@ -18,10 +18,23 @@ jobs:
             artifact-name: NeditVST3-Windows
 
     runs-on: ${{ matrix.os }}
+    env:
+      CCACHE_DIR: ~/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore ccache
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('CMakeLists.txt', '**/CMakeLists.txt', '**/*.cmake', '.github/workflows/build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
 
       # Native rewrite: no JUCE. VSTGUI (the editor toolkit) is the only
       # component with system prerequisites and only on Linux -- X11 + XCB +
@@ -44,16 +57,50 @@ jobs:
             libcairo2-dev \
             libpango1.0-dev \
             libfontconfig1-dev \
+            ccache \
             libfreetype-dev
 
+      - name: Install ccache
+        if: runner.os == 'macOS'
+        run: |
+          command -v ccache >/dev/null 2>&1 || brew install ccache
+
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DNEDIT_BUILD_PLUGIN=ON -DNEDIT_BUILD_TOOLS=OFF
+        if: runner.os != 'macOS'
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+          -DNEDIT_BUILD_PLUGIN=ON
+          -DNEDIT_BUILD_TOOLS=OFF
+
+      - name: Configure (macOS with ccache)
+        if: runner.os == 'macOS'
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache
+          -DNEDIT_BUILD_PLUGIN=ON
+          -DNEDIT_BUILD_TOOLS=OFF
 
       - name: Build
+        if: runner.os != 'macOS'
         run: cmake --build build --config Release --parallel
+
+      - name: Build (macOS verbose)
+        if: runner.os == 'macOS'
+        run: |
+          ccache --zero-stats || true
+          cmake --build build --config Release --parallel --verbose
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Show ccache stats
+        if: runner.os == 'macOS'
+        run: ccache --show-stats || true
 
       - name: Upload VST3 bundle artifact
         uses: actions/upload-artifact@v4
