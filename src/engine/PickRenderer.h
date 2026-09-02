@@ -107,6 +107,14 @@ struct PickParams
     bool filterWholeWindow = false;
     bool flangerWholeWindow = false;
 
+    // Sequencer per-cell volume ramp (value + mode), set only when a cell
+    // overrides its style's volume; else the renderer uses the style's own
+    // `styleVolume[key]`.
+    bool volumeRampActive = false;
+    bool volumeWholeWindow = false;
+    float volumeValue = 1.0f;
+    state::VolumeRampMode volumeMode = state::VolumeRampMode::fixed;
+
     double velocityGain = 1.0;             // Control mode
 
     // Captured parameter values (globals or per-step overrides).

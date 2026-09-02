@@ -277,6 +277,12 @@ private:
         bool useDurationGate = false;    // Sequenced: gate on declared length
         bool nativeRate = false;         // Performance Sync-off
         double velocityGain = 1.0;       // Control mode
+        // Sequencer per-cell volume override (value + ramp mode); only set
+        // when a cell overrides its style's volume.
+        bool volumeRampActive = false;
+        bool volumeWholeWindow = false;  // ramp across the whole step when Subdivided
+        float volumeValue = 1.0f;
+        state::VolumeRampMode volumeMode = state::VolumeRampMode::fixed;
     };
 
     void commitPick (const Slice& slice, const state::StyleParameters& params,

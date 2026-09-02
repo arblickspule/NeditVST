@@ -193,7 +193,7 @@ TEST_CASE ("applicable parameters per style match the original table", "[stylepa
                                 Id::subdivide, Id::volume });
 }
 
-TEST_CASE ("swept parameters are exactly the original five", "[styleparams]")
+TEST_CASE ("swept parameters are exactly the original six", "[styleparams]")
 {
     for (int i = 0; i < kNumStyleParams; ++i)
     {
@@ -208,9 +208,13 @@ TEST_CASE ("swept parameters are exactly the original five", "[styleparams]")
         CHECK (styleParamInfo (id).swept == expected);
     }
 
-    // The reserved Volume key (id 19) is deliberately NOT swept: it is a
-    // plain per-cell slider.
-    CHECK_FALSE (styleParamInfo (StyleParamId::volume).swept);
-    CHECK_FALSE (styleParamInfo (StyleParamId::volume).discrete);
+    // The reserved Volume key (id 19) is swept too: it pairs with the
+    // Volume Mode key (id 20) as its ramp-mode sibling.
+    CHECK (styleParamInfo (StyleParamId::volume).swept);
     CHECK (styleParamInfo (StyleParamId::volume).name == std::string ("Volume"));
+    CHECK (styleParamInfo (StyleParamId::volumeMode).name == std::string ("Volume Mode"));
+    CHECK (styleParamInfo (StyleParamId::volumeMode).discrete);
+    CHECK (styleParamInfo (StyleParamId::volumeMode).numOptions == 3);
+    CHECK (std::string (styleParamOptionName (StyleParamId::volumeMode, 1)) == "Ramp Up");
+    CHECK (std::string (styleParamOptionName (StyleParamId::volumeMode, 2)) == "Ramp Down");
 }

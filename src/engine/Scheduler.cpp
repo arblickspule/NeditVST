@@ -195,6 +195,10 @@ void VoiceScheduler::commitPick (const Slice& slice, const state::StyleParameter
     pick.filterWholeWindow = filterWholeWindow;
     pick.flangerWholeWindow = flangerWholeWindow;
     pick.velocityGain = extras.velocityGain;
+    pick.volumeRampActive = extras.volumeRampActive;
+    pick.volumeWholeWindow = extras.volumeWholeWindow;
+    pick.volumeValue = extras.volumeValue;
+    pick.volumeMode = extras.volumeMode;
     pick.params = params;
 
     renderer_.startPick (pick);
@@ -663,11 +667,27 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     const Slice& slice = r.slices[sliceIndex];
     const auto style = styleFromOrdinal ((*view.grid)[cell]);
 
+    // Per-cell volume override (value + ramp mode) is resolved separately
+    // from the scalar param merge: volume is per-style, so a cell's override
+    // is carried as the pick's own volume (ramped across the step) rather
+    // than patched into merged.styleVolume.
+    bool volumeRampActive = false;
+    float volumeValue = merged.getStyleVolume (style);
+    state::VolumeRampMode volumeMode = state::VolumeRampMode::fixed;
+
     if (const auto it = view.overrides->find (cell); it != view.overrides->end())
         for (const auto& [id, value] : it->second)
         {
             if (id == state::StyleParamId::volume)
-                merged.setStyleVolume (style, value);   // per-CELL volume overrides the style's
+            {
+                volumeValue = std::clamp (value, 0.0f, 1.0f);
+                volumeRampActive = true;
+            }
+            else if (id == state::StyleParamId::volumeMode)
+            {
+                volumeMode = static_cast<state::VolumeRampMode> (
+                    std::clamp (static_cast<int> (std::lround (value)), 0, 2));
+            }
             else
                 merged.set (id, value);
         }
@@ -790,6 +810,10 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     PickExtras extras;
     extras.halfSliceFold = style == state::PlaybackStyle::pingPong;
     extras.useDurationGate = true;
+    extras.volumeRampActive = volumeRampActive;
+    extras.volumeWholeWindow = subdivisionActive_;
+    extras.volumeValue = volumeValue;
+    extras.volumeMode = volumeMode;
 
     commitPick (slice, merged, prepared, style,
                 pickLength, tapeStopDuration,

@@ -229,12 +229,28 @@ bool PickRenderer::renderSample (const BlockContext& ctx, float* const* outAdd, 
                                                0.0f, state::kMaxFlangerFeedback);
     }
 
-    // --- Per-style volume (constant gain, captured at pick start) ----------
-    // One independent value per PlaybackStyle (issue #7); the scheduler
-    // captures the style's own volume into the pick params, so this is a
-    // bare multiplier here.
-    const double volumeGain = clamp01 (static_cast<double> (
-        pick.params.getStyleVolume (pick.style)));
+    // --- Volume (per-style constant, or a sequencer per-cell ramp) --------
+    double volumeGain = 0.0;
+
+    if (pick.volumeRampActive)
+    {
+        // A cell overrode its style's volume: ramp it across the step
+        // (whole-window when Subdivided), like the original's per-cell
+        // Volume / Volume-Mode ramp.
+        const double progress = pick.volumeWholeWindow ? windowProgress() : pickProgress();
+        const double setValue = static_cast<double> (pick.volumeValue);
+        double value = setValue;
+        if (pick.volumeMode == state::VolumeRampMode::rampUp)
+            value = setValue * progress;
+        else if (pick.volumeMode == state::VolumeRampMode::rampDown)
+            value = setValue * (1.0 - progress);
+        volumeGain = clamp01 (value);
+    }
+    else
+    {
+        volumeGain = clamp01 (static_cast<double> (
+            pick.params.getStyleVolume (pick.style)));
+    }
 
     // --- Control-mode gains -------------------------------------------------
     const double velocityGain = pick.velocityGain;

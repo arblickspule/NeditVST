@@ -53,18 +53,21 @@ enum class StyleParamId : std::uint8_t
     flangerMixMode,           // 16  Mix Mode           Static/Sweep In/Sweep Out
     flangerFeedback,          // 17  Feedback           0 .. 0.88     (Flanger)
     flangerFeedbackMode,      // 18  Feedback Mode      Static/Sweep In/Sweep Out
-    volume                    // 19  Volume             0 .. 1 (per-style; reserved
-                              //     override key -- see below)
+    volume,                   // 19  Volume             0 .. 1 (per-cell override value;
+                              //     per-style via styleVolume -- see below)
+    volumeMode                // 20  Volume Mode        Static/Ramp Up/Ramp Down
+                              //     (sequencer per-cell ramp mode)
 };
 
 // Volume is per-style (a 9-value `styleVolume` array, see below) and has NO
-// scalar generic get/set. `volume` (19) exists in the enum ONLY as the
-// sequencer per-cell override key: a cell may override its own style's
-// volume, stored in the same sparse override map as the scalar params. The
-// generic vocabulary (`get`/`set`, automation, serialization's scalar loop,
-// `sanitize`'s scalar loop) covers ids 0 .. kNumStyleParams-1 = 0..18 only.
+// scalar generic get/set. `volume` (19) and `volumeMode` (20) exist in the
+// enum ONLY as the sequencer per-cell override keys: a cell may override its
+// own style's volume (value + ramp mode), stored in the same sparse override
+// map as the scalar params. The generic vocabulary (`get`/`set`, automation,
+// serialization's scalar loop, `sanitize`'s scalar loop) covers ids
+// 0 .. kNumStyleParams-1 = 0..18 only.
 inline constexpr int kNumStyleParams = 19;
-inline constexpr int kNumStyleParamIds = 20;   // scalars + the reserved volume key
+inline constexpr int kNumStyleParamIds = 21;   // scalars + Volume + Volume Mode keys
 
 
 
@@ -78,7 +81,9 @@ inline constexpr int kNumStyleParamIds = 20;   // scalars + the reserved volume 
 // style's own `styleVolume`).
 [[nodiscard]] constexpr bool isValidSequencerOverrideId (int id) noexcept
 {
-    return (id >= 0 && id < kNumStyleParams) || id == static_cast<int> (StyleParamId::volume);
+    return (id >= 0 && id < kNumStyleParams)
+        || id == static_cast<int> (StyleParamId::volume)
+        || id == static_cast<int> (StyleParamId::volumeMode);
 }
 
 // Static description of one parameter (name, range, discreteness).

@@ -7,6 +7,7 @@ namespace nedit::state {
 namespace {
 
     constexpr int kNumSweepModes = 3;
+    constexpr int kNumVolumeRampModes = 3;
     constexpr int kNumFilterTypes = 3;
     constexpr int kNumCurveShapes = 2;
     constexpr int kNumSubdivideOptions = kNumNoteValues + 1;  // "Off" + palette
@@ -32,7 +33,8 @@ namespace {
         { "Mix Mode",                    0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumSweepModes },
         { "Feedback",                    0.0f,                 kMaxFlangerFeedback,  0.3f,    false,  false,  true,  0 },
         { "Feedback Mode",               0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumSweepModes },
-        { "Volume",                      0.0f,                 1.0f,                 1.0f,    false,  false,  false, 0 }
+        { "Volume",                      0.0f,                 1.0f,                 1.0f,    false,  false,  true,  0 },
+        { "Volume Mode",                 0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumVolumeRampModes }
     } };
 
     [[nodiscard]] int clampOption (float value, int numOptions) noexcept
@@ -87,6 +89,9 @@ const char* styleParamOptionName (StyleParamId id, int optionIndex) noexcept
         case StyleParamId::scratchForwardCurve:
         case StyleParamId::scratchBackwardCurve:
             return kEasingCurveNames[static_cast<std::size_t> (optionIndex)];
+
+        case StyleParamId::volumeMode:
+            return kVolumeRampModeNames[static_cast<std::size_t> (optionIndex)];
 
         default:
             return nullptr;
@@ -174,6 +179,7 @@ float StyleParameters::get (StyleParamId id) const noexcept
         case StyleParamId::flangerFeedback:      return flangerFeedback;
         case StyleParamId::flangerFeedbackMode:  return static_cast<float> (flangerFeedbackMode);
         case StyleParamId::volume:               return styleVolume[0];   // per-style; no scalar generic value
+        case StyleParamId::volumeMode:           return 0.0f;              // per-cell ramp; no scalar generic value
     }
 
     return 0.0f;
@@ -247,7 +253,9 @@ void StyleParameters::set (StyleParamId id, float value) noexcept
             flangerFeedbackMode = static_cast<SweepMode> (clampOption (value, info.numOptions));
             break;
         case StyleParamId::volume:
-            break;   // per-style only -- set via setStyleVolume; unreachable (guard rejects volume)
+            break;   // per-style (setStyleVolume) / per-cell override; unreachable via set
+        case StyleParamId::volumeMode:
+            break;   // per-cell ramp mode; unreachable via set (guard rejects volumeMode)
     }
 }
 

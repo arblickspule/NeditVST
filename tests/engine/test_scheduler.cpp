@@ -724,8 +724,31 @@ TEST_CASE ("sequenced: per-cell volume override beats the style's volume", "[sch
     fx.play (1);
     REQUIRE (fx.picks() == 1);
 
-    const auto& params = fx.scheduler.renderer().currentPick().params;
-    CHECK_THAT (params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.25f, 1e-6f));
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    // The override is carried as the pick's own volume (ramp value), leaving
+    // the merged styleParams' per-style base untouched.
+    CHECK (pick.volumeRampActive);
+    CHECK_THAT (pick.volumeValue, WithinAbs (0.25f, 1e-6f));
+    CHECK (pick.volumeMode == VolumeRampMode::fixed);
+    CHECK_THAT (pick.params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.5f, 1e-6f));
+}
+
+TEST_CASE ("sequenced: per-cell volume ramp mode flows into the pick", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward
+    fx.setCellOverride (0, 0, StyleParamId::volume, 1.0f);
+    fx.setCellOverride (0, 0, StyleParamId::volumeMode, 1.0f);   // ramp up
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK (pick.volumeRampActive);
+    CHECK (pick.volumeMode == VolumeRampMode::rampUp);
+    CHECK_THAT (pick.volumeValue, WithinAbs (1.0f, 1e-6f));
 }
 
 TEST_CASE ("sequenced: no volume override falls back to the style's volume",
@@ -741,8 +764,9 @@ TEST_CASE ("sequenced: no volume override falls back to the style's volume",
     fx.play (1);
     REQUIRE (fx.picks() == 1);
 
-    const auto& params = fx.scheduler.renderer().currentPick().params;
-    CHECK_THAT (params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.5f, 1e-6f));
+    const auto& pick = fx.scheduler.renderer().currentPick();
+    CHECK_FALSE (pick.volumeRampActive);
+    CHECK_THAT (pick.params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.5f, 1e-6f));
 }
 
 TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-step",

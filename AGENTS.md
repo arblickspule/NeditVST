@@ -1524,40 +1524,39 @@ HARDENING entries below).
   Volume moved from a single shared `StyleParameters::volume` scalar + ramp
   mode to `StyleParameters::styleVolume` — a 9-element `std::array<float,
   kNumPlaybackStyles>`, indexed by the style's own ordinal (issue #7). Lead-
-  dev decisions: **per-style volume VALUES only, ramp modes dropped** (the
-  `VolumeRampMode` enum, `volumeMode` StyleParamId, and `kVolumeRampModeNames`
-  are gone — Volume is a constant per-style gain), and **per-style everywhere**
-  (the array lives in `StyleParameters`, so Generate/Control/Performance
-  snapshots/Sequencer fallback each carry their own 9 values). Consequences:
-  - `StyleParameters`: `volume`/`volumeMode` scalars removed; `styleVolume`
-    array + `getStyleVolume`/`setStyleVolume` (clamped [0,1]). `volume` and
-    `volumeMode` were dropped from the `StyleParamId` enum entirely;
-    `kNumStyleParams` 21 → 19. `styleParamInfo`/`set` now bounds-guard
-    out-of-range ids (a stale `volume` override id from an old chunk can no
-    longer OOB-index the info table).
-  - Per-cell volume override in the Sequencer is KEPT (lead-dev follow-up:
-    "the sequencer needs to override with per-cell volumes"): `volume` (19)
-    stays in the `StyleParamId` enum as a RESERVED per-cell override key
-    (NOT in the generic scalar vocabulary — `kNumStyleParams` = 19 scalar
-    params 0..18, `kNumStyleParamIds` = 20 ids incl. the reserved Volume
-    key). `isValidSequencerOverrideId()` accepts the reserved Volume key for
-    the override map/setters/`readGridData`, while the generic `set`/`get`
-    still reject it (volume is per-style; `set` guards, `get(volume)`
-    returns `styleVolume[0]`). A cell's Volume override wins over its
-    style's `styleVolume`: `startSequencedPick`'s merge special-cases
-    `StyleParamId::volume` → `merged.setStyleVolume(style, value)`.
-    `styleParamInfo(volume)` has a real entry (`{ "Volume", 0..1, default 1,
-    continuous, not swept }`) so the override menu presents it as a plain
-    in-place slider. `applicableStyleParams` re-appends Subdivide + Volume;
-    `SequenceRandomizer` excludes Volume from its per-style rolls.
-    `paramReadoutFormat`/`rowName`/`syncStyleProbs` treat the band's
-    per-style Volume (editor-local `kTagStyleVolumeBase`) separately from the
-    per-cell Volume override key.
-  - `PickRenderer`: the volume ramp block and `volumeRampActive`/
-    `volumeWholeWindow` flags are removed; the renderer applies
-    `pick.params.getStyleVolume (pick.style)` as a bare constant gain.
-    `PickExtras` shrinks accordingly (the Slice Length/Clock/Performance/
-    Control commits no longer set volume flags).
+  dev decisions: **per-style volume VALUES as a static base** (the band's
+  Volume slider is a constant per-style gain; it has NO band-level ramp), and
+  **per-style everywhere** (the array lives in `StyleParameters`, so
+  Generate/Control/Performance snapshots/Sequencer fallback each carry their
+  own 9 values). Consequences:
+  - `StyleParameters`: scalar `volume`/`volumeMode` fields removed; `styleVolume`
+    array + `getStyleVolume`/`setStyleVolume` (clamped [0,1]). `kNumStyleParams`
+    21 → 19 (the scalar vocabulary). `styleParamInfo`/`set` bounds-guard
+    out-of-range ids.
+  - **Sequencer per-cell volume override KEPT, INCLUDING ramp modes** (lead-
+    dev: "the sequencer needs to override with per-cell volumes" + "volume
+    ramps in sequencer … might get shot if those disappear too"): `volume`
+    (19) and `volumeMode` (20) stay in the `StyleParamId` enum as RESERVED
+    per-cell override keys (NOT the generic scalar vocabulary — `kNumStyleParams`
+    = 19 scalars 0..18, `kNumStyleParamIds` = 21 ids incl. Volume + Volume
+    Mode). `VolumeRampMode { fixed, rampUp, rampDown }` + `kVolumeRampModeNames`
+    are BACK (sequencer-only). `isValidSequencerOverrideId()` accepts 19/20 for
+    the override map/setters/`readGridData`; generic `set`/`get` reject them.
+    `startSequencedPick` resolves a cell's Volume + Volume Mode override into
+    the pick's own `volumeValue`/`volumeMode`/`volumeRampActive` (NOT patched
+    into `merged.styleVolume`), with `volumeWholeWindow = subdivisionActive_`
+    so a Subdivided step ramps once across the whole step. `styleParamInfo
+    (volume)` is `swept` (pairs with `volumeMode`), so the override menu
+    presents Volume as a mode-submenu (Static/Ramp Up/Ramp Down) then the
+    value slider. `applicableStyleParams` re-appends Subdivide + Volume;
+    `SequenceRandomizer` excludes Volume from its per-style rolls. The band's
+    per-style Volume (editor-local `kTagStyleVolumeBase`) stays separate from
+    the per-cell Volume override keys.
+  - `PickRenderer`: volume gain is ramped when `pick.volumeRampActive`
+    (`rampUp` = value×progress, `rampDown` = value×(1−progress), per-pick or
+    whole-window when Subdivided), else a constant `getStyleVolume(pick.style)`.
+    `PickExtras`/`PickParams` carry `volumeRampActive`/`volumeWholeWindow`/
+    `volumeValue`/`volumeMode` (only set by the Sequenced commit).
   - Serialization: format bumped v2 → v3. `writeStyleParameters` writes the
     19 generic params then the 9-value volume array; `readStyleParameters`
     is version-gated (`version >= 3` reads the array), so genuine v2 chunks
@@ -1582,7 +1581,7 @@ HARDENING entries below).
     renderer + scheduler cases, `applicableStyleParams`/`swept` counts, the
     override-menu classification, the parameter-surface count (19+8), and a
     rewritten v2→v3 backward-compat chunk test (`v2 chunks (scalar volume)
-    load with per-style volume defaulted`). 285/285 green, zero warnings.
+    load with per-style volume defaulted`). 290/290 green, zero warnings.
 
 ## Rules of engagement
 
