@@ -3869,6 +3869,18 @@ void NeditEditor::stylePaintTo (int column, float value)
 //------------------------------------------------------------------------
 bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformType)
 {
+    // Defensive: every CParamDisplay-derived control (COptionMenu below)
+    // dereferences the global kNormalFont unconditionally in its ctor
+    // (vstgui/lib/controls/cparamdisplay.cpp). That global is null until
+    // VSTGUI::init()/CFontDesc::init() has run, which normally happens via
+    // the module's bundleEntry -> InitModule chain -- but a host that
+    // scans (load/unload) the bundle before the real session can leave it
+    // null again by the time open() is called for real. Force it here so
+    // construction below can't hit a null-deref crash regardless of host
+    // scan/reload ordering.
+    if (kNormalFont == nullptr)
+        CFontDesc::init();
+
     CRect frameSize (0, 0, kEditorWidth, kEditorHeight);
 
     frame = new CFrame (frameSize, this);
