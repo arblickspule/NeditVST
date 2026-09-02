@@ -113,6 +113,8 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            ./build/tools/Debug/nedit_editor_smoke.exe ./build/nedit.vst3 500
           else
             ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
           fi
