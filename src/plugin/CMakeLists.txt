@@ -148,6 +148,17 @@ set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # SDK's own plugin cmake helpers define this; we bypass them, so set it
 # ourselves.
 target_compile_definitions(nedit_plugin PRIVATE VSTGUI_NEEDS_INIT_LIB=1)
+# VSTGUI's own build (vstgui/cmake/modules/vstgui_init.cmake) defines DEBUG
+# for itself on Debug configs, which adds CView::dumpInfo() -- a `#if DEBUG`
+# virtual method -- to every VSTGUI class's vtable. Our own sources here
+# (NeditEditor.cpp, WaveformView.cpp) construct and call methods on those
+# same VSTGUI classes, so if THEY don't see DEBUG too, they compute a
+# DIFFERENT (one-slot-short) vtable layout for the identical classes: an
+# ODR violation where every virtual call after that point (setFont,
+# setFontColor, setBackColor, ...) silently invokes the wrong function
+# through a real-but-mismatched vtable slot. Match VSTGUI's own condition
+# exactly so both sides agree.
+target_compile_definitions(nedit_plugin PRIVATE $<$<CONFIG:Debug>:DEBUG>)
 if(MSVC)
     # getenv/strcpy & co. are C4996-deprecated on MSVC's /W4; these are
     # deliberate ports of POSIX patterns.
@@ -242,11 +253,13 @@ if(APPLE)
         # path would not match Linux/Windows. A MODULE+bundle wrapper is
         # placed via LIBRARY_OUTPUT_DIRECTORY (BUNDLE_OUTPUT_DIRECTORY only
         # governs true MACOSX_BUNDLE executables), so pin both to the
-        # shared bundle dir; the _RELEASE forms cover multi-config Xcode.
-        LIBRARY_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
-        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
-        BUNDLE_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
-        BUNDLE_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
+        # shared bundle dir; this root must be the build dir itself (not a
+        # pre-suffixed ".../nedit.vst3"), otherwise CMake appends another
+        # "nedit.vst3" target folder and creates a nested bundle path.
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+        BUNDLE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        BUNDLE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
     )
     # Ad-hoc sign the whole bundle: unsigned MH_BUNDLE binaries refuse to
     # dlopen on Apple Silicon.

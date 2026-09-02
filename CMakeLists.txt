@@ -12,13 +12,28 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # The VST3 module is a shared object; every static lib feeding it needs PIC.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Left unset, VSTGUI's own CMakeLists.txt (fetched into src/plugin) falls
+# back to CMAKE_BUILD_TYPE=Debug for ITSELF, but that fallback is
+# directory-scoped -- it never reaches our own targets. VSTGUI then
+# compiles with DEBUG defined (adding CView::dumpInfo(), an `#if DEBUG`
+# virtual method) while our own TUs (NeditEditor.cpp etc.) do not see
+# DEBUG at all, so the two sides compute different vtable layouts for
+# every VSTGUI class -- an ODR violation that misdirects every virtual
+# call our code makes into a neighboring, wrong vtable slot the moment a
+# CParamDisplay-derived control (COptionMenu, CTextLabel, ...) is used.
+# Pin one build type up front so both sides agree.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
-option(NEDIT_BUILD_TESTS   "Build unit tests"                          ON)
-option(NEDIT_BUILD_PLUGIN  "Build the VST3 plugin (fetches VST3 SDK)"  OFF)
-option(NEDIT_BUILD_TOOLS   "Build the Linux X11 host harness"         ON)
-option(NEDIT_DEBUG_TOOLS   "Compile in debug/profiling utilities"      ON)
+option(NEDIT_BUILD_TESTS    "Build unit tests"                         ON)
+option(NEDIT_BUILD_PLUGIN   "Build the VST3 plugin (fetches VST3 SDK)"  OFF)
+option(NEDIT_BUILD_TOOLS    "Build the Linux X11 host harness"         ON)
+option(NEDIT_BUILD_EDITOR_SMOKE "Build the cross-platform editor smoke test" ON)
+option(NEDIT_DEBUG_TOOLS    "Compile in debug/profiling utilities"      ON)
 
 # ---------------------------------------------------------------------------
 # Warnings (applied to our own targets via nedit_warnings interface lib)
@@ -43,9 +58,9 @@ if(NEDIT_BUILD_PLUGIN)
     # Phase 4: VST3 SDK + VSTGUI via FetchContent. See AGENTS.md roadmap.
     # Added BEFORE tests/ so test targets can reference the entry objects.
     add_subdirectory(src/plugin)
-    # host_harness drives a real X11 plugin window (xcb/xtst) -- Linux only,
-    # and off in CI (the dev-only window driver needs local X server libs).
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NEDIT_BUILD_TOOLS)
+    # Dev/test tools: editor_smoke is cross-platform (CI), host_harness is
+    # an interactive Linux-only X11 window driver.
+    if(NEDIT_BUILD_EDITOR_SMOKE OR NEDIT_BUILD_TOOLS)
         add_subdirectory(tools)
     endif()
 endif()

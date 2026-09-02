@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -108,3 +111,57 @@ jobs:
           name: ${{ matrix.artifact-name }}
           path: build/nedit.vst3
           if-no-files-found: error
+
+  # Editor-open smoke test: open the plugin's editor on a real native parent
+  # window from a minimal VST3 host. Must run in a DEBUG build -- VSTGUI
+  # self-defines DEBUG and adds CView::dumpInfo() (a virtual), so only Debug
+  # has the one-slot vtable the #25 crash (and its ODR-regressions) needs to
+  # be caught. Release builds agree on both sides and would never crash.
+  editor-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwayland-dev wayland-protocols \
+            libx11-dev \
+            libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libglib2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            xvfb
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DNEDIT_BUILD_PLUGIN=ON -DNEDIT_BUILD_TOOLS=OFF
+
+      - name: Build bundle + smoke tool
+        run: cmake --build build --config Debug --parallel --target nedit_vst3 nedit_editor_smoke
+
+      - name: Run editor smoke test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            ./build/tools/Debug/nedit_editor_smoke.exe ./build/nedit.vst3 500
+          else
+            ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
+          fi
