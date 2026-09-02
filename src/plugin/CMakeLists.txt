@@ -253,11 +253,13 @@ if(APPLE)
         # path would not match Linux/Windows. A MODULE+bundle wrapper is
         # placed via LIBRARY_OUTPUT_DIRECTORY (BUNDLE_OUTPUT_DIRECTORY only
         # governs true MACOSX_BUNDLE executables), so pin both to the
-        # shared bundle dir; the _RELEASE forms cover multi-config Xcode.
-        LIBRARY_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
-        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
-        BUNDLE_OUTPUT_DIRECTORY ${NEDIT_VST3_BUNDLE_DIR}
-        BUNDLE_OUTPUT_DIRECTORY_RELEASE ${NEDIT_VST3_BUNDLE_DIR}
+        # shared bundle dir; this root must be the build dir itself (not a
+        # pre-suffixed ".../nedit.vst3"), otherwise CMake appends another
+        # "nedit.vst3" target folder and creates a nested bundle path.
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
+        BUNDLE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+        BUNDLE_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}
     )
     # Ad-hoc sign the whole bundle: unsigned MH_BUNDLE binaries refuse to
     # dlopen on Apple Silicon.
