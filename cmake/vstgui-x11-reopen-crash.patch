@@ -1,0 +1,60 @@
+diff --git a/vstgui/lib/platform/linux/x11platform.cpp b/vstgui/lib/platform/linux/x11platform.cpp
+index ed820ce7..3944fb53 100644
+--- a/vstgui/lib/platform/linux/x11platform.cpp
++++ b/vstgui/lib/platform/linux/x11platform.cpp
+@@ -126,6 +126,19 @@ struct RunLoop::Impl : IEventHandler
+ 	{
+ 		if (++useCount != 1)
+ 			return;
++		// Keep the xcb connection (and its xkb/cursor state) alive across
++		// close/open cycles: cairo-xcb caches the connection pointer in a
++		// process-global map, and tearing the connection down in exit() leaves
++		// that cache pointing at freed screen data, so the next open() walks
++		// stale memory in cairo_xcb_surface_create (the reopen crash, upstream
++		// #249/#334/#335). Re-register the SAME fd and reuse the live
++		// connection instead of reconnecting (which can also land at the same
++		// address and hit the stale cache entry).
++		if (xcbConnection != nullptr)
++		{
++			RunLoop::get ()->registerEventHandler (xcb_get_file_descriptor (xcbConnection), this);
++			return;
++		}
+ 		int screenNo;
+ 		xcbConnection = xcb_connect (nullptr, &screenNo);
+ 		RunLoop::get ()->registerEventHandler (xcb_get_file_descriptor (xcbConnection), this);
+@@ -165,29 +178,13 @@ struct RunLoop::Impl : IEventHandler
+ 		if (--useCount != 0)
+ 			return;
+ 
++		// Keep the connection + xkb/cursor state alive (see init()): the leak
++		// of one xcb connection per process is the accepted trade-off for not
++		// crashing on editor reopen. Just stop polling the fd; init() re-
++		// registers the same fd on the next open. The real teardown happens at
++		// process exit when VSTGUI::exit() drops the platform.
+ 		if (xcbConnection)
+-		{
+-			if (xkbUnprocessedState)
+-				xkb_state_unref (xkbUnprocessedState);
+-			if (xkbState)
+-				xkb_state_unref (xkbState);
+-			if (xkbKeymap)
+-				xkb_keymap_unref (xkbKeymap);
+-			if (xkbContext)
+-				xkb_context_unref (xkbContext);
+-			if (cursorContext)
+-			{
+-				for (auto c : cursors)
+-				{
+-					if (c != XCB_CURSOR_NONE)
+-						xcb_free_cursor (xcbConnection, c);
+-				}
+-				xcb_cursor_context_free (cursorContext);
+-			}
+-
+-			xcb_disconnect (xcbConnection);
+-		}
+-		RunLoop::get ()->unregisterEventHandler (this);
++			RunLoop::get ()->unregisterEventHandler (this);
+ 	}
+ 
+ 	template<typename T>

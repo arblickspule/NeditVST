@@ -3876,17 +3876,38 @@ void NeditEditor::stylePaintTo (int column, float value)
 //------------------------------------------------------------------------
 bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformType)
 {
-    // Defensive: every CParamDisplay-derived control (COptionMenu below)
-    // dereferences the global kNormalFont unconditionally in its ctor
+    // Defensive (issue #25): every CParamDisplay-derived control (COptionMenu
+    // below) dereferences the global kNormalFont unconditionally in its ctor
     // (vstgui/lib/controls/cparamdisplay.cpp). That global is null until
     // VSTGUI::init()/CFontDesc::init() has run, which normally happens via
-    // the module's bundleEntry -> InitModule chain -- but a host that
-    // scans (load/unload) the bundle before the real session can leave it
-    // null again by the time open() is called for real. Force it here so
+    // the module's bundleEntry -> InitModule chain -- but a host that scans
+    // (load/unload) the bundle before the real session can leave it null
+    // again by the time open() is called for real. Force it here so
     // construction below can't hit a null-deref crash regardless of host
     // scan/reload ordering.
+    //
+    // CFontDesc::init() is NOT idempotent (it overwrites the shared
+    // GlobalFonts members, orphaning the old CFontDesc), and it must only run
+    // while the platform factory is still alive: a module teardown nulls BOTH
+    // the fonts and the platform, so re-initializing fonts alone would let the
+    // later getPlatformFactory() dereference null. A process-global mutex keeps
+    // two instances' editors from double-initializing concurrently, and the
+    // double-check keeps the common (already-initialized) path lock-free.
     if (kNormalFont == nullptr)
-        CFontDesc::init();
+    {
+        static std::mutex sFontInitMutex;
+        std::lock_guard<std::mutex> guard (sFontInitMutex);
+        if (kNormalFont == nullptr)
+        {
+#if SMTG_OS_LINUX
+            // Re-init only when the platform also survived the teardown.
+            if (VSTGUI::getPlatformFactory().asLinuxFactory() != nullptr)
+                CFontDesc::init();
+#else
+            CFontDesc::init();
+#endif
+        }
+    }
 
     CRect frameSize (0, 0, kEditorWidth, kEditorHeight);
 
@@ -3895,10 +3916,28 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
 
 #if SMTG_OS_LINUX
     VSTGUI::X11::FrameConfig x11Config;
-    if (plugFrame)
-        Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
     if (auto* linuxFactory = VSTGUI::getPlatformFactory().asLinuxFactory())
+    {
+        // The X11 runloop that drives VSTGUI's timers + fd event handlers is
+        // a process-global shared object (LinuxFactory::Impl::runLoop). The
+        // SDK's module-level InitVSTGUI already sets it up ONCE, from the
+        // host context, via the host-context callback registered at module
+        // load (see vstguieditor.cpp). Re-running setupVSTGUIRunloop here --
+        // once per editor open -- REPLACES that shared runloop with one bound
+        // to THIS editor's IPlugFrame, corrupting the timer/event routing of
+        // every other concurrently-open instance (the second-instance crash
+        // reproduced in Bitwig: engine exit code 1 ~15s after instance 2
+        // opened its editor). So we only fall back to the per-editor setup
+        // when no runloop has been installed yet (e.g. a harness that never
+        // went through the host-context callback), and only the FIRST
+        // setter wins -- it is idempotent and multi-instance-safe.
+        if (linuxFactory->getRunLoop() == nullptr)
+        {
+            if (plugFrame)
+                Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
+        }
         x11Config.runLoop = linuxFactory->getRunLoop();
+    }
 
     if (! frame->open (parent, platformType, &x11Config))
 #else

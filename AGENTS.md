@@ -1405,6 +1405,71 @@ HARDENING entries below).
   snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
   empty. 281/281 green, zero warnings.
 
+- Multi-instance editor crash — "Bitwig crashes with 2+ instances loaded on
+  Linux" (2026-09-02): loading a second nedit while the first is open kills
+  Bitwig's engine process (exit code 1, UI shows `BITWIG_ENGINE_CRASH.txt`,
+  ~15 s after instance 2 opened; reproduced on the then-current build, so NOT
+  a stale-build bug). ROOT CAUSE: `NeditEditor::open()` called
+  `Steinberg::Linux::setupVSTGUIRunloop(plugFrame)` on EVERY editor open,
+  but VSTGUI's X11 runloop is a process-global shared object
+  (`LinuxFactory::Impl::runLoop`). The SDK's module-level `InitVSTGUI` already
+  sets it up ONCE, from the host context, via the host-context callback
+  (`vstguieditor.cpp`); our per-open call REPLACED it with one bound to the
+  current editor's IPlugFrame, corrupting the timer/X11-fd routing of every
+  other concurrently-open instance (they share one `.so` in the engine
+  process) — timer/event handlers stop dispatching / route to the wrong host
+  context. FIX: the per-editor `setupVSTGUIRunloop` now runs ONLY when
+  `linuxFactory->getRunLoop()` is still null (first-setter-wins fallback for
+  harnesses that never go through the host-context callback); when the module
+  callback has already installed the runloop, editors just read it. This is
+  idempotent + multi-instance-safe. Also hardened the #25 `CFontDesc::init()`
+  font guard (same block): it is NOT idempotent (overwrites shared GlobalFonts,
+  orphaning the old CFontDesc) and must only re-init fonts while the platform
+  is alive (a module teardown nulls BOTH; re-initing fonts alone would null-
+  deref the later getPlatformFactory) — now gated on `kNormalFont==nullptr` +
+  `asLinuxFactory()!=nullptr` under a process-global mutex (double-checked, so
+  the common already-initialized path stays lock-free). Regression guard:
+  `tools/editor_smoke.cpp` learned an optional `[instances]` arg — it opens N
+  editors (one native parent window each, like a DAW engine process) and pumps
+  them all through the one shared runloop; CI's `editor-smoke` job now runs
+  `nedit_editor_smoke <bundle> 300 2` to exercise the second-instance open on
+  every OS. 283/283 green, zero warnings.
+
+- Editor reopen crash — "crashes if I reopen gui multiple times"
+  (2026-09-02): closing + reopening a single instance's editor crashes
+  (SIGSEGV in `xcb_depth_sizeof` / later a cairo `_get_screen_index` assert,
+  exit 134/139). ROOT CAUSE: an upstream VSTGUI-on-Linux regression, NOT our
+  plugin logic. `X11::RunLoop::Impl::exit()` (useCount → 0) calls
+  `xcb_disconnect()`, tearing down the xcb connection; cairo-xcb keeps a
+  process-global cache keyed by `xcb_connection_t*`, so the freed connection's
+  screen data stays cached. The next `open()` → `cairo_xcb_surface_create`
+  (DrawHandler ctor, x11frame.cpp:171) either lands on the same address
+  (stale screen data → SIGSEGV in `xcb_screen_next`/`xcb_depth_sizeof`) or the
+  screen lookup fails (`_get_screen_index` assert). This is upstream
+  vstgui#249/#334/#335; #335's refactor (moving device teardown into
+  CairoGraphicsDevice) reintroduced the reopen crash the #249 fix had closed.
+  FIX (patched VSTGUI, not our code): keep the xcb connection + xkb/cursor
+  state alive across close/open cycles — `RunLoop::Impl::init()` re-registers
+  the SAME fd instead of reconnecting when `xcbConnection != nullptr`, and
+  `exit()` only unregisters the fd (no `xcb_disconnect`, no xkb/cursor free).
+  One xcb connection leaks per process (accepted trade-off; released at
+  process exit). Patch lives in `cmake/vstgui-x11-reopen-crash.patch`, applied
+  idempotently at configure time by `src/plugin/CMakeLists.txt` (Linux only,
+  marker-comment-guarded) via `git apply` against the FetchContent'd
+  `vstgui4` submodule. Regression guard: `tools/editor_smoke.cpp` gained a
+  `[reopen-cycles]` arg (create/attach/soak/remove a fresh editor view on the
+  SAME component, repeated) — reproduced the crash at cycle ~3 pre-fix, clean
+  through 15+ cycles post-fix; CI runs `nedit_editor_smoke <bundle> 300 2 5`.
+  GOTCHA: `nedit_editor_smoke` dlopens the bundle and does NOT link
+  `nedit_plugin`, so you MUST rebuild `nedit_vst3` (not just the smoke target)
+  after touching VSTGUI sources — the smoke target alone leaves a stale
+  bundle. Multi-instance "frozen / transparent background" (dead buttons, host
+  showing through the `CAIRO_CONTENT_COLOR_ALPHA` backbuffer) is a SEPARATE
+  known Bitwig-on-Linux issue (browser unmaps the first window when inserting
+  a second instance; affects Vital too) with the "individually sandboxed"
+  per-plugin override as workaround — not fixed here. 283/283 green, zero
+  warnings.
+
 - Waveform redraw — "Doesn't update after certain ops"
   (arblickspule/NeditVST#10, 2026-09-01): the waveform (and the sequencer
   grid) would not repaint after REPLACING the sample via a second load.
