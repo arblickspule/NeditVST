@@ -405,6 +405,39 @@ TEST_CASE ("shell: loading a sample establishes the sequencer grid dimensions")
            == static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns));
 }
 
+TEST_CASE ("shell: slice-count edits re-derive the sequencer grid dimensions")
+{
+    // Issue #10 family: sensitivity/quantize/manual-point edits rebuild the
+    // slice list, and the sequencer grid row count = min(sliceCount, ...).
+    // When a rebuild changes the slice count, the grid dims must follow --
+    // otherwise the grid keeps its old (stale) row count until the next load.
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // Sensitivity 0 => zero onsets by contract => a single trim-span slice.
+    processor.setSensitivity (0.0f);
+    CHECK (processor.debugSliceCount() == 1);
+    CHECK (processor.debugUiState().sequencer.rows == 1);
+
+    // Back to default sensitivity (0.5) => many slices again.
+    processor.setSensitivity (0.5f);
+    const int sliceCount = processor.debugSliceCount();
+    CHECK (sliceCount > 4);
+    CHECK (processor.debugUiState().sequencer.rows
+           == std::min (sliceCount, nedit::state::kMaxSequencerRows));
+
+    // The grid stayed monophony-able / well-formed through all of this.
+    const auto& seq = processor.debugUiState().sequencer;
+    CHECK (seq.grid.size()
+           == static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns));
+}
+
 TEST_CASE ("shell: sequencer cell writes enforce monophony and clear cleanly")
 {
     const auto click = ClickTrack::render();

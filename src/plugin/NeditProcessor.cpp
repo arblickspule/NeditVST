@@ -892,6 +892,10 @@ void NeditProcessor::rebuildSlicesPreservingWeights()
     }
 
     uiState_.generate.sliceWeights = std::move (newWeights);
+    // Slice count feeds the sequencer grid's row count; re-derive dims so a
+    // sensitivity/quantize/manual-point edit that added/removed slices is
+    // reflected (resizeGrid resets only when dims actually change).
+    resizeSequencerGridForSample();
     provider_.publish (uiState_);
 }
 

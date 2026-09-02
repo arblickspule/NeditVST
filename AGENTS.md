@@ -1348,8 +1348,29 @@ HARDENING entries below).
   detected`: load A -> tick (changed), tick (quiet), load B -> tick
   (changed), tick (quiet). VERIFIED the test FAILS on the old presence-
   only logic at the second-load assertion and passes on the fix (the
-  built-in smoke of a good regression test). 282/282 green, zero
-  warnings.
+  built-in smoke of a good regression test).
+  TWO MORE stale-view members of the same issue #10 family found in the
+  follow-up sweep and fixed (all covered by the same 283-test suite):
+  (1) the sequencer transport bar's pattern-length / grid-interval
+  handlers route through `resizeSequencerGridForSample()` (which resets
+  cells when dims change) but never invalidated `sequencerGrid_`, so
+  switching from 1→4 bars or 16n→8n left the OLD cells on screen until a
+  playing step moved. Fixed in the valueChanged handlers AND in
+  `syncSequencerTransport` (the latched plen/grid edges, so external
+  dims changes via state restore / host automation repaint the grid too);
+  (2) `rebuildSlicesPreservingWeights()` (sensitivity / quantize toggle
+  / quantize grid / manual-point + exclude edits) changes the slice
+  COUNT, but the sequencer grid's rows = min(sliceCount, …) were only
+  derived at load time — a sensitivity edit that split/merged slices left
+  the grid one row too many/too few until the next load. Fixed in
+  `NeditProcessor` (`rebuildSlicesPreservingWeights` now re-calls
+  `resizeSequencerGridForSample()` — `resizeGrid` is a no-op unless dims
+  change, per the documented reset-on-dimension-change contract) + the
+  editor's sensitivity/quantize/quantize-grid handlers also invalidate
+  the grid. Test `shell: slice-count edits re-derive the sequencer grid
+  dimensions` (sensitivity 0 → 1 slice → 1 row; back to 0.5 → many
+  slices → rows follow) — VERIFIED it FAILS with the old load-time-only
+  dims and passes on the fix. 283/283 green, zero warnings.
 
 ## Rules of engagement
 

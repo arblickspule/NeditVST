@@ -3515,6 +3515,11 @@ void NeditEditor::syncSequencerTransport()
         seqPatternLength_->setValueNormalized (
             static_cast<float> (plen) / static_cast<float> (std::max (nPlen - 1, 1)));
         seqPatternLength_->invalid();
+        // Grid DIMENSIONS changed (resize may have cleared cells): repaint
+        // the grid too. This covers external dims changes (state restore /
+        // host automation) that never travel through a valueChanged handler.
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
     }
 
     const int grid = seq.stepResolutionIndex;
@@ -3523,6 +3528,8 @@ void NeditEditor::syncSequencerTransport()
         lastSeqGridSync_ = grid;
         seqGridInterval_->setValue (static_cast<float> (grid));
         seqGridInterval_->invalid();
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
     }
 
     const int timing = static_cast<int> (seq.patternSwitchTiming);
@@ -4591,6 +4598,8 @@ void NeditEditor::valueChanged (CControl* control)
             owner_->setSensitivity (control->getValueNormalized());
             if (waveformView_)
                 waveformView_->invalid();   // slice markers changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4604,6 +4613,8 @@ void NeditEditor::valueChanged (CControl* control)
             styleQuantizeButton();
             if (waveformView_)
                 waveformView_->invalid();   // auto-boundary positions changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4618,6 +4629,8 @@ void NeditEditor::valueChanged (CControl* control)
             owner_->setQuantizeGrid (idx);
             if (waveformView_)
                 waveformView_->invalid();   // auto-boundary positions changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4632,12 +4645,19 @@ void NeditEditor::valueChanged (CControl* control)
         const int idx = static_cast<int> (std::lround (
             control->getValueNormalized() * static_cast<float> (n - 1)));
         (void) owner_->setSequencerPatternLength (idx);
+        // Grid DIMENSIONS changed (resize may have cleared cells): repaint
+        // now, like Clear/Randomize below -- the idle timer only repaints on
+        // playing-step/sample changes, so this would otherwise stay stale.
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
         return;
     }
     if (control->getTag() == kTagSeqGridInterval)
     {
         (void) owner_->setSequencerStepResolution (
             static_cast<int> (std::lround (control->getValue())));
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
         return;
     }
     if (control->getTag() == kTagSeqSwitchTiming)
