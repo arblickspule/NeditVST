@@ -194,8 +194,6 @@ void VoiceScheduler::commitPick (const Slice& slice, const state::StyleParameter
     pick.useDurationGate = extras.useDurationGate;
     pick.filterWholeWindow = filterWholeWindow;
     pick.flangerWholeWindow = flangerWholeWindow;
-    pick.volumeWholeWindow = extras.volumeWholeWindow;
-    pick.volumeRampActive = extras.volumeRampActive;
     pick.velocityGain = extras.velocityGain;
     pick.params = params;
 
@@ -662,12 +660,17 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     // no longer the audio default for sequenced notes.
     state::StyleParameters merged = r.state.generate.styleParams;
 
-    if (const auto it = view.overrides->find (cell); it != view.overrides->end())
-        for (const auto& [id, value] : it->second)
-            merged.set (id, value);
-
     const Slice& slice = r.slices[sliceIndex];
     const auto style = styleFromOrdinal ((*view.grid)[cell]);
+
+    if (const auto it = view.overrides->find (cell); it != view.overrides->end())
+        for (const auto& [id, value] : it->second)
+        {
+            if (id == state::StyleParamId::volume)
+                merged.setStyleVolume (style, value);   // per-CELL volume overrides the style's
+            else
+                merged.set (id, value);
+        }
 
     auto prepared = preparePick (style, slice, merged, r.ctx.hostSampleRate,
                                  r.ctx.playbackRate, r.transport.bpm);
@@ -787,8 +790,6 @@ void VoiceScheduler::startSequencedPick (Run& r, const SequencerView& view,
     PickExtras extras;
     extras.halfSliceFold = style == state::PlaybackStyle::pingPong;
     extras.useDurationGate = true;
-    extras.volumeRampActive = true;
-    extras.volumeWholeWindow = subdivisionActive_;
 
     commitPick (slice, merged, prepared, style,
                 pickLength, tapeStopDuration,

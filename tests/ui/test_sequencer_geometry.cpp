@@ -177,8 +177,7 @@ TEST_CASE ("cell override menu: per-style param entries with Subdivide + Volume"
     CHECK (fwd[0].id == StyleParamId::subdivide);
     CHECK (fwd[0].kind == CellOverrideMenuKind::slider);   // stepped discrete -> slider
     CHECK (fwd[1].id == StyleParamId::volume);
-    CHECK (fwd[1].kind == CellOverrideMenuKind::modeSubmenu);  // swept -> mode submenu
-    CHECK (fwd[1].modeId == StyleParamId::volumeMode);
+    CHECK (fwd[1].kind == CellOverrideMenuKind::slider);   // per-cell volume -> plain slider
 
     // Filter Down: Resonance (continuous -> slider) + Filter Type (discrete -> submenu).
     auto filter = ui::cellOverrideMenuEntries (PlaybackStyle::filterDown);
@@ -216,5 +215,6 @@ TEST_CASE ("cell override menu: per-style param entries with Subdivide + Volume"
         const std::size_t last = entries.size() - 2;
         CHECK (entries[last].id == StyleParamId::subdivide);
         CHECK (entries[last + 1].id == StyleParamId::volume);
+        CHECK (entries[last + 1].kind == CellOverrideMenuKind::slider);
     }
 }

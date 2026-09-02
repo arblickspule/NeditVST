@@ -229,23 +229,12 @@ bool PickRenderer::renderSample (const BlockContext& ctx, float* const* outAdd, 
                                                0.0f, state::kMaxFlangerFeedback);
     }
 
-    // --- Volume ramp (Sequenced mode only) ---------------------------------
-    double volumeGain = 1.0;
-
-    if (pick.volumeRampActive)
-    {
-        const double progress = pick.volumeWholeWindow ? windowProgress() : pickProgress();
-        const float setValue = pick.params.volume;
-
-        double value = setValue;
-
-        if (pick.params.volumeMode == state::VolumeRampMode::rampUp)
-            value = setValue * progress;
-        else if (pick.params.volumeMode == state::VolumeRampMode::rampDown)
-            value = setValue * (1.0 - progress);
-
-        volumeGain = clamp01 (value);
-    }
+    // --- Per-style volume (constant gain, captured at pick start) ----------
+    // One independent value per PlaybackStyle (issue #7); the scheduler
+    // captures the style's own volume into the pick params, so this is a
+    // bare multiplier here.
+    const double volumeGain = clamp01 (static_cast<double> (
+        pick.params.getStyleVolume (pick.style)));
 
     // --- Control-mode gains -------------------------------------------------
     const double velocityGain = pick.velocityGain;

@@ -157,7 +157,6 @@ enum class GrainWindowShape : std::uint8_t { hann = 0, triangular };
 enum class FilterType : std::uint8_t { lowPass = 0, highPass, bandPass };
 enum class CurveShape : std::uint8_t { linear = 0, exponential };
 enum class SweepMode : std::uint8_t { fixed = 0, sweepIn, sweepOut };
-enum class VolumeRampMode : std::uint8_t { fixed = 0, rampUp, rampDown };
 enum class WindowScope : std::uint8_t { wholeWindow = 0, perTick };
 enum class TrimSnapMode : std::uint8_t { transients = 0, grid };
 enum class PatternSwitchTiming : std::uint8_t { immediate = 0, setInterval, endOfPattern };
@@ -179,10 +178,6 @@ inline constexpr std::array<const char*, kNumEasingCurves> kEasingCurveNames { {
 
 inline constexpr std::array<const char*, 3> kSweepModeNames { {
     "Static", "Sweep In", "Sweep Out"
-} };
-
-inline constexpr std::array<const char*, 3> kVolumeRampModeNames { {
-    "Static", "Ramp Up", "Ramp Down"
 } };
 
 inline constexpr std::array<const char*, 3> kFilterTypeNames { {

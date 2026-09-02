@@ -67,9 +67,14 @@ namespace {
 
         for (int i = 0; i < kNumStyleParams; ++i)
             out.writeF32 (params.get (static_cast<StyleParamId> (i)));
+
+        // Per-style volume array (v3+), appended after the generic params.
+        for (const float v : params.styleVolume)
+            out.writeF32 (v);
     }
 
-    [[nodiscard]] bool readStyleParameters (StreamReader& in, StyleParameters& params)
+    [[nodiscard]] bool readStyleParameters (StreamReader& in, StyleParameters& params,
+                                             std::uint32_t version)
     {
         const auto count = in.readU32();
 
@@ -78,7 +83,9 @@ namespace {
 
         // Read what was written; ignore ids beyond what this build knows
         // (newer writer), keep defaults for ids it doesn't provide (older
-        // writer).
+        // writer). v2 streams carried a single scalar Volume (id 19) and its
+        // mode (id 20) here; both are now per-style/dropped, so they are
+        // skipped and the volumes keep their 1.0 defaults.
         for (std::uint32_t i = 0; i < count; ++i)
         {
             const float value = in.readF32();
@@ -88,6 +95,17 @@ namespace {
 
             if (i < static_cast<std::uint32_t> (kNumStyleParams))
                 params.set (static_cast<StyleParamId> (i), value);
+        }
+
+        // v3+: the per-style volume array follows.
+        if (version >= 3)
+        {
+            for (auto& v : params.styleVolume)
+            {
+                v = in.readF32();
+                if (! in.ok())
+                    return false;
+            }
         }
 
         return true;
@@ -191,7 +209,7 @@ namespace {
                 const auto rawId = in.readU8();
                 const float value = in.readF32();
 
-                if (isValidStyleParamId (rawId))
+                if (isValidSequencerOverrideId (rawId))
                     params[static_cast<StyleParamId> (rawId)] = value;
             }
 
@@ -334,7 +352,8 @@ namespace {
         out.writeU8 (static_cast<std::uint8_t> (generate.filterSweepScope));
     }
 
-    [[nodiscard]] bool readGenerate (StreamReader& in, GenerateState& generate)
+    [[nodiscard]] bool readGenerate (StreamReader& in, GenerateState& generate,
+                                     std::uint32_t version)
     {
         generate.generateMode = static_cast<TriggerMode> (in.readU8());
 
@@ -351,7 +370,7 @@ namespace {
         for (auto& w : generate.styleWeights)
             w = in.readF32();
 
-        if (! readStyleParameters (in, generate.styleParams))
+        if (! readStyleParameters (in, generate.styleParams, version))
             return false;
 
         generate.resetBarsIndex = in.readI32();
@@ -426,7 +445,8 @@ namespace {
         out.writeI32 (sequencer.patternSwitchIntervalIndex);
     }
 
-    [[nodiscard]] bool readSequencer (StreamReader& in, SequencerState& sequencer)
+    [[nodiscard]] bool readSequencer (StreamReader& in, SequencerState& sequencer,
+                                      std::uint32_t version)
     {
         sequencer.stepResolutionIndex = in.readI32();
         sequencer.patternLengthBarsIndex = in.readI32();
@@ -436,7 +456,7 @@ namespace {
         if (! readGridData (in, sequencer.grid, sequencer.overrides, sequencer.extensions))
             return false;
 
-        if (! readStyleParameters (in, sequencer.fallbackParams))
+        if (! readStyleParameters (in, sequencer.fallbackParams, version))
             return false;
 
         for (auto& w : sequencer.randomizeStyleWeights)
@@ -488,14 +508,15 @@ namespace {
         out.writeBool (snapshot.sync);
     }
 
-    [[nodiscard]] bool readPerformanceSnapshotBody (StreamReader& in, PerformanceSnapshot& snapshot)
+    [[nodiscard]] bool readPerformanceSnapshotBody (StreamReader& in, PerformanceSnapshot& snapshot,
+                                                     std::uint32_t version)
     {
         snapshot.populated = true;
         snapshot.trimStartFrame = in.readI64();
         snapshot.trimEndFrame = in.readI64();
         snapshot.style = in.readI32();
 
-        if (! readStyleParameters (in, snapshot.params))
+        if (! readStyleParameters (in, snapshot.params, version))
             return false;
 
         snapshot.loop = in.readBool();
@@ -535,7 +556,8 @@ namespace {
         out.writeI32 (performance.quantizeRecallIntervalIndex);
     }
 
-    [[nodiscard]] bool readPerformance (StreamReader& in, PerformanceState& performance)
+    [[nodiscard]] bool readPerformance (StreamReader& in, PerformanceState& performance,
+                                        std::uint32_t version)
     {
         const auto populatedCount = in.readU32();
 
@@ -553,13 +575,13 @@ namespace {
 
             PerformanceSnapshot snapshot;
 
-            if (! readPerformanceSnapshotBody (in, snapshot))
+            if (! readPerformanceSnapshotBody (in, snapshot, version))
                 return false;
 
             performance.bank[static_cast<std::size_t> (slot)] = snapshot;
         }
 
-        if (! readPerformanceSnapshotBody (in, performance.workingState))
+        if (! readPerformanceSnapshotBody (in, performance.workingState, version))
             return false;
 
         performance.workingState.populated = in.readBool();
@@ -582,12 +604,13 @@ namespace {
         writeStyleParameters (out, control.styleParams);
     }
 
-    [[nodiscard]] bool readControl (StreamReader& in, ControlState& control)
+    [[nodiscard]] bool readControl (StreamReader& in, ControlState& control,
+                                    std::uint32_t version)
     {
         control.baseNote = in.readI32();
         control.gateMode = in.readBool();
         control.activeStyle = in.readI32();
-        return readStyleParameters (in, control.styleParams);
+        return readStyleParameters (in, control.styleParams, version);
     }
 
     void writeUi (StreamWriter& out, const UiState& ui)
@@ -672,10 +695,10 @@ std::optional<PluginState> deserialize (const std::uint8_t* data, std::size_t si
             case kTagGlobal:      sectionOk = readGlobal (section, state); break;
             case kTagSample:      sectionOk = readSample (section, state.sample); break;
             case kTagRender:      sectionOk = readRender (section, state.render, version); break;
-            case kTagGenerate:    sectionOk = readGenerate (section, state.generate); break;
-            case kTagSequencer:   sectionOk = readSequencer (section, state.sequencer); break;
-            case kTagPerformance: sectionOk = readPerformance (section, state.performance); break;
-            case kTagControl:     sectionOk = readControl (section, state.control); break;
+            case kTagGenerate:    sectionOk = readGenerate (section, state.generate, version); break;
+            case kTagSequencer:   sectionOk = readSequencer (section, state.sequencer, version); break;
+            case kTagPerformance: sectionOk = readPerformance (section, state.performance, version); break;
+            case kTagControl:     sectionOk = readControl (section, state.control, version); break;
             case kTagUi:          sectionOk = readUi (section, state.ui); break;
             default:              break;  // unknown section: skip (forward compat)
         }

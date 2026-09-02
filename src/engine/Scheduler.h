@@ -275,8 +275,6 @@ private:
     {
         bool halfSliceFold = false;      // Sequenced Ping-Pong half window
         bool useDurationGate = false;    // Sequenced: gate on declared length
-        bool volumeRampActive = false;   // Sequenced only
-        bool volumeWholeWindow = false;  // Sequenced when Subdivide is on
         bool nativeRate = false;         // Performance Sync-off
         double velocityGain = 1.0;       // Control mode
     };

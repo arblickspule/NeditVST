@@ -8,7 +8,7 @@ structure. UI decoupled from Engine; both operate on State. Tests for all
 critical aspects. Profiling/debugging utilities that are trivially
 included/excluded.
 
-## Current status (updated 2026-08-29)
+## Current status (updated 2026-09-02)
 
 **Phase 1 (State) — implemented, 51 tests green.**
 
@@ -1517,7 +1517,72 @@ HARDENING entries below).
   the grid. Test `shell: slice-count edits re-derive the sequencer grid
   dimensions` (sensitivity 0 → 1 slice → 1 row; back to 0.5 → many
   slices → rows follow) — VERIFIED it FAILS with the old load-time-only
-  dims and passes on the fix. 283/283 green, zero warnings.
+   dims and passes on the fix. 283/283 green, zero warnings.
+
+- Wire per-style volumes — "Wire style volumes" (arblickspule/NeditVST#7,
+  2026-09-02): clarified as "each play style should have a separate volume".
+  Volume moved from a single shared `StyleParameters::volume` scalar + ramp
+  mode to `StyleParameters::styleVolume` — a 9-element `std::array<float,
+  kNumPlaybackStyles>`, indexed by the style's own ordinal (issue #7). Lead-
+  dev decisions: **per-style volume VALUES only, ramp modes dropped** (the
+  `VolumeRampMode` enum, `volumeMode` StyleParamId, and `kVolumeRampModeNames`
+  are gone — Volume is a constant per-style gain), and **per-style everywhere**
+  (the array lives in `StyleParameters`, so Generate/Control/Performance
+  snapshots/Sequencer fallback each carry their own 9 values). Consequences:
+  - `StyleParameters`: `volume`/`volumeMode` scalars removed; `styleVolume`
+    array + `getStyleVolume`/`setStyleVolume` (clamped [0,1]). `volume` and
+    `volumeMode` were dropped from the `StyleParamId` enum entirely;
+    `kNumStyleParams` 21 → 19. `styleParamInfo`/`set` now bounds-guard
+    out-of-range ids (a stale `volume` override id from an old chunk can no
+    longer OOB-index the info table).
+  - Per-cell volume override in the Sequencer is KEPT (lead-dev follow-up:
+    "the sequencer needs to override with per-cell volumes"): `volume` (19)
+    stays in the `StyleParamId` enum as a RESERVED per-cell override key
+    (NOT in the generic scalar vocabulary — `kNumStyleParams` = 19 scalar
+    params 0..18, `kNumStyleParamIds` = 20 ids incl. the reserved Volume
+    key). `isValidSequencerOverrideId()` accepts the reserved Volume key for
+    the override map/setters/`readGridData`, while the generic `set`/`get`
+    still reject it (volume is per-style; `set` guards, `get(volume)`
+    returns `styleVolume[0]`). A cell's Volume override wins over its
+    style's `styleVolume`: `startSequencedPick`'s merge special-cases
+    `StyleParamId::volume` → `merged.setStyleVolume(style, value)`.
+    `styleParamInfo(volume)` has a real entry (`{ "Volume", 0..1, default 1,
+    continuous, not swept }`) so the override menu presents it as a plain
+    in-place slider. `applicableStyleParams` re-appends Subdivide + Volume;
+    `SequenceRandomizer` excludes Volume from its per-style rolls.
+    `paramReadoutFormat`/`rowName`/`syncStyleProbs` treat the band's
+    per-style Volume (editor-local `kTagStyleVolumeBase`) separately from the
+    per-cell Volume override key.
+  - `PickRenderer`: the volume ramp block and `volumeRampActive`/
+    `volumeWholeWindow` flags are removed; the renderer applies
+    `pick.params.getStyleVolume (pick.style)` as a bare constant gain.
+    `PickExtras` shrinks accordingly (the Slice Length/Clock/Performance/
+    Control commits no longer set volume flags).
+  - Serialization: format bumped v2 → v3. `writeStyleParameters` writes the
+    19 generic params then the 9-value volume array; `readStyleParameters`
+    is version-gated (`version >= 3` reads the array), so genuine v2 chunks
+    (21 scalar params incl. scalar Volume/Volume-Mode) load cleanly with the
+    scalar volume dropped (per-style volume defaults to 1.0). `readGridData`
+    already drops unknown override ids. `readGenerate`/`readSequencer`/
+    `readPerformance`(+snapshot body)/`readControl` now thread `version`.
+  - Automation: Volume is no longer a single automatable dial — the surface
+    is now 0..18 (`kLastStyleParamId` follows `kNumStyleParams`), so both
+    Volume and Volume-Mode ids (19/20) are out of the surface (documented).
+  - UI: each style column's Volume slider uses an editor-local tag
+    `kTagStyleVolumeBase` (1040 + ordinal) routed through the new
+    `NeditProcessor::setStyleVolume`/`styleVolume` publish-only pair; the
+    `columnParamsFor`-built mini-sliders append the Volume row last (the
+    volume-alignment geometry is unchanged — the row is still the list tail,
+    so `flangerParamRows()` remains the reference). `syncStyleProbs` reads
+    `styleVolume` for those tags; the draw label resolves via a new
+    `rowName()` helper (Volume rows aren't `StyleParamId`s).
+  - JsonIO writes/reads a `"Per-Style Volume"` array alongside the generic
+    params so the human-oriented JSON stays lossless.
+  - Tests updated across the board (state/ui/engine/plugin): per-style volume
+    renderer + scheduler cases, `applicableStyleParams`/`swept` counts, the
+    override-menu classification, the parameter-surface count (19+8), and a
+    rewritten v2→v3 backward-compat chunk test (`v2 chunks (scalar volume)
+    load with per-style volume defaulted`). 285/285 green, zero warnings.
 
 ## Rules of engagement
 

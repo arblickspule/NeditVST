@@ -278,8 +278,8 @@ RandomizeResult randomizeSequence (state::SequencerState& st,
 
             // Per-style "randomize parameters" opt-in: roll an independent
             // value for every parameter this style owns except the general
-            // Subdivide and Volume (which apply to every style and whose
-            // randomizing the original deliberately excluded too).
+            // Subdivide and the per-cell Volume (whose randomizing the
+            // original deliberately excluded too).
             if (styleOrdinal >= 0
                 && styleOrdinal < state::kNumPlaybackStyles
                 && st.randomizeParametersForStyle[static_cast<std::size_t> (styleOrdinal)])

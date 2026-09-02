@@ -27,8 +27,8 @@
 //     Up), per-tick or whole-window progress
 //   * Bitcrush: swept sample-rate reduction + bit depth (per-pick
 //     progress); Flanger: swept delay/mix/feedback (whole-window
-//     progress where a window exists); Volume: ramp across the step/
-//     window (Sequenced mode only)
+//     progress where a window exists); Volume: a constant per-style gain
+//     (the style's own entry of StyleParameters::styleVolume)
 //   * Control mode: velocity gain and gate-release fade (which force-
 //     stops the pick at silence)
 //
@@ -106,8 +106,6 @@ struct PickParams
     // Whole-window progress flags (the scheduler knows the mode):
     bool filterWholeWindow = false;
     bool flangerWholeWindow = false;
-    bool volumeWholeWindow = false;
-    bool volumeRampActive = false;         // Sequenced mode only
 
     double velocityGain = 1.0;             // Control mode
 

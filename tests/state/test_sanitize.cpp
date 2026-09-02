@@ -73,7 +73,7 @@ TEST_CASE ("sequencer sanitize resizes the grid and drops orphan overrides", "[s
     sequencer.rows = 4;
     sequencer.columns = 8;
     sequencer.grid.assign (10, static_cast<std::int8_t> (99));  // wrong size, invalid cells
-    sequencer.overrides[100] = { { StyleParamId::volume, 0.5f } };  // out of grid
+    sequencer.overrides[100] = { { StyleParamId::filterResonance, 0.5f } };  // out of grid
     sequencer.overrides[3] = { { StyleParamId::filterResonance, 999.0f } };  // in grid, out of range
     sequencer.extensions[500] = 4;  // out of grid
     sequencer.sanitize();

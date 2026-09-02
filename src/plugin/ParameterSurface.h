@@ -5,11 +5,12 @@
 // them. Pure state code -- no SDK includes -- so it unit-tests offline.
 //
 // Surface decisions (Phase 3 v1, deliberate and documented):
-// - Style parameters 0..20 target GenerateState.styleParams (the Generate
+// - Style parameters 0..18 target GenerateState.styleParams (the Generate
 //   tab panel). The Control/Sequencer-fallback/Performance scopes stay
 //   UI-edited state, not automation targets -- automating four parallel
 //   copies of the same vocabulary invites exactly the silent-sharing bug
-//   the rewrite killed. Revisit if a use case appears.
+//   the rewrite killed. Per-style Volume is NOT automatable (it is a
+//   9-value array, not a single dial). Revisit if a use case appears.
 // - Everything else exposed: trigger mode, manual tempo (+enable), loop
 //   length bars, control base note/gate mode, performance quantize recall
 //   (+interval). Sequencer grids are structural, not automation material.

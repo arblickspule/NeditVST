@@ -26,7 +26,7 @@ TEST_CASE ("surface: every id in range is valid, outside is not")
     CHECK (isValidParamId (kParamTriggerMode));
     CHECK (isValidParamId (kParamQuantizeRecallInterval));
 
-    CHECK_FALSE (isValidParamId (21));      // gap after style params
+    CHECK_FALSE (isValidParamId (19));      // gap after style params (Volume dropped)
     CHECK_FALSE (isValidParamId (99));
     CHECK_FALSE (isValidParamId (kParamQuantizeRecallInterval + 1));
 }
@@ -77,10 +77,6 @@ TEST_CASE ("surface: continuous style params map linearly")
     // continuous! value stays 4.5).
     applyNormalized (s, static_cast<std::uint32_t> (state::StyleParamId::grainSpeed), 0.5f);
     CHECK_THAT (s.generate.styleParams.grainSpeed, WithinAbs (4.5f, kEps));
-
-    // Volume 0..1 identity.
-    applyNormalized (s, static_cast<std::uint32_t> (state::StyleParamId::volume), 0.25f);
-    CHECK_THAT (s.generate.styleParams.volume, WithinAbs (0.25f, kEps));
 }
 
 TEST_CASE ("surface: discrete style params land on exact options")

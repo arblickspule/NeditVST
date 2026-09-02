@@ -46,8 +46,8 @@ TEST_CASE ("defaults match the original global values", "[styleparams]")
     CHECK (params.flangerDelayMs == 2.0f);
     CHECK (params.flangerMix == 0.5f);
     CHECK (params.flangerFeedback == 0.3f);
-    CHECK (params.volume == 1.0f);
-    CHECK (params.volumeMode == VolumeRampMode::fixed);
+    for (const auto v : params.styleVolume)
+        CHECK (v == 1.0f);
 }
 
 TEST_CASE ("info-table defaults agree with struct defaults", "[styleparams]")
@@ -78,8 +78,12 @@ TEST_CASE ("generic set updates typed fields", "[styleparams]")
     params.set (StyleParamId::scratchForwardCurve, 3.0f);
     CHECK (params.scratchForwardCurve == EasingCurve::easeInEaseOut);
 
-    params.set (StyleParamId::volumeMode, 1.0f);
-    CHECK (params.volumeMode == VolumeRampMode::rampUp);
+    params.setStyleVolume (PlaybackStyle::flanger, 0.25f);
+    CHECK (params.getStyleVolume (PlaybackStyle::flanger) == 0.25f);
+    CHECK (params.getStyleVolume (PlaybackStyle::forward) == 1.0f);  // untouched
+
+    params.setStyleVolume (PlaybackStyle::flanger, 5.0f);
+    CHECK (params.getStyleVolume (PlaybackStyle::flanger) == 1.0f);  // clamped [0,1]
 }
 
 TEST_CASE ("set clamps to documented ranges", "[styleparams]")
@@ -137,7 +141,6 @@ TEST_CASE ("parameter names match the original table", "[styleparams]")
     CHECK (std::string (styleParamInfo (StyleParamId::subdivide).name) == "Subdivide");
     CHECK (std::string (styleParamInfo (StyleParamId::srReduction).name) == "Sample Rate Reduction");
     CHECK (std::string (styleParamInfo (StyleParamId::scratchRate).name) == "Rate");
-    CHECK (std::string (styleParamInfo (StyleParamId::volumeMode).name) == "Volume Mode");
 }
 
 TEST_CASE ("discrete option names", "[styleparams]")
@@ -146,7 +149,6 @@ TEST_CASE ("discrete option names", "[styleparams]")
     CHECK (std::string (styleParamOptionName (StyleParamId::subdivide, 8)) == "16n");
     CHECK (std::string (styleParamOptionName (StyleParamId::scratchRate, 7)) == "16n");
     CHECK (std::string (styleParamOptionName (StyleParamId::filterType, 1)) == "High-pass");
-    CHECK (std::string (styleParamOptionName (StyleParamId::volumeMode, 2)) == "Ramp Down");
     CHECK (std::string (styleParamOptionName (StyleParamId::srReductionMode, 1)) == "Sweep In");
     CHECK (std::string (styleParamOptionName (StyleParamId::scratchForwardCurve, 3)) == "Ease In-Out");
 
@@ -160,7 +162,7 @@ TEST_CASE ("applicable parameters per style match the original table", "[stylepa
 {
     using Id = StyleParamId;
 
-    // Every style ends with the two general parameters.
+    // Every style ends with the two general parameters (Subdivide + Volume).
     for (int i = 0; i < kNumPlaybackStyles; ++i)
     {
         const auto ids = applicable (static_cast<PlaybackStyle> (i));
@@ -191,7 +193,7 @@ TEST_CASE ("applicable parameters per style match the original table", "[stylepa
                                 Id::subdivide, Id::volume });
 }
 
-TEST_CASE ("swept parameters are exactly the original six", "[styleparams]")
+TEST_CASE ("swept parameters are exactly the original five", "[styleparams]")
 {
     for (int i = 0; i < kNumStyleParams; ++i)
     {
@@ -200,10 +202,15 @@ TEST_CASE ("swept parameters are exactly the original six", "[styleparams]")
                            || id == StyleParamId::bitDepth
                            || id == StyleParamId::flangerDelayMs
                            || id == StyleParamId::flangerMix
-                           || id == StyleParamId::flangerFeedback
-                           || id == StyleParamId::volume;
+                           || id == StyleParamId::flangerFeedback;
 
         INFO ("param " << styleParamInfo (id).name);
         CHECK (styleParamInfo (id).swept == expected);
     }
+
+    // The reserved Volume key (id 19) is deliberately NOT swept: it is a
+    // plain per-cell slider.
+    CHECK_FALSE (styleParamInfo (StyleParamId::volume).swept);
+    CHECK_FALSE (styleParamInfo (StyleParamId::volume).discrete);
+    CHECK (styleParamInfo (StyleParamId::volume).name == std::string ("Volume"));
 }

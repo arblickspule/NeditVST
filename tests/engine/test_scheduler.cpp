@@ -391,6 +391,28 @@ TEST_CASE ("slice length: transport stop silences and rearms", "[scheduler][sl]"
     CHECK (fx.picks() == before + 1);
 }
 
+TEST_CASE ("slice length: per-style volume attenuates the pick", "[scheduler][sl]")
+{
+    Fixture full ({ Slice { 0, 44100 } });
+    full.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 1.0f);
+
+    Fixture half ({ Slice { 0, 44100 } });
+    half.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 0.5f);
+
+    std::vector<float> outFull, outHalf;
+    full.playInto ({ true, 120.0, full.ppqCursor }, 4000, outFull);
+    half.playInto ({ true, 120.0, half.ppqCursor }, 4000, outHalf);
+
+    REQUIRE (full.picks() == 1);
+    REQUIRE (half.picks() == 1);
+
+    // The per-style Volume is applied to the Forward pick (issue #7): a
+    // constant gain, so every settled sample (past the 5 ms fade-in, well
+    // before the 10 ms fade-out) is exactly half the full-volume render.
+    for (std::size_t i = 600; i < 3000; ++i)
+        CHECK_THAT (static_cast<double> (outHalf[i]), WithinAbs (0.5 * outFull[i], 1e-6));
+}
+
 TEST_CASE ("slice length: unimplemented modes stay silent", "[scheduler]")
 {
     Fixture fx ({ Slice { 0, 44100 } });
@@ -531,6 +553,30 @@ TEST_CASE ("clock: ticks clamp to the window end", "[scheduler][clock]")
                                    // the clamped nextTick IS that boundary
 }
 
+TEST_CASE ("clock: per-style volume attenuates the tick", "[scheduler][clock]")
+{
+    Fixture full ({ Slice { 0, 44100 } });
+    full.state.triggerMode = TriggerMode::clock;
+    full.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 1.0f);
+
+    Fixture half ({ Slice { 0, 44100 } });
+    half.state.triggerMode = TriggerMode::clock;
+    half.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 0.5f);
+
+    std::vector<float> outFull, outHalf;
+    full.playInto ({ true, 120.0, full.ppqCursor }, 4000, outFull);
+    half.playInto ({ true, 120.0, half.ppqCursor }, 4000, outHalf);
+
+    // The uniform subdivision draw may fire more than one tick within the
+    // window, but both fixtures draw identically (same seed), so the ratio
+    // below holds regardless of how many retriggers occur.
+    REQUIRE (full.picks() >= 1);
+    REQUIRE (half.picks() >= 1);
+
+    for (std::size_t i = 600; i < 3000; ++i)
+        CHECK_THAT (static_cast<double> (outHalf[i]), WithinAbs (0.5 * outFull[i], 1e-6));
+}
+
 // ===========================================================================
 // Sequenced mode. Timing constants @ 120 bpm / 44.1 kHz with a 16n step
 // grid: one step = 5512.5 samples, one bar pattern = 16 steps = 88200.
@@ -663,6 +709,42 @@ TEST_CASE ("sequenced: notes without overrides use the generate (slider) params"
     CHECK_THAT (params.flangerDelayMs, WithinAbs (8.5f, 1e-6f));
 }
 
+TEST_CASE ("sequenced: per-cell volume override beats the style's volume", "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward
+
+    // Its style's volume (used by every Forward cell without an override)...
+    fx.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 0.5f);
+    // ...and a per-cell override on top.
+    fx.setCellOverride (0, 0, StyleParamId::volume, 0.25f);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& params = fx.scheduler.renderer().currentPick().params;
+    CHECK_THAT (params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.25f, 1e-6f));
+}
+
+TEST_CASE ("sequenced: no volume override falls back to the style's volume",
+           "[scheduler][seq]")
+{
+    Fixture fx ({ Slice { 0, 44100 } });
+    fx.state.triggerMode = TriggerMode::sequenced;
+    fx.initSequencerGrid();
+    fx.fillCell (0, 0, 0);   // Forward
+
+    fx.state.generate.styleParams.setStyleVolume (PlaybackStyle::forward, 0.5f);
+
+    fx.play (1);
+    REQUIRE (fx.picks() == 1);
+
+    const auto& params = fx.scheduler.renderer().currentPick().params;
+    CHECK_THAT (params.getStyleVolume (PlaybackStyle::forward), WithinAbs (0.5f, 1e-6f));
+}
+
 TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-step",
            "[scheduler][seq]")
 {
@@ -682,8 +764,6 @@ TEST_CASE ("sequenced: Subdivide retriggers within a step, sweeps stay whole-ste
     CHECK_THAT (pick.pickLengthHostSamples, WithinAbs (22050.0, 2.0));
 
     // Whole-step progress for every swept parameter while Subdivide is on.
-    CHECK (pick.volumeRampActive);
-    CHECK (pick.volumeWholeWindow);
     CHECK (pick.flangerWholeWindow);
     CHECK (pick.filterWholeWindow);
 

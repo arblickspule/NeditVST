@@ -552,6 +552,13 @@ TEST_CASE ("shell: per-cell parameter override setters clamp and key by cell")
     // Idempotent re-write returns false.
     CHECK_FALSE (processor.setSequencerCellOverride (0, 0, StyleParamId::filterResonance, 10.0f));
 
+    // The reserved per-cell Volume override key is valid and clamps to [0,1].
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::volume, 0.4f));
+    REQUIRE (ovAt (0, 0, StyleParamId::volume));
+    CHECK (seq.overrides.at (0).at (StyleParamId::volume) == Catch::Approx (0.4f));
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::volume, 9.0f));
+    CHECK (seq.overrides.at (0).at (StyleParamId::volume) == Catch::Approx (1.0f));
+
     // Empty cell / invalid param id rejected.
     CHECK_FALSE (processor.setSequencerCellOverride (1, 0, StyleParamId::filterResonance, 1.0f));
     CHECK_FALSE (processor.setSequencerCellOverride (
@@ -561,6 +568,8 @@ TEST_CASE ("shell: per-cell parameter override setters clamp and key by cell")
     CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterType));
     CHECK_FALSE (ovAt (0, 0, StyleParamId::filterType));
     CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterResonance));
+    CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::volume));
+    CHECK_FALSE (ovAt (0, 0, StyleParamId::volume));
     CHECK (seq.overrides.count (0) == 0);
 }
 

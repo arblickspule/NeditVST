@@ -369,16 +369,14 @@ TEST_CASE ("flanger style reaches steady unity on DC", "[renderer]")
     CHECK_THAT (static_cast<double> (out[4000]), WithinAbs (1.0, 0.01));
 }
 
-TEST_CASE ("volume ramp up scales across the step", "[renderer]")
+TEST_CASE ("per-style volume scales the whole pick", "[renderer]")
 {
     const std::vector<float> source (44100, 1.0f);
     const float* channels[] = { source.data() };
     const auto ctx = makeCtx (source, channels);
 
     PickParams pick = makeForwardPick (0, 4000);
-    pick.volumeRampActive = true;
-    pick.params.volume = 1.0f;
-    pick.params.volumeMode = nedit::state::VolumeRampMode::rampUp;
+    pick.params.setStyleVolume (PlaybackStyle::forward, 0.5f);
 
     PickRenderer renderer;
     renderer.prepare (kRate);
@@ -386,9 +384,10 @@ TEST_CASE ("volume ramp up scales across the step", "[renderer]")
 
     const auto out = renderN (renderer, ctx, 4000);
 
-    CHECK_THAT (static_cast<double> (out[400]), WithinAbs (0.1, 0.01));
-    CHECK_THAT (static_cast<double> (out[2000]), WithinAbs (0.5, 0.01));
-    CHECK_THAT (static_cast<double> (out[3600]), WithinAbs (0.9, 0.01));
+    // A constant per-style gain, independent of progress (no ramp any more).
+    CHECK_THAT (static_cast<double> (out[400]), WithinAbs (0.5, 1e-6));
+    CHECK_THAT (static_cast<double> (out[2000]), WithinAbs (0.5, 1e-6));
+    CHECK_THAT (static_cast<double> (out[3600]), WithinAbs (0.5, 1e-6));
 }
 
 TEST_CASE ("velocity gain scales the whole pick", "[renderer]")

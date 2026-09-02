@@ -7,12 +7,11 @@ namespace nedit::state {
 namespace {
 
     constexpr int kNumSweepModes = 3;
-    constexpr int kNumVolumeRampModes = 3;
     constexpr int kNumFilterTypes = 3;
     constexpr int kNumCurveShapes = 2;
     constexpr int kNumSubdivideOptions = kNumNoteValues + 1;  // "Off" + palette
 
-    constexpr std::array<StyleParamInfo, kNumStyleParams> kInfos { {
+    constexpr std::array<StyleParamInfo, kNumStyleParamIds> kInfos { {
         //  name                          min                   max                   default  discrete stepped swept  numOptions
         { "Resonance",                   kMinFilterResonance,  kMaxFilterResonance,  2.0f,    false,  false,  false, 0 },
         { "Filter Type",                 0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumFilterTypes },
@@ -33,8 +32,7 @@ namespace {
         { "Mix Mode",                    0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumSweepModes },
         { "Feedback",                    0.0f,                 kMaxFlangerFeedback,  0.3f,    false,  false,  true,  0 },
         { "Feedback Mode",               0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumSweepModes },
-        { "Volume",                      0.0f,                 1.0f,                 1.0f,    false,  false,  true,  0 },
-        { "Volume Mode",                 0.0f,                 2.0f,                 0.0f,    true,   false,  false, kNumVolumeRampModes }
+        { "Volume",                      0.0f,                 1.0f,                 1.0f,    false,  false,  false, 0 }
     } };
 
     [[nodiscard]] int clampOption (float value, int numOptions) noexcept
@@ -47,7 +45,14 @@ namespace {
 
 const StyleParamInfo& styleParamInfo (StyleParamId id) noexcept
 {
-    return kInfos[static_cast<std::size_t> (id)];
+    static constexpr StyleParamInfo kUnknown { "Unknown", 0.0f, 1.0f, 0.0f,
+                                               false, false, false, 0 };
+
+    const auto idx = static_cast<int> (id);
+    if (idx < 0 || idx >= kNumStyleParamIds)
+        return kUnknown;
+
+    return kInfos[static_cast<std::size_t> (idx)];
 }
 
 const char* styleParamOptionName (StyleParamId id, int optionIndex) noexcept
@@ -82,9 +87,6 @@ const char* styleParamOptionName (StyleParamId id, int optionIndex) noexcept
         case StyleParamId::scratchForwardCurve:
         case StyleParamId::scratchBackwardCurve:
             return kEasingCurveNames[static_cast<std::size_t> (optionIndex)];
-
-        case StyleParamId::volumeMode:
-            return kVolumeRampModeNames[static_cast<std::size_t> (optionIndex)];
 
         default:
             return nullptr;
@@ -141,6 +143,7 @@ ApplicableParams applicableStyleParams (PlaybackStyle style) noexcept
     }
 
     // General parameters, available on every style (Forward included).
+    // Subdivide is a retrigger; Volume is the per-cell override key.
     add (StyleParamId::subdivide);
     add (StyleParamId::volume);
 
@@ -170,8 +173,7 @@ float StyleParameters::get (StyleParamId id) const noexcept
         case StyleParamId::flangerMixMode:       return static_cast<float> (flangerMixMode);
         case StyleParamId::flangerFeedback:      return flangerFeedback;
         case StyleParamId::flangerFeedbackMode:  return static_cast<float> (flangerFeedbackMode);
-        case StyleParamId::volume:               return volume;
-        case StyleParamId::volumeMode:           return static_cast<float> (volumeMode);
+        case StyleParamId::volume:               return styleVolume[0];   // per-style; no scalar generic value
     }
 
     return 0.0f;
@@ -179,6 +181,9 @@ float StyleParameters::get (StyleParamId id) const noexcept
 
 void StyleParameters::set (StyleParamId id, float value) noexcept
 {
+    if (! isValidStyleParamId (static_cast<int> (id)))
+        return;
+
     const auto& info = styleParamInfo (id);
     const float clamped = clampValue (value, info.minValue, info.maxValue);
 
@@ -242,12 +247,24 @@ void StyleParameters::set (StyleParamId id, float value) noexcept
             flangerFeedbackMode = static_cast<SweepMode> (clampOption (value, info.numOptions));
             break;
         case StyleParamId::volume:
-            volume = clamped;
-            break;
-        case StyleParamId::volumeMode:
-            volumeMode = static_cast<VolumeRampMode> (clampOption (value, info.numOptions));
-            break;
+            break;   // per-style only -- set via setStyleVolume; unreachable (guard rejects volume)
     }
+}
+
+float StyleParameters::getStyleVolume (PlaybackStyle style) const noexcept
+{
+    const auto idx = static_cast<int> (style);
+    return (idx >= 0 && idx < kNumPlaybackStyles)
+        ? styleVolume[static_cast<std::size_t> (idx)]
+        : 1.0f;
+}
+
+void StyleParameters::setStyleVolume (PlaybackStyle style, float value) noexcept
+{
+    const auto idx = static_cast<int> (style);
+    if (idx < 0 || idx >= kNumPlaybackStyles)
+        return;
+    styleVolume[static_cast<std::size_t> (idx)] = clampValue (value, 0.0f, 1.0f);
 }
 
 void StyleParameters::sanitize() noexcept
@@ -257,6 +274,9 @@ void StyleParameters::sanitize() noexcept
         const auto id = static_cast<StyleParamId> (i);
         set (id, get (id));
     }
+
+    for (auto& v : styleVolume)
+        v = clampValue (v, 0.0f, 1.0f);
 }
 
 } // namespace nedit::state

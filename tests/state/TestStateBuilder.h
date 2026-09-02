@@ -56,6 +56,8 @@ namespace nedit::test {
     generate.styleParams.set (StyleParamId::filterResonance, 6.5f);
     generate.styleParams.set (StyleParamId::subdivide, 9.0f);
     generate.styleParams.set (StyleParamId::flangerMix, 0.8f);
+    generate.styleParams.setStyleVolume (PlaybackStyle::flanger, 0.35f);
+    generate.styleParams.setStyleVolume (PlaybackStyle::scratch, 0.9f);
     generate.resetBarsIndex = 3;
     generate.clockReferenceIndex = kNoteValue16n;
     generate.subdivisionWeights[0] = 0.0f;

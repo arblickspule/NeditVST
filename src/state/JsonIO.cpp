@@ -22,6 +22,14 @@ namespace {
             j[styleParamInfo (id).name] = params.get (id);
         }
 
+        // Per-style volume is not part of the id-indexed vocabulary; emit it
+        // as a named per-style array (in PlaybackStyle ordinal order) so the
+        // JSON stays self-describing.
+        json volumes = json::array();
+        for (int i = 0; i < kNumPlaybackStyles; ++i)
+            volumes.push_back (params.getStyleVolume (static_cast<PlaybackStyle> (i)));
+        j["Per-Style Volume"] = volumes;
+
         return j;
     }
 
@@ -137,6 +145,18 @@ namespace {
             readField (j, styleParamInfo (id).name, value);
             params.set (id, value);
         }
+
+        if (const auto it = j.find ("Per-Style Volume"); it != j.end() && it->is_array())
+        {
+            const std::size_t n = std::min (it->size(),
+                                            static_cast<std::size_t> (kNumPlaybackStyles));
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                if ((*it)[i].is_number())
+                    params.setStyleVolume (static_cast<PlaybackStyle> (i),
+                                           (*it)[i].get<float>());
+            }
+        }
     }
 
     void samplePointsFromJson (const json& j, std::vector<SamplePoint>& points)
@@ -184,7 +204,8 @@ namespace {
 
             std::map<StyleParamId, float> params;
 
-            for (int i = 0; i < kNumStyleParams; ++i)
+            // kNumStyleParamIds includes the reserved per-cell Volume key.
+            for (int i = 0; i < kNumStyleParamIds; ++i)
             {
                 const auto id = static_cast<StyleParamId> (i);
                 const auto it = cellJson.find (styleParamInfo (id).name);
