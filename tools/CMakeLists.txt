@@ -38,6 +38,9 @@ if(NEDIT_BUILD_EDITOR_SMOKE)
             ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp
             ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
             ${VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp)
+        set_source_files_properties(
+            ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_mac.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
         set(SMOKE_PLATFORM_SOURCE editor_smoke_mac.mm)
     elseif(WIN32)
         set(SMOKE_HOSTING_SOURCES
