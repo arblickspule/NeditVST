@@ -1240,6 +1240,40 @@ HARDENING entries below).
     themselves are inverse-transformed correctly. Acceptable; revisit if a
     real host reproduces it.
 
+- macOS editor-open SIGSEGV — "Editor: SIGSEGV on open in
+  CParamDisplay::setFont" (arblickspule/NeditVST#25, 2026-09-01). Real
+  Ableton Live 12.4.5 Apple-Silicon crash report
+  (`docs/ableton_mac_crash_rep.txt`): `EXC_BAD_ACCESS` (pointer-auth
+  garbage address) on the main thread at `CParamDisplay::setFont`
+  (cparamdisplay.cpp:373) called from `NeditEditor::open` (which also
+  explained the y=192 "missing UI" symptom in the field — the editor was
+  CRASHING at open on Debug builds, not just clipping). ROOT CAUSE: an
+  ODR violation. VSTGUI's own build (`vstgui/cmake/modules/
+  vstgui_init.cmake`) defines DEBUG for ITSELF only on `$<CONFIG:Debug>`,
+  and DEBUG adds `CView::dumpInfo()` — an `#if DEBUG` VIRTUAL method — to
+  every VSTGUI class's vtable. Our plugin TUs never matched that
+  condition, so with an unset/ambiguous build type VSTGUI computed one
+  EXTRA vtable slot while our code (NeditEditor.cpp, WaveformView.cpp)
+  computed the identically-named classes one slot short. Every virtual
+  call through those mismatched vtables landed on the neighbour: Live's
+  `setFontColor` invoked `CParamDisplay::setFont`, which `forget()`'d a
+  garbage `CFontDesc*` (the 0xa0a2-pattern address) → SIGSEGV on open.
+  Diagnosed independently by the collaborator on the same crash; fix
+  (`3d1e37d`): (1) pin `CMAKE_BUILD_TYPE` project-wide when unset
+  (VSTGUI's own self-Debug fallback was directory-scoped and never
+  reached our targets); (2) define DEBUG on nedit_plugin EXACTLY when
+  VSTGUI does (`$<$<CONFIG:Debug>:DEBUG>`) so both sides always agree on
+  vtable layouts; (3) defensive `if (kNormalFont == nullptr)
+  CFontDesc::init();` at the top of `NeditEditor::open()` — the
+  CParamDisplay ctor dereferences the global kNormalFont unconditionally,
+  and a host that scans (load/unload) a bundle before the real session
+  could leave it null. The DEFINEs only change behaviour in Debug configs,
+  so non-Debug builds are untouched (283/283 green, zero warnings in
+  RelWithDebInfo). STILL NEEDS a macOS Debug-config editor-open retest to
+  fully confirm (dev machine is Linux/RelWithDebInfo only). Related issue
+  #21 (viewport clipping) is orthogonal — both surfaced as "missing UI",
+  both need the Mac retest.
+
 - Randomize honors the probability band — "Randomize from probabilities"
   (arblickspule/NeditVST#4, 2026-09-01): Reported as "only 'forward' style is
   picked." ROOT CAUSE: the style-probability band is the ONLY style-probability
