@@ -12,6 +12,20 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # The VST3 module is a shared object; every static lib feeding it needs PIC.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# Left unset, VSTGUI's own CMakeLists.txt (fetched into src/plugin) falls
+# back to CMAKE_BUILD_TYPE=Debug for ITSELF, but that fallback is
+# directory-scoped -- it never reaches our own targets. VSTGUI then
+# compiles with DEBUG defined (adding CView::dumpInfo(), an `#if DEBUG`
+# virtual method) while our own TUs (NeditEditor.cpp etc.) do not see
+# DEBUG at all, so the two sides compute different vtable layouts for
+# every VSTGUI class -- an ODR violation that misdirects every virtual
+# call our code makes into a neighboring, wrong vtable slot the moment a
+# CParamDisplay-derived control (COptionMenu, CTextLabel, ...) is used.
+# Pin one build type up front so both sides agree.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
+
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
