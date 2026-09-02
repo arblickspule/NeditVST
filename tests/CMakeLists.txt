@@ -66,5 +66,12 @@ if(NEDIT_BUILD_PLUGIN)
     # replay editor event sequences; expose the SDK header root.
     target_include_directories(nedit_plugin_tests
         SYSTEM PRIVATE ${VST3_SDK_DIR}/vstgui4)
+    # Same ODR/vtable agreement as nedit_plugin: this TU builds VSTGUI
+    # subclasses (FakeControl) and calls into them through virtual dispatch,
+    # so it must see DEBUG exactly when VSTGUI does (Debug configs). Without
+    # it, the test binary computes one-slot-short vtables and the edited
+    # controls dispatch to the wrong functions (e.g. Clear never fires).
+    target_compile_definitions(nedit_plugin_tests
+        PRIVATE $<$<CONFIG:Debug>:DEBUG>)
     catch_discover_tests(nedit_plugin_tests)
 endif()
