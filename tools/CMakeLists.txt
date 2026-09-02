@@ -47,6 +47,9 @@ if(NEDIT_BUILD_EDITOR_SMOKE)
             ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module.cpp
             ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp
             ${VST3_SDK_DIR}/public.sdk/source/vst/utility/stringconvert.cpp)
+        set_source_files_properties(
+            ${VST3_SDK_DIR}/public.sdk/source/vst/hosting/module_win32.cpp
+            PROPERTIES COMPILE_OPTIONS "/Zc:char8_t-")
         set(SMOKE_PLATFORM_SOURCE editor_smoke_win.cpp)
     else()
         set(SMOKE_HOSTING_SOURCES
