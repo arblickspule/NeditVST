@@ -1323,6 +1323,15 @@ HARDENING entries below).
   snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
   empty. 281/281 green, zero warnings.
 
+- macOS editor_smoke crash — "runMode selector on NSApplication"
+  (arblickspule/NeditVST, 2026-09-02): the CI job "editor-smoke
+  (macos-latest)" failed at runtime after opening the editor with
+  `NSInvalidArgumentException` (`-[NSApplication runMode:beforeDate:]:
+  unrecognized selector`). Root cause: `tools/editor_smoke_mac.mm`
+  `MacPlatform::pump` sent `runMode:beforeDate:` to `NSApplication` instead
+  of `NSRunLoop`. Fix: pump via `[[NSRunLoop mainRunLoop] runMode:beforeDate:]`
+  and keep `NSApplication` only for `updateWindows`.
+
 ## Rules of engagement
 
 - **State**: pure, serializable, no SDK/framework includes, every struct has
