@@ -1274,6 +1274,54 @@ HARDENING entries below).
   #21 (viewport clipping) is orthogonal — both surfaced as "missing UI",
   both need the Mac retest.
 
+- Editor-open smoke test (2026-09-02, `74c3ce7`) — closes the #25 retest
+  backlog by automating the macOS (and now Linux/Windows) editor-open
+  check on CI, PROVEN to catch the exact crash:
+  - `tools/editor_smoke.{cpp,_linux.cpp,_win.cpp,_mac.mm,_platform.h}` — a
+    cross-platform tool that loads a real `nedit.vst3` bundle through the
+    VST3 `hosting/` helpers (Module::create → factory → createInstance
+    kVstAudioEffectClass → initialize → controller->createView(kEditor) →
+    setFrame → attached → pump(soak) → removed), mirroring the boot
+    sequence host_harness uses. It exercises open()/idle on a REAL native
+    parent (xcb window / NSView / HWND) so any vtable-mismatch SIGSEGV in
+    `NeditEditor::open()` fails the run. `PlatformHost` (header) implements
+    IHostApplication + IPlugFrame + Linux::IRunLoop with manual FUnknown
+    (in namespace Steinberg, triple-FUnknown disambiguated via
+    `unknownCast()`); the Linux TU adds a poll()-backed IRunLoop that
+    services VSTGUI's registered fds + timers. Leak the platform/host ON
+    PURPOSE: the plugin .so statically embeds VSTGUI and stores a
+    FUnknownPtr<IRunLoop> that outlives main() — freeing it is a UAF at
+    process exit (seen live: `IPtr<IRunLoop>::~IPtr` SIGSEGV after the
+    `[smoke] OK` line).
+  - **Must run in DEBUG.** Only Debug self-defines DEBUG in VSTGUI (adding
+    `CView::dumpInfo()`, a virtual), which is what makes the #25 mismatch
+    exist at all; Release agrees on both sides and would never crash.
+    VERIFIED locally: Debug build of pre-fix `9921bd3` config (DEBUG define
+    removed) → smoke SIGSEGVs with the EXACT #25 stack
+    (`CParamDisplay::setFont` ← `NeditEditor::open` ←
+    `VSTGUIEditor::attached`, exit 139); Debug fixed build → `[smoke] OK`,
+    exit 0.
+  - The Debug reconfig EXPOSED a latent ODR bug in the plugin TESTS: the
+    `nedit_plugin_tests` TU builds VSTGUI subclasses (`FakeControl :
+    CControl`) and calls into VSTGUI through virtual dispatch, but never
+    defined DEBUG when VSTGUI/plugin did → one-slot-short vtables → the
+    edit-click dispatch misdirected (Clear/Randomize/subdivision-chip
+    editor tests failed in Debug only). Fixed like #25:
+    `target_compile_definitions(nedit_plugin_tests PRIVATE
+    $<$<CONFIG:Debug>:DEBUG>)`; 283/283 now green in Debug.
+  - Build plumbing: `NEDIT_BUILD_EDITOR_SMOKE` option (default ON, tool
+    gating in root now `EDITOR_SMOKE OR TOOLS`); `tools/CMakeLists.txt`
+    builds the smoke on all platforms (links only the SDK hosting helpers +
+    `nedit_vst3_sdk`/`nedit_warnings`, NOT `nedit_plugin` — the bundle is
+    dlopen'd, so a mismatched smoke binary can't mask a broken bundle);
+    Linux links `PkgConfig::SMOKE_XCB Threads ${CMAKE_DL_LIBS}`, Win
+    `user32 gdi32`, mac `Cocoa CoreFoundation`. host_harness's link line
+    lost its dangling `PkgConfig::XCB` (now checked like X11/XTST).
+  - CI: `.github/workflows/build.yml` gains an `editor-smoke` job
+    (ubuntu/macos/windows) at **Debug** config, building `nedit_vst3` +
+    `nedit_editor_smoke`, running under `xvfb-run -a` on Linux. The macOS
+    job IS the long-pending #25 Debug retest; Windows now covered too.
+
 - Randomize honors the probability band — "Randomize from probabilities"
   (arblickspule/NeditVST#4, 2026-09-01): Reported as "only 'forward' style is
   picked." ROOT CAUSE: the style-probability band is the ONLY style-probability
