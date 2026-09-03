@@ -5,6 +5,19 @@ project(Nedit
     DESCRIPTION "Nedit - generative sample slicer (native VST3 rewrite)"
     LANGUAGES CXX)
 
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short=12 HEAD
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE NEDIT_BUILD_ID
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT NEDIT_BUILD_ID)
+    set(NEDIT_BUILD_ID "unknown")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

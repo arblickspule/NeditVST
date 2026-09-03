@@ -344,6 +344,11 @@ public:
         dc->setFontColor (kTextPrimary);
         dc->drawString ("NEDIT", CPoint (r.left + 38, r.top + 32));
 
+        dc->setFont (kNormalFontSmall, 11);
+        dc->setFontColor (kTextSecondary);
+        dc->drawString ("BUILD " NEDIT_BUILD_ID,
+                CPoint (r.left + 112, r.top + 31));
+
         // Hairline divider at bottom edge.
         dc->setFrameColor (kOutline);
         dc->setLineWidth (1);

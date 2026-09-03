@@ -171,6 +171,7 @@ set_target_properties(nedit_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # SDK's own plugin cmake helpers define this; we bypass them, so set it
 # ourselves.
 target_compile_definitions(nedit_plugin PRIVATE VSTGUI_NEEDS_INIT_LIB=1)
+target_compile_definitions(nedit_plugin PRIVATE NEDIT_BUILD_ID=\"${NEDIT_BUILD_ID}\")
 # VSTGUI's own build (vstgui/cmake/modules/vstgui_init.cmake) defines DEBUG
 # for itself on Debug configs, which adds CView::dumpInfo() -- a `#if DEBUG`
 # virtual method -- to every VSTGUI class's vtable. Our own sources here
