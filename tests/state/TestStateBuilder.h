@@ -56,6 +56,8 @@ namespace nedit::test {
     generate.styleParams.set (StyleParamId::filterResonance, 6.5f);
     generate.styleParams.set (StyleParamId::subdivide, 9.0f);
     generate.styleParams.set (StyleParamId::flangerMix, 0.8f);
+    generate.styleParams.setStyleVolume (PlaybackStyle::flanger, 0.35f);
+    generate.styleParams.setStyleVolume (PlaybackStyle::scratch, 0.9f);
     generate.resetBarsIndex = 3;
     generate.clockReferenceIndex = kNoteValue16n;
     generate.subdivisionWeights[0] = 0.0f;
@@ -75,7 +77,8 @@ namespace nedit::test {
     sequencer.grid[17] = 3;
     sequencer.grid[35] = 8;
     sequencer.overrides[17] = { { StyleParamId::grainSizeMs, 22.0f },
-                                { StyleParamId::volume, 0.6f } };
+                                { StyleParamId::volume, 0.6f },
+                                { StyleParamId::volumeMode, 2.0f } };
     sequencer.extensions[17] = 3;
     sequencer.fallbackParams.set (StyleParamId::bitDepth, 8.0f);
     sequencer.randomizeStyleWeights = { { 0.9f, 0.8f, 0.7f, 0.6f, 0.5f, 0.4f, 0.3f, 0.2f, 0.1f } };

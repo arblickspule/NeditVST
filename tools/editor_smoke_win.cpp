@@ -55,8 +55,8 @@ public:
 
     bool ok () const { return ok_; }
     std::uint64_t parentHandle () const override { return (std::uint64_t) win_; }
-    const char* platformType () const override { return Steinberg::kPlatformTypeHWND; }
-    Steinberg::PlatformHost* host () override { return &host_; }
+    const char* platformType () const override { return kPlatformTypeHWND; }
+    PlatformHost* host () override { return &host_; }
     std::int32_t width () const override { return w_; }
     std::int32_t height () const override { return h_; }
 
@@ -84,7 +84,7 @@ private:
     std::int32_t w_ = 0, h_ = 0;
     HINSTANCE hInst_ = nullptr;
     HWND win_ = nullptr;
-    Steinberg::PlatformHost host_;
+    PlatformHost host_;
     bool ok_ = false;
 };
 

@@ -26,6 +26,7 @@ namespace nedit::plugin {
 
 class NeditProcessor;
 class WaveformView;
+struct LoadedSample;
 
 namespace ui {
 
@@ -100,6 +101,13 @@ public:
     //--- CBaseObject (idle timer) --------------------------------------------
     VSTGUI::CMessageResult notify (VSTGUI::CBaseObject* sender,
                                    VSTGUI::IdStringPtr message) override;
+
+    // Test hook: what the most recent idle-timer notify() decided about the
+    // loaded sample changing (replacement via a second load must be true).
+    [[nodiscard]] bool notifySampleChanged() const noexcept
+    {
+        return notifySampleChanged_;
+    }
 
     //--- Style-probability paint overlay -------------------------------------
     // Pressing off the thin vertical track in a probability column enters a
@@ -277,6 +285,8 @@ void runFileSelector();
     bool testAutoloadFired_ = false;   // NEDIT_TEST_AUTOLOAD one-shot
     bool lastAuditionSync_ = false;    // idle-timer dedup for audition btn
     bool lastSampleSync_  = false;     // idle-timer dedup for sample presence
+    std::shared_ptr<const LoadedSample> lastLoadedSample_;  // idle-timer sample-identity dedup
+    bool notifySampleChanged_ = false; // last notify()'s sample-change decision (test hook)
     std::string lastSamplePath_;        // idle-timer dedup for sample name
     bool lastLoadPressed_ = false;      // CTextButton press-edge latches
     bool lastAuditionPressed_ = false;

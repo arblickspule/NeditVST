@@ -8,7 +8,22 @@ structure. UI decoupled from Engine; both operate on State. Tests for all
 critical aspects. Profiling/debugging utilities that are trivially
 included/excluded.
 
-## Current status (updated 2026-08-29)
+## Current status (updated 2026-09-03)
+
+**Merge note (2026-09-03): fork `main` reconciled into `feature/custom-ui-components`
+so PR #29 could merge.** The fork's `main` had diverged: it carried the copilot CI
+polish (editor-smoke fixes, macOS ccache, least-privilege workflow) merged via PRs
+#26/#27, and an independent (rebased) copy of the editor-smoke / macOS-crash work,
+while `feature` carried the newer multi-instance/reopen smoke + our later bug fixes.
+Resolution: feature's version won for the duplicated work (`editor_smoke.*`,
+`NeditEditor` font-guard block); main's unique additions were kept — the
+`-fobjc-arc` / `/Zc:char8_t-` smoke compile options (`tools/CMakeLists.txt`), the
+Windows smoke exe path + ccache/least-privilege CI bits (`build.yml`), the
+`NSRunLoop` pump fix (`editor_smoke_mac.mm` — ours had the buggy `[app runMode:]`),
+and both documentation sections in AGENTS.md. Verified: 290/290 tests green,
+smoke opens editor on Linux. NOTE: feature/fork-main now share a common ancestor
+(`c532421`) again; the un-merged orphan is only against `nedrush/NeditVST`'s own
+`main` (the JUCE prototype).
 
 **Phase 1 (State) — implemented, 51 tests green.**
 
@@ -1240,6 +1255,88 @@ HARDENING entries below).
     themselves are inverse-transformed correctly. Acceptable; revisit if a
     real host reproduces it.
 
+- macOS editor-open SIGSEGV — "Editor: SIGSEGV on open in
+  CParamDisplay::setFont" (arblickspule/NeditVST#25, 2026-09-01). Real
+  Ableton Live 12.4.5 Apple-Silicon crash report
+  (`docs/ableton_mac_crash_rep.txt`): `EXC_BAD_ACCESS` (pointer-auth
+  garbage address) on the main thread at `CParamDisplay::setFont`
+  (cparamdisplay.cpp:373) called from `NeditEditor::open` (which also
+  explained the y=192 "missing UI" symptom in the field — the editor was
+  CRASHING at open on Debug builds, not just clipping). ROOT CAUSE: an
+  ODR violation. VSTGUI's own build (`vstgui/cmake/modules/
+  vstgui_init.cmake`) defines DEBUG for ITSELF only on `$<CONFIG:Debug>`,
+  and DEBUG adds `CView::dumpInfo()` — an `#if DEBUG` VIRTUAL method — to
+  every VSTGUI class's vtable. Our plugin TUs never matched that
+  condition, so with an unset/ambiguous build type VSTGUI computed one
+  EXTRA vtable slot while our code (NeditEditor.cpp, WaveformView.cpp)
+  computed the identically-named classes one slot short. Every virtual
+  call through those mismatched vtables landed on the neighbour: Live's
+  `setFontColor` invoked `CParamDisplay::setFont`, which `forget()`'d a
+  garbage `CFontDesc*` (the 0xa0a2-pattern address) → SIGSEGV on open.
+  Diagnosed independently by the collaborator on the same crash; fix
+  (`3d1e37d`): (1) pin `CMAKE_BUILD_TYPE` project-wide when unset
+  (VSTGUI's own self-Debug fallback was directory-scoped and never
+  reached our targets); (2) define DEBUG on nedit_plugin EXACTLY when
+  VSTGUI does (`$<$<CONFIG:Debug>:DEBUG>`) so both sides always agree on
+  vtable layouts; (3) defensive `if (kNormalFont == nullptr)
+  CFontDesc::init();` at the top of `NeditEditor::open()` — the
+  CParamDisplay ctor dereferences the global kNormalFont unconditionally,
+  and a host that scans (load/unload) a bundle before the real session
+  could leave it null. The DEFINEs only change behaviour in Debug configs,
+  so non-Debug builds are untouched (283/283 green, zero warnings in
+  RelWithDebInfo). STILL NEEDS a macOS Debug-config editor-open retest to
+  fully confirm (dev machine is Linux/RelWithDebInfo only). Related issue
+  #21 (viewport clipping) is orthogonal — both surfaced as "missing UI",
+  both need the Mac retest.
+
+- Editor-open smoke test (2026-09-02, `74c3ce7`) — closes the #25 retest
+  backlog by automating the macOS (and now Linux/Windows) editor-open
+  check on CI, PROVEN to catch the exact crash:
+  - `tools/editor_smoke.{cpp,_linux.cpp,_win.cpp,_mac.mm,_platform.h}` — a
+    cross-platform tool that loads a real `nedit.vst3` bundle through the
+    VST3 `hosting/` helpers (Module::create → factory → createInstance
+    kVstAudioEffectClass → initialize → controller->createView(kEditor) →
+    setFrame → attached → pump(soak) → removed), mirroring the boot
+    sequence host_harness uses. It exercises open()/idle on a REAL native
+    parent (xcb window / NSView / HWND) so any vtable-mismatch SIGSEGV in
+    `NeditEditor::open()` fails the run. `PlatformHost` (header) implements
+    IHostApplication + IPlugFrame + Linux::IRunLoop with manual FUnknown
+    (in namespace Steinberg, triple-FUnknown disambiguated via
+    `unknownCast()`); the Linux TU adds a poll()-backed IRunLoop that
+    services VSTGUI's registered fds + timers. Leak the platform/host ON
+    PURPOSE: the plugin .so statically embeds VSTGUI and stores a
+    FUnknownPtr<IRunLoop> that outlives main() — freeing it is a UAF at
+    process exit (seen live: `IPtr<IRunLoop>::~IPtr` SIGSEGV after the
+    `[smoke] OK` line).
+  - **Must run in DEBUG.** Only Debug self-defines DEBUG in VSTGUI (adding
+    `CView::dumpInfo()`, a virtual), which is what makes the #25 mismatch
+    exist at all; Release agrees on both sides and would never crash.
+    VERIFIED locally: Debug build of pre-fix `9921bd3` config (DEBUG define
+    removed) → smoke SIGSEGVs with the EXACT #25 stack
+    (`CParamDisplay::setFont` ← `NeditEditor::open` ←
+    `VSTGUIEditor::attached`, exit 139); Debug fixed build → `[smoke] OK`,
+    exit 0.
+  - The Debug reconfig EXPOSED a latent ODR bug in the plugin TESTS: the
+    `nedit_plugin_tests` TU builds VSTGUI subclasses (`FakeControl :
+    CControl`) and calls into VSTGUI through virtual dispatch, but never
+    defined DEBUG when VSTGUI/plugin did → one-slot-short vtables → the
+    edit-click dispatch misdirected (Clear/Randomize/subdivision-chip
+    editor tests failed in Debug only). Fixed like #25:
+    `target_compile_definitions(nedit_plugin_tests PRIVATE
+    $<$<CONFIG:Debug>:DEBUG>)`; 283/283 now green in Debug.
+  - Build plumbing: `NEDIT_BUILD_EDITOR_SMOKE` option (default ON, tool
+    gating in root now `EDITOR_SMOKE OR TOOLS`); `tools/CMakeLists.txt`
+    builds the smoke on all platforms (links only the SDK hosting helpers +
+    `nedit_vst3_sdk`/`nedit_warnings`, NOT `nedit_plugin` — the bundle is
+    dlopen'd, so a mismatched smoke binary can't mask a broken bundle);
+    Linux links `PkgConfig::SMOKE_XCB Threads ${CMAKE_DL_LIBS}`, Win
+    `user32 gdi32`, mac `Cocoa CoreFoundation`. host_harness's link line
+    lost its dangling `PkgConfig::XCB` (now checked like X11/XTST).
+  - CI: `.github/workflows/build.yml` gains an `editor-smoke` job
+    (ubuntu/macos/windows) at **Debug** config, building `nedit_vst3` +
+    `nedit_editor_smoke`, running under `xvfb-run -a` on Linux. The macOS
+    job IS the long-pending #25 Debug retest; Windows now covered too.
+
 - Randomize honors the probability band — "Randomize from probabilities"
   (arblickspule/NeditVST#4, 2026-09-01): Reported as "only 'forward' style is
   picked." ROOT CAUSE: the style-probability band is the ONLY style-probability
@@ -1323,6 +1420,183 @@ HARDENING entries below).
   snare+rest tail kept, stereo sum for RMS, degenerate passthrough, never
   empty. 281/281 green, zero warnings.
 
+- Multi-instance editor crash — "Bitwig crashes with 2+ instances loaded on
+  Linux" (2026-09-02): loading a second nedit while the first is open kills
+  Bitwig's engine process (exit code 1, UI shows `BITWIG_ENGINE_CRASH.txt`,
+  ~15 s after instance 2 opened; reproduced on the then-current build, so NOT
+  a stale-build bug). ROOT CAUSE: `NeditEditor::open()` called
+  `Steinberg::Linux::setupVSTGUIRunloop(plugFrame)` on EVERY editor open,
+  but VSTGUI's X11 runloop is a process-global shared object
+  (`LinuxFactory::Impl::runLoop`). The SDK's module-level `InitVSTGUI` already
+  sets it up ONCE, from the host context, via the host-context callback
+  (`vstguieditor.cpp`); our per-open call REPLACED it with one bound to the
+  current editor's IPlugFrame, corrupting the timer/X11-fd routing of every
+  other concurrently-open instance (they share one `.so` in the engine
+  process) — timer/event handlers stop dispatching / route to the wrong host
+  context. FIX: the per-editor `setupVSTGUIRunloop` now runs ONLY when
+  `linuxFactory->getRunLoop()` is still null (first-setter-wins fallback for
+  harnesses that never go through the host-context callback); when the module
+  callback has already installed the runloop, editors just read it. This is
+  idempotent + multi-instance-safe. Also hardened the #25 `CFontDesc::init()`
+  font guard (same block): it is NOT idempotent (overwrites shared GlobalFonts,
+  orphaning the old CFontDesc) and must only re-init fonts while the platform
+  is alive (a module teardown nulls BOTH; re-initing fonts alone would null-
+  deref the later getPlatformFactory) — now gated on `kNormalFont==nullptr` +
+  `asLinuxFactory()!=nullptr` under a process-global mutex (double-checked, so
+  the common already-initialized path stays lock-free). Regression guard:
+  `tools/editor_smoke.cpp` learned an optional `[instances]` arg — it opens N
+  editors (one native parent window each, like a DAW engine process) and pumps
+  them all through the one shared runloop; CI's `editor-smoke` job now runs
+  `nedit_editor_smoke <bundle> 300 2` to exercise the second-instance open on
+  every OS. 283/283 green, zero warnings.
+
+- Editor reopen crash — "crashes if I reopen gui multiple times"
+  (2026-09-02): closing + reopening a single instance's editor crashes
+  (SIGSEGV in `xcb_depth_sizeof` / later a cairo `_get_screen_index` assert,
+  exit 134/139). ROOT CAUSE: an upstream VSTGUI-on-Linux regression, NOT our
+  plugin logic. `X11::RunLoop::Impl::exit()` (useCount → 0) calls
+  `xcb_disconnect()`, tearing down the xcb connection; cairo-xcb keeps a
+  process-global cache keyed by `xcb_connection_t*`, so the freed connection's
+  screen data stays cached. The next `open()` → `cairo_xcb_surface_create`
+  (DrawHandler ctor, x11frame.cpp:171) either lands on the same address
+  (stale screen data → SIGSEGV in `xcb_screen_next`/`xcb_depth_sizeof`) or the
+  screen lookup fails (`_get_screen_index` assert). This is upstream
+  vstgui#249/#334/#335; #335's refactor (moving device teardown into
+  CairoGraphicsDevice) reintroduced the reopen crash the #249 fix had closed.
+  FIX (patched VSTGUI, not our code): keep the xcb connection + xkb/cursor
+  state alive across close/open cycles — `RunLoop::Impl::init()` re-registers
+  the SAME fd instead of reconnecting when `xcbConnection != nullptr`, and
+  `exit()` only unregisters the fd (no `xcb_disconnect`, no xkb/cursor free).
+  One xcb connection leaks per process (accepted trade-off; released at
+  process exit). Patch lives in `cmake/vstgui-x11-reopen-crash.patch`, applied
+  idempotently at configure time by `src/plugin/CMakeLists.txt` (Linux only,
+  marker-comment-guarded) via `git apply` against the FetchContent'd
+  `vstgui4` submodule. Regression guard: `tools/editor_smoke.cpp` gained a
+  `[reopen-cycles]` arg (create/attach/soak/remove a fresh editor view on the
+  SAME component, repeated) — reproduced the crash at cycle ~3 pre-fix, clean
+  through 15+ cycles post-fix; CI runs `nedit_editor_smoke <bundle> 300 2 5`.
+  GOTCHA: `nedit_editor_smoke` dlopens the bundle and does NOT link
+  `nedit_plugin`, so you MUST rebuild `nedit_vst3` (not just the smoke target)
+  after touching VSTGUI sources — the smoke target alone leaves a stale
+  bundle. Multi-instance "frozen / transparent background" (dead buttons, host
+  showing through the `CAIRO_CONTENT_COLOR_ALPHA` backbuffer) is a SEPARATE
+  known Bitwig-on-Linux issue (browser unmaps the first window when inserting
+  a second instance; affects Vital too) with the "individually sandboxed"
+  per-plugin override as workaround — not fixed here. 283/283 green, zero
+  warnings.
+
+- Waveform redraw — "Doesn't update after certain ops"
+  (arblickspule/NeditVST#10, 2026-09-01): the waveform (and the sequencer
+  grid) would not repaint after REPLACING the sample via a second load.
+  ROOT CAUSE: the editor's idle timer gated the redraw on a sample
+  PRESENCE transition (`samplePresent != lastSampleSync_`). The first
+  load flips false->true and refresh fires; a second load is true->true
+  (presence unchanged) so `sampleChanged` stayed false and neither
+  `waveformView_->refresh()` nor `sequencerGrid_->invalid()` ran — the
+  very family of stale-view bugs issue #5's suffix ("certain ops") hinted
+  at. FIX: the idle timer now also compares the published sample
+  IDENTITY — `NeditEditor` holds the previous `acquireLoadedSample()`
+  (`lastLoadedSample_`, a `shared_ptr<const LoadedSample>`) and reports a
+  change when `.get()` differs. Every load/rebuild publishes a NEW
+  LoadedSample object, so replacement is detected regardless of whether
+  `samplePath` changed; holding the old shared_ptr keeps its address
+  alive so the `.get()` comparison is exact (no address-reuse aliasing).
+  `notifySampleChanged()` is a test hook exposing the decision. Editor
+  tests construct a bare `NeditEditor` (no frame — all notify-path sync
+  functions null-guard) and drive `notify(nullptr,
+  CVSTGUITimer::kMsgTimer)`, which is safe: the base
+  `VSTGUIEditor::notify` only calls `frame->idle()` when `frame` exists.
+  Test `waveform redraw: replacing the sample via a second load is
+  detected`: load A -> tick (changed), tick (quiet), load B -> tick
+  (changed), tick (quiet). VERIFIED the test FAILS on the old presence-
+  only logic at the second-load assertion and passes on the fix (the
+  built-in smoke of a good regression test).
+  TWO MORE stale-view members of the same issue #10 family found in the
+  follow-up sweep and fixed (all covered by the same 283-test suite):
+  (1) the sequencer transport bar's pattern-length / grid-interval
+  handlers route through `resizeSequencerGridForSample()` (which resets
+  cells when dims change) but never invalidated `sequencerGrid_`, so
+  switching from 1→4 bars or 16n→8n left the OLD cells on screen until a
+  playing step moved. Fixed in the valueChanged handlers AND in
+  `syncSequencerTransport` (the latched plen/grid edges, so external
+  dims changes via state restore / host automation repaint the grid too);
+  (2) `rebuildSlicesPreservingWeights()` (sensitivity / quantize toggle
+  / quantize grid / manual-point + exclude edits) changes the slice
+  COUNT, but the sequencer grid's rows = min(sliceCount, …) were only
+  derived at load time — a sensitivity edit that split/merged slices left
+  the grid one row too many/too few until the next load. Fixed in
+  `NeditProcessor` (`rebuildSlicesPreservingWeights` now re-calls
+  `resizeSequencerGridForSample()` — `resizeGrid` is a no-op unless dims
+  change, per the documented reset-on-dimension-change contract) + the
+  editor's sensitivity/quantize/quantize-grid handlers also invalidate
+  the grid. Test `shell: slice-count edits re-derive the sequencer grid
+  dimensions` (sensitivity 0 → 1 slice → 1 row; back to 0.5 → many
+  slices → rows follow) — VERIFIED it FAILS with the old load-time-only
+   dims and passes on the fix. 283/283 green, zero warnings.
+
+- Wire per-style volumes — "Wire style volumes" (arblickspule/NeditVST#7,
+  2026-09-02): clarified as "each play style should have a separate volume".
+  Volume moved from a single shared `StyleParameters::volume` scalar + ramp
+  mode to `StyleParameters::styleVolume` — a 9-element `std::array<float,
+  kNumPlaybackStyles>`, indexed by the style's own ordinal (issue #7). Lead-
+  dev decisions: **per-style volume VALUES as a static base** (the band's
+  Volume slider is a constant per-style gain; it has NO band-level ramp), and
+  **per-style everywhere** (the array lives in `StyleParameters`, so
+  Generate/Control/Performance snapshots/Sequencer fallback each carry their
+  own 9 values). Consequences:
+  - `StyleParameters`: scalar `volume`/`volumeMode` fields removed; `styleVolume`
+    array + `getStyleVolume`/`setStyleVolume` (clamped [0,1]). `kNumStyleParams`
+    21 → 19 (the scalar vocabulary). `styleParamInfo`/`set` bounds-guard
+    out-of-range ids.
+  - **Sequencer per-cell volume override KEPT, INCLUDING ramp modes** (lead-
+    dev: "the sequencer needs to override with per-cell volumes" + "volume
+    ramps in sequencer … might get shot if those disappear too"): `volume`
+    (19) and `volumeMode` (20) stay in the `StyleParamId` enum as RESERVED
+    per-cell override keys (NOT the generic scalar vocabulary — `kNumStyleParams`
+    = 19 scalars 0..18, `kNumStyleParamIds` = 21 ids incl. Volume + Volume
+    Mode). `VolumeRampMode { fixed, rampUp, rampDown }` + `kVolumeRampModeNames`
+    are BACK (sequencer-only). `isValidSequencerOverrideId()` accepts 19/20 for
+    the override map/setters/`readGridData`; generic `set`/`get` reject them.
+    `startSequencedPick` resolves a cell's Volume + Volume Mode override into
+    the pick's own `volumeValue`/`volumeMode`/`volumeRampActive` (NOT patched
+    into `merged.styleVolume`), with `volumeWholeWindow = subdivisionActive_`
+    so a Subdivided step ramps once across the whole step. `styleParamInfo
+    (volume)` is `swept` (pairs with `volumeMode`), so the override menu
+    presents Volume as a mode-submenu (Static/Ramp Up/Ramp Down) then the
+    value slider. `applicableStyleParams` re-appends Subdivide + Volume;
+    `SequenceRandomizer` excludes Volume from its per-style rolls. The band's
+    per-style Volume (editor-local `kTagStyleVolumeBase`) stays separate from
+    the per-cell Volume override keys.
+  - `PickRenderer`: volume gain is ramped when `pick.volumeRampActive`
+    (`rampUp` = value×progress, `rampDown` = value×(1−progress), per-pick or
+    whole-window when Subdivided), else a constant `getStyleVolume(pick.style)`.
+    `PickExtras`/`PickParams` carry `volumeRampActive`/`volumeWholeWindow`/
+    `volumeValue`/`volumeMode` (only set by the Sequenced commit).
+  - Serialization: format bumped v2 → v3. `writeStyleParameters` writes the
+    19 generic params then the 9-value volume array; `readStyleParameters`
+    is version-gated (`version >= 3` reads the array), so genuine v2 chunks
+    (21 scalar params incl. scalar Volume/Volume-Mode) load cleanly with the
+    scalar volume dropped (per-style volume defaults to 1.0). `readGridData`
+    already drops unknown override ids. `readGenerate`/`readSequencer`/
+    `readPerformance`(+snapshot body)/`readControl` now thread `version`.
+  - Automation: Volume is no longer a single automatable dial — the surface
+    is now 0..18 (`kLastStyleParamId` follows `kNumStyleParams`), so both
+    Volume and Volume-Mode ids (19/20) are out of the surface (documented).
+  - UI: each style column's Volume slider uses an editor-local tag
+    `kTagStyleVolumeBase` (1040 + ordinal) routed through the new
+    `NeditProcessor::setStyleVolume`/`styleVolume` publish-only pair; the
+    `columnParamsFor`-built mini-sliders append the Volume row last (the
+    volume-alignment geometry is unchanged — the row is still the list tail,
+    so `flangerParamRows()` remains the reference). `syncStyleProbs` reads
+    `styleVolume` for those tags; the draw label resolves via a new
+    `rowName()` helper (Volume rows aren't `StyleParamId`s).
+  - JsonIO writes/reads a `"Per-Style Volume"` array alongside the generic
+    params so the human-oriented JSON stays lossless.
+  - Tests updated across the board (state/ui/engine/plugin): per-style volume
+    renderer + scheduler cases, `applicableStyleParams`/`swept` counts, the
+    override-menu classification, the parameter-surface count (19+8), and a
+    rewritten v2→v3 backward-compat chunk test (`v2 chunks (scalar volume)
+    load with per-style volume defaulted`). 290/290 green, zero warnings.
 - macOS editor_smoke crash — "runMode selector on NSApplication"
   (arblickspule/NeditVST, 2026-09-02): the CI job "editor-smoke
   (macos-latest)" failed at runtime after opening the editor with

@@ -158,10 +158,19 @@ jobs:
       - name: Run editor smoke test
         shell: bash
         run: |
+          # Two instances: the second editor open() is exactly the multi-
+          # instance scenario that used to clobber the shared X11 runloop
+          # (second-instance engine crash); opening both then pumping both
+          # drives every editor's idle timers + fd handlers through the one
+          # shared runloop and fails if that routing is corrupted.
+          # Five reopen cycles: repeatedly close/reopen each editor drives
+          # RunLoop::exit/init (xcb reconnect); pre-fix VSTGUI walked stale
+          # screen data in cairo_xcb_surface_create and crashed (the #334
+          # open/close/open crash regression we patch out).
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
+            xvfb-run -a ./build/tools/nedit_editor_smoke ./build/nedit.vst3 300 2 5
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            ./build/tools/Debug/nedit_editor_smoke.exe ./build/nedit.vst3 500
+            ./build/tools/Debug/nedit_editor_smoke.exe ./build/nedit.vst3 300 2 5
           else
-            ./build/tools/nedit_editor_smoke ./build/nedit.vst3 500
+            ./build/tools/nedit_editor_smoke ./build/nedit.vst3 300 2 5
           fi

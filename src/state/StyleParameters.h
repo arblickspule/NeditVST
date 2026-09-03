@@ -53,15 +53,37 @@ enum class StyleParamId : std::uint8_t
     flangerMixMode,           // 16  Mix Mode           Static/Sweep In/Sweep Out
     flangerFeedback,          // 17  Feedback           0 .. 0.88     (Flanger)
     flangerFeedbackMode,      // 18  Feedback Mode      Static/Sweep In/Sweep Out
-    volume,                   // 19  Volume             0 .. 1        (all styles)
+    volume,                   // 19  Volume             0 .. 1 (per-cell override value;
+                              //     per-style via styleVolume -- see below)
     volumeMode                // 20  Volume Mode        Static/Ramp Up/Ramp Down
+                              //     (sequencer per-cell ramp mode)
 };
 
-inline constexpr int kNumStyleParams = 21;
+// Volume is per-style (a 9-value `styleVolume` array, see below) and has NO
+// scalar generic get/set. `volume` (19) and `volumeMode` (20) exist in the
+// enum ONLY as the sequencer per-cell override keys: a cell may override its
+// own style's volume (value + ramp mode), stored in the same sparse override
+// map as the scalar params. The generic vocabulary (`get`/`set`, automation,
+// serialization's scalar loop, `sanitize`'s scalar loop) covers ids
+// 0 .. kNumStyleParams-1 = 0..18 only.
+inline constexpr int kNumStyleParams = 19;
+inline constexpr int kNumStyleParamIds = 21;   // scalars + Volume + Volume Mode keys
+
+
 
 [[nodiscard]] constexpr bool isValidStyleParamId (int id) noexcept
 {
     return id >= 0 && id < kNumStyleParams;
+}
+
+// Valid as a sequencer per-cell override key: the generic scalar params plus
+// the reserved per-style Volume key (which a cell overrides on top of its
+// style's own `styleVolume`).
+[[nodiscard]] constexpr bool isValidSequencerOverrideId (int id) noexcept
+{
+    return (id >= 0 && id < kNumStyleParams)
+        || id == static_cast<int> (StyleParamId::volume)
+        || id == static_cast<int> (StyleParamId::volumeMode);
 }
 
 // Static description of one parameter (name, range, discreteness).
@@ -84,9 +106,10 @@ struct StyleParamInfo
 [[nodiscard]] const char* styleParamOptionName (StyleParamId id, int optionIndex) noexcept;
 
 // Which parameters a given style exposes (Subdivide and Volume are always
-// appended -- they apply to every style including Forward). Returns the
-// ids in menu order. count is written with the number of valid entries;
-// the array is large enough for the worst case.
+// appended -- Subdivide applies to every style, and Volume is the per-cell
+// override key layered on that style's own volume). Returns the ids in menu
+// order. count is written with the number of valid entries; the array is
+// large enough for the worst case.
 struct ApplicableParams
 {
     std::array<StyleParamId, 8> ids {};
@@ -134,9 +157,23 @@ struct StyleParameters
     float flangerFeedback = 0.3f;                        // 0 .. 0.88
     SweepMode flangerFeedbackMode = SweepMode::fixed;
 
-    // All styles: pure gain stage after the style's own DSP
-    float volume = 1.0f;                                 // 0 .. 1
-    VolumeRampMode volumeMode = VolumeRampMode::fixed;
+    // Per-style gain stage (0 .. 1), applied after each style's own DSP.
+    // One value per PlaybackStyle, indexed by the style's ordinal. A single
+    // shared "Volume" param used to live here; the lead-dev made it
+    // per-style (issue #7) and dropped the ramp-mode vocabulary entirely.
+    std::array<float, kNumPlaybackStyles> styleVolume = makeUnitStyleVolume();
+
+    [[nodiscard]] static constexpr std::array<float, kNumPlaybackStyles>
+    makeUnitStyleVolume() noexcept
+    {
+        std::array<float, kNumPlaybackStyles> volumes {};
+        volumes.fill (1.0f);
+        return volumes;
+    }
+
+    // Per-style volume access (clamped on write).
+    [[nodiscard]] float getStyleVolume (PlaybackStyle style) const noexcept;
+    void setStyleVolume (PlaybackStyle style, float value) noexcept;
 
     // Generic access (per-step overrides, randomizers, generic panels).
     // Discrete parameters are represented as their option index cast to

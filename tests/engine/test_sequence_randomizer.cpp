@@ -189,8 +189,8 @@ TEST_CASE ("randomize: parameter randomizing writes overrides minus Subdivide/Vo
     REQUIRE_FALSE (st.overrides.empty());
 
     // Every placed cell's overrides must be a valid style's params in
-    // range; Subdivide and Volume must never appear; every swept param has
-    // its mode sibling AND the values are in-range.
+    // range; Subdivide and Volume must never be randomized; every swept
+    // param has its mode sibling AND the values are in-range.
     for (const auto& [cell, params] : st.overrides)
     {
         (void) cell;
@@ -341,7 +341,7 @@ TEST_CASE ("resizeGrid resets the grid only when the dimensions change", "[seqra
 {
     auto st = makeState (4, 16);
     st.grid[0] = 5;
-    st.overrides[0][StyleParamId::volume] = 0.3f;
+    st.overrides[0][StyleParamId::volume] = 0.5f;
 
     // Same dims => no reset, cells preserved.
     CHECK_FALSE (resizeGrid (st, { 4, 16 }));

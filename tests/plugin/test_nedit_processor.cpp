@@ -92,7 +92,7 @@ TEST_CASE ("shell: initialize registers the full parameter surface")
     REQUIRE (p.initialize (nullptr) == Steinberg::kResultOk);
 
     const auto count = p.getParameterCount();
-    CHECK (count == 21 + 8);
+    CHECK (count == 19 + 8);
 
     // Spot-check ids survive the container mapping.
     CHECK (p.getParamNormalized (kParamTriggerMode)

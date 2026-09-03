@@ -19,6 +19,29 @@ endif()
 
 set(VST3_SDK_DIR ${vst3sdk_SOURCE_DIR} CACHE PATH "VST3 SDK source root")
 
+# Patch VSTGUI (Linux only): keep the xcb connection alive across editor
+# close/open so cairo-xcb's process-global connection cache doesn't go stale
+# and crash the next open() in cairo_xcb_surface_create (upstream VSTGUI
+# #249/#334/#335). Idempotent: only applied when the marker comment is absent.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Git REQUIRED)
+    set(_vstgui_x11platform "${VST3_SDK_DIR}/vstgui4/vstgui/lib/platform/linux/x11platform.cpp")
+    if(EXISTS "${_vstgui_x11platform}")
+        file(READ "${_vstgui_x11platform}" _vstgui_platform_src)
+        if(NOT _vstgui_platform_src MATCHES "Keep the xcb connection")
+            execute_process(
+                COMMAND "${GIT_EXECUTABLE}" -C "${VST3_SDK_DIR}/vstgui4" apply
+                        "${CMAKE_CURRENT_LIST_DIR}/../../cmake/vstgui-x11-reopen-crash.patch"
+                RESULT_VARIABLE _vstgui_patch_result
+                ERROR_VARIABLE _vstgui_patch_err)
+            if(NOT _vstgui_patch_result EQUAL 0)
+                message(FATAL_ERROR
+                    "Failed to apply VSTGUI reopen-crash patch: ${_vstgui_patch_err}")
+            endif()
+        endif()
+    endif()
+endif()
+
 # Third-party code: silence ITS warnings (ours stay fully enabled everywhere
 # else; SDK headers are SYSTEM-included so they never leak into consumer TUs).
 # MSVC spells the all-warnings-off switch "/w"; GCC/Clang use "-w".

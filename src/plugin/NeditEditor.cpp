@@ -161,6 +161,10 @@ constexpr double kProbRowGap = 5.0;            // inter-entry breathing room
 // setters instead of the automatable surface).
 constexpr auto kTagTapeStopScope    = static_cast<VSTGUI_INT32> (1020);
 constexpr auto kTagFilterSweepScope = static_cast<VSTGUI_INT32> (1021);
+// Per-style volume slider tag base (1040 + style ordinal). Volume is NOT a
+// StyleParamId any more -- it is a per-style gain -- so these are editor-
+// local tags routed through NeditProcessor::setStyleVolume.
+constexpr auto kTagStyleVolumeBase  = static_cast<VSTGUI_INT32> (1040);
 // kTagGenerateModeSL/Clock are declared in NeditEditor.h (1022/1023);
 // the plugin tests drive them through the same handler.
 constexpr auto kTagResetBars        = static_cast<VSTGUI_INT32> (1024);
@@ -186,12 +190,13 @@ struct StyleParamRow
     }
 };
 
-// Derived from applicableStyleParams: Subdivide is dropped everywhere (it
-// is a sequencer retrigger, not a style effect) and Volume Mode is kept
-// out (Volume is a bare slider in every column, per the Flanger pilot);
-// each swept base param gets its paired *Mode sibling (info.swept => next
-// id) inserted right beneath it so e.g. Delay Time / Delay Time Mode ride
-// together. Forward's column comes out as a lone Volume slider.
+// Derived from applicableStyleParams: Subdivide and Volume are dropped here
+// (Subdivide is a sequencer retrigger, not a style effect; the reserved
+// per-cell Volume override key is a Sequencer-grid concept, NOT a band
+// slider). Each swept base param gets its paired *Mode sibling (info.swept
+// => next id) inserted right beneath it so e.g. Delay Time / Delay Time Mode
+// ride together. A per-style Volume slider is appended last (its own tag,
+// not a StyleParamId), so Forward's column comes out as a lone Volume slider.
 [[nodiscard]] std::vector<StyleParamRow> columnParamsFor (state::PlaybackStyle style)
 {
     const auto applicable = state::applicableStyleParams (style);
@@ -201,7 +206,7 @@ struct StyleParamRow
     {
         const auto id = applicable.ids[static_cast<std::size_t> (i)];
         if (id == state::StyleParamId::subdivide
-            || id == state::StyleParamId::volumeMode)
+            || id == state::StyleParamId::volume)
             continue;
         const auto& info = state::styleParamInfo (id);
         rows.push_back ({ static_cast<VSTGUI_INT32> (id), ! info.discrete });
@@ -209,11 +214,22 @@ struct StyleParamRow
         {
             const auto mode = static_cast<state::StyleParamId> (
                 static_cast<int> (id) + 1);
-            if (mode != state::StyleParamId::volumeMode)
-                rows.push_back ({ static_cast<VSTGUI_INT32> (mode), false });
+            rows.push_back ({ static_cast<VSTGUI_INT32> (mode), false });
         }
     }
+
+    // Volume is per-style now, appended last in every column.
+    rows.push_back ({ kTagStyleVolumeBase + static_cast<VSTGUI_INT32> (style), true });
+
     return rows;
+}
+
+// Column row label: per-style Volume rows are editor-local tags (>= 1000),
+// so they resolve to "Volume" here rather than the id-indexed vocabulary.
+[[nodiscard]] const char* rowName (const StyleParamRow& row) noexcept
+{
+    return row.tag >= kTagStyleVolumeBase ? "Volume"
+                                           : state::styleParamInfo (row.paramId()).name;
 }
 
 // Height one entry consumes in the column list. Continuous entries take a
@@ -1437,7 +1453,7 @@ public:
                     if (! rows_[i].continuous)
                         continue;   // owned by the mini dropdown overlay
                     const double labelY = r.top + captionRowLocalY (i);
-                    dc->drawString (state::styleParamInfo (rows_[i].paramId()).name,
+                    dc->drawString (rowName (rows_[i]),
                                     CRect (listX, labelY, listX + listW,
                                            labelY + kProbRowH),
                                     kLeftText);
@@ -1683,9 +1699,12 @@ public:
 
 private:
     // Raw display value (for the readout): normalized -> styleParamInfo
-    // range keyed by the control's tag (the StyleParamId).
+    // range keyed by the control's tag (the StyleParamId). Per-style Volume
+    // rows are editor-local tags mapping straight onto 0..1.
     double valueFromNorm (float normalized) const noexcept
     {
+        if (getTag() >= kTagStyleVolumeBase)
+            return static_cast<double> (normalized);
         const auto& info = state::styleParamInfo (
             static_cast<state::StyleParamId> (getTag()));
         return info.minValue + static_cast<double> (normalized)
@@ -3515,6 +3534,11 @@ void NeditEditor::syncSequencerTransport()
         seqPatternLength_->setValueNormalized (
             static_cast<float> (plen) / static_cast<float> (std::max (nPlen - 1, 1)));
         seqPatternLength_->invalid();
+        // Grid DIMENSIONS changed (resize may have cleared cells): repaint
+        // the grid too. This covers external dims changes (state restore /
+        // host automation) that never travel through a valueChanged handler.
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
     }
 
     const int grid = seq.stepResolutionIndex;
@@ -3523,6 +3547,8 @@ void NeditEditor::syncSequencerTransport()
         lastSeqGridSync_ = grid;
         seqGridInterval_->setValue (static_cast<float> (grid));
         seqGridInterval_->invalid();
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
     }
 
     const int timing = static_cast<int> (seq.patternSwitchTiming);
@@ -3680,15 +3706,22 @@ void NeditEditor::syncStyleProbs()
     }
 
     // Mini-sliders bind to Generate's style params (the automatable
-    // surface 0..20); normalize via ParameterSurface so host automation
-    // and UI edits converge on the same mapping.
-    for (auto& column : paramMiniSliders_)
-        for (auto* sl : column)
+    // surface 0..18); normalize via ParameterSurface so host automation
+    // and UI edits converge on the same mapping. Per-style Volume sliders
+    // (editor-local tags) read their value straight from styleVolume.
+    for (std::size_t col = 0; col < paramMiniSliders_.size(); ++col)
+        for (auto* sl : paramMiniSliders_[col])
         {
             if (sl == nullptr)
                 continue;
-            const float norm = toNormalized (owner_->uiStateView(),
-                                             static_cast<std::uint32_t> (sl->getTag()));
+            float norm;
+            const auto tag = sl->getTag();
+            if (tag >= kTagStyleVolumeBase
+                && tag < kTagStyleVolumeBase + state::kNumPlaybackStyles)
+                norm = owner_->styleVolume (static_cast<int> (tag - kTagStyleVolumeBase));
+            else
+                norm = toNormalized (owner_->uiStateView(),
+                                     static_cast<std::uint32_t> (tag));
             if (std::abs (norm - sl->getValueNormalized()) > 1e-3f)
             {
                 sl->setValueNormalized (norm);
@@ -3869,17 +3902,38 @@ void NeditEditor::stylePaintTo (int column, float value)
 //------------------------------------------------------------------------
 bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformType)
 {
-    // Defensive: every CParamDisplay-derived control (COptionMenu below)
-    // dereferences the global kNormalFont unconditionally in its ctor
+    // Defensive (issue #25): every CParamDisplay-derived control (COptionMenu
+    // below) dereferences the global kNormalFont unconditionally in its ctor
     // (vstgui/lib/controls/cparamdisplay.cpp). That global is null until
     // VSTGUI::init()/CFontDesc::init() has run, which normally happens via
-    // the module's bundleEntry -> InitModule chain -- but a host that
-    // scans (load/unload) the bundle before the real session can leave it
-    // null again by the time open() is called for real. Force it here so
+    // the module's bundleEntry -> InitModule chain -- but a host that scans
+    // (load/unload) the bundle before the real session can leave it null
+    // again by the time open() is called for real. Force it here so
     // construction below can't hit a null-deref crash regardless of host
     // scan/reload ordering.
+    //
+    // CFontDesc::init() is NOT idempotent (it overwrites the shared
+    // GlobalFonts members, orphaning the old CFontDesc), and it must only run
+    // while the platform factory is still alive: a module teardown nulls BOTH
+    // the fonts and the platform, so re-initializing fonts alone would let the
+    // later getPlatformFactory() dereference null. A process-global mutex keeps
+    // two instances' editors from double-initializing concurrently, and the
+    // double-check keeps the common (already-initialized) path lock-free.
     if (kNormalFont == nullptr)
-        CFontDesc::init();
+    {
+        static std::mutex sFontInitMutex;
+        std::lock_guard<std::mutex> guard (sFontInitMutex);
+        if (kNormalFont == nullptr)
+        {
+#if SMTG_OS_LINUX
+            // Re-init only when the platform also survived the teardown.
+            if (VSTGUI::getPlatformFactory().asLinuxFactory() != nullptr)
+                CFontDesc::init();
+#else
+            CFontDesc::init();
+#endif
+        }
+    }
 
     CRect frameSize (0, 0, kEditorWidth, kEditorHeight);
 
@@ -3888,10 +3942,28 @@ bool PLUGIN_API NeditEditor::open (void* parent, const PlatformType& platformTyp
 
 #if SMTG_OS_LINUX
     VSTGUI::X11::FrameConfig x11Config;
-    if (plugFrame)
-        Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
     if (auto* linuxFactory = VSTGUI::getPlatformFactory().asLinuxFactory())
+    {
+        // The X11 runloop that drives VSTGUI's timers + fd event handlers is
+        // a process-global shared object (LinuxFactory::Impl::runLoop). The
+        // SDK's module-level InitVSTGUI already sets it up ONCE, from the
+        // host context, via the host-context callback registered at module
+        // load (see vstguieditor.cpp). Re-running setupVSTGUIRunloop here --
+        // once per editor open -- REPLACES that shared runloop with one bound
+        // to THIS editor's IPlugFrame, corrupting the timer/event routing of
+        // every other concurrently-open instance (the second-instance crash
+        // reproduced in Bitwig: engine exit code 1 ~15s after instance 2
+        // opened its editor). So we only fall back to the per-editor setup
+        // when no runloop has been installed yet (e.g. a harness that never
+        // went through the host-context callback), and only the FIRST
+        // setter wins -- it is idempotent and multi-instance-safe.
+        if (linuxFactory->getRunLoop() == nullptr)
+        {
+            if (plugFrame)
+                Steinberg::Linux::setupVSTGUIRunloop (plugFrame);
+        }
         x11Config.runLoop = linuxFactory->getRunLoop();
+    }
 
     if (! frame->open (parent, platformType, &x11Config))
 #else
@@ -4603,6 +4675,8 @@ void NeditEditor::valueChanged (CControl* control)
             owner_->setSensitivity (control->getValueNormalized());
             if (waveformView_)
                 waveformView_->invalid();   // slice markers changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4616,6 +4690,8 @@ void NeditEditor::valueChanged (CControl* control)
             styleQuantizeButton();
             if (waveformView_)
                 waveformView_->invalid();   // auto-boundary positions changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4630,6 +4706,8 @@ void NeditEditor::valueChanged (CControl* control)
             owner_->setQuantizeGrid (idx);
             if (waveformView_)
                 waveformView_->invalid();   // auto-boundary positions changed
+            if (sequencerGrid_)
+                sequencerGrid_->invalid();  // row count may have changed
         }
         return;
     }
@@ -4644,12 +4722,19 @@ void NeditEditor::valueChanged (CControl* control)
         const int idx = static_cast<int> (std::lround (
             control->getValueNormalized() * static_cast<float> (n - 1)));
         (void) owner_->setSequencerPatternLength (idx);
+        // Grid DIMENSIONS changed (resize may have cleared cells): repaint
+        // now, like Clear/Randomize below -- the idle timer only repaints on
+        // playing-step/sample changes, so this would otherwise stay stale.
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
         return;
     }
     if (control->getTag() == kTagSeqGridInterval)
     {
         (void) owner_->setSequencerStepResolution (
             static_cast<int> (std::lround (control->getValue())));
+        if (sequencerGrid_ != nullptr)
+            sequencerGrid_->invalid();
         return;
     }
     if (control->getTag() == kTagSeqSwitchTiming)
@@ -4873,6 +4958,16 @@ void NeditEditor::valueChanged (CControl* control)
         return;
     }
 
+    // Per-style volume sliders: tag = kTagStyleVolumeBase + style ordinal,
+    // value is the raw volume in [0,1] (publish-only, not a host param).
+    if (control->getTag() >= kTagStyleVolumeBase
+        && control->getTag() < kTagStyleVolumeBase + state::kNumPlaybackStyles)
+    {
+        const int idx = static_cast<int> (control->getTag() - kTagStyleVolumeBase);
+        owner_->setStyleVolume (idx, control->getValueNormalized());
+        return;
+    }
+
     applyParamFromControl (*control);
 }
 
@@ -5052,10 +5147,24 @@ CMessageResult NeditEditor::notify (CBaseObject* sender, IdStringPtr message)
         // Sync buttons on sample presence or audition state changes.
         const bool samplePresent = owner_->hasSample();
         const bool auditionOn    = owner_->uiStateView().ui.auditionEnabled;
-        const bool sampleChanged = samplePresent != lastSampleSync_;
+        const bool presenceChanged = samplePresent != lastSampleSync_;
         const bool auditionChanged = auditionOn != lastAuditionSync_;
         lastSampleSync_ = samplePresent;
         lastAuditionSync_ = auditionOn;
+
+        // Sample-identity check: every load/rebuild publishes a NEW
+        // LoadedSample object, so comparing the previous acquire() against
+        // the current one catches replace-via-second-load (presence stays
+        // true->true; only the object differs). Holding the previous
+        // shared_ptr keeps its address alive, so the .get() comparison is
+        // exact -- no address-reuse aliasing possible.
+        const bool sampleChanged = [&] {
+            const auto loaded = owner_->acquireLoadedSample();
+            const bool objectChanged = loaded.get() != lastLoadedSample_.get();
+            lastLoadedSample_ = loaded;
+            notifySampleChanged_ = presenceChanged || objectChanged;
+            return notifySampleChanged_;
+        }();
 
         if (auditionChanged || sampleChanged)
             styleAuditionButton();

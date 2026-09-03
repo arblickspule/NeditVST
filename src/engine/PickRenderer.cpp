@@ -229,22 +229,27 @@ bool PickRenderer::renderSample (const BlockContext& ctx, float* const* outAdd, 
                                                0.0f, state::kMaxFlangerFeedback);
     }
 
-    // --- Volume ramp (Sequenced mode only) ---------------------------------
-    double volumeGain = 1.0;
+    // --- Volume (per-style constant, or a sequencer per-cell ramp) --------
+    double volumeGain = 0.0;
 
     if (pick.volumeRampActive)
     {
+        // A cell overrode its style's volume: ramp it across the step
+        // (whole-window when Subdivided), like the original's per-cell
+        // Volume / Volume-Mode ramp.
         const double progress = pick.volumeWholeWindow ? windowProgress() : pickProgress();
-        const float setValue = pick.params.volume;
-
+        const double setValue = static_cast<double> (pick.volumeValue);
         double value = setValue;
-
-        if (pick.params.volumeMode == state::VolumeRampMode::rampUp)
+        if (pick.volumeMode == state::VolumeRampMode::rampUp)
             value = setValue * progress;
-        else if (pick.params.volumeMode == state::VolumeRampMode::rampDown)
+        else if (pick.volumeMode == state::VolumeRampMode::rampDown)
             value = setValue * (1.0 - progress);
-
         volumeGain = clamp01 (value);
+    }
+    else
+    {
+        volumeGain = clamp01 (static_cast<double> (
+            pick.params.getStyleVolume (pick.style)));
     }
 
     // --- Control-mode gains -------------------------------------------------

@@ -335,6 +335,56 @@ TEST_CASE ("sample manager: load file -> analysis -> state metadata")
     CHECK (manager.acquire()->slices.size() == result->sample->slices.size());
 }
 
+TEST_CASE ("waveform redraw: replacing the sample via a second load is detected")
+{
+    // Issue #10: the waveform would not redraw after LOADING A SECOND SAMPLE
+    // over the first. The editor's idle timer keyed the redraw on sample
+    // PRESENCE (bool false->true), so a replacement (true->true) looked
+    // unchanged. It now keys on the published LoadedSample IDENTITY, which
+    // every load replaces -- even when the path is the same.
+
+    auto wavForLength = [] (std::int64_t frames) {
+        // A shorter/longer click track must give a different sample length,
+        // so the replacement is unambiguous even at the state level.
+        std::vector<float> click (static_cast<std::size_t> (frames), 0.0f);
+        for (std::int64_t i = 0; i + 400 < frames; i += 12000)
+            for (int n = 0; n < 400; ++n)
+                click[static_cast<std::size_t> (i + n)]
+                    = 0.9f * std::exp (-static_cast<float> (n) / 60.0f)
+                    * std::sin (static_cast<float> (n) * 0.5f);
+        return makeWav ({ click.data() }, 1, frames,
+                        static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    };
+
+    const TempFile first ("nedit_test_first.wav", wavForLength (ClickTrack::kFrames));
+    const TempFile second ("nedit_test_second.wav", wavForLength (96000));
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (first.path));
+
+    nedit::plugin::NeditEditor editor (&processor);
+
+    // First idle tick: sample went from absent to present -> change detected.
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK (editor.notifySampleChanged());
+
+    // Steady state: a tick with no new load sees the same identity -> no change.
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK_FALSE (editor.notifySampleChanged());
+
+    // THE REGRESSION: a SECOND load replaces the sample. presence stays
+    // true->true, but the LoadedSample object is a fresh identity, so the
+    // editor must report a change (and would refresh the waveform + grid).
+    REQUIRE (processor.requestSampleLoad (second.path));
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK (editor.notifySampleChanged());
+
+    // And the same-second-load again is quiet (dedup still works).
+    editor.notify (nullptr, VSTGUI::CVSTGUITimer::kMsgTimer);
+    CHECK_FALSE (editor.notifySampleChanged());
+}
+
 TEST_CASE ("shell: loading a sample establishes the sequencer grid dimensions")
 {
     const auto click = ClickTrack::render();
@@ -351,6 +401,39 @@ TEST_CASE ("shell: loading a sample establishes the sequencer grid dimensions")
     // rows = min(sliceCount, kMaxSequencerRows); default 16n + 1 bar => 16 cols.
     CHECK (seq.rows == std::min (sliceCount, nedit::state::kMaxSequencerRows));
     CHECK (seq.columns == 16);
+    CHECK (seq.grid.size()
+           == static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns));
+}
+
+TEST_CASE ("shell: slice-count edits re-derive the sequencer grid dimensions")
+{
+    // Issue #10 family: sensitivity/quantize/manual-point edits rebuild the
+    // slice list, and the sequencer grid row count = min(sliceCount, ...).
+    // When a rebuild changes the slice count, the grid dims must follow --
+    // otherwise the grid keeps its old (stale) row count until the next load.
+    const auto click = ClickTrack::render();
+    const Bytes wav = makeWav ({ click.data() }, 1, ClickTrack::kFrames,
+                                static_cast<std::uint32_t> (ClickTrack::kSampleRate), 16);
+    const TempFile file ("nedit_test_click.wav", wav);
+
+    nedit::plugin::NeditProcessor processor;
+    REQUIRE (processor.initialize (nullptr) == Steinberg::kResultOk);
+    REQUIRE (processor.requestSampleLoad (file.path));
+
+    // Sensitivity 0 => zero onsets by contract => a single trim-span slice.
+    processor.setSensitivity (0.0f);
+    CHECK (processor.debugSliceCount() == 1);
+    CHECK (processor.debugUiState().sequencer.rows == 1);
+
+    // Back to default sensitivity (0.5) => many slices again.
+    processor.setSensitivity (0.5f);
+    const int sliceCount = processor.debugSliceCount();
+    CHECK (sliceCount > 4);
+    CHECK (processor.debugUiState().sequencer.rows
+           == std::min (sliceCount, nedit::state::kMaxSequencerRows));
+
+    // The grid stayed monophony-able / well-formed through all of this.
+    const auto& seq = processor.debugUiState().sequencer;
     CHECK (seq.grid.size()
            == static_cast<std::size_t> (seq.rows) * static_cast<std::size_t> (seq.columns));
 }
@@ -469,6 +552,13 @@ TEST_CASE ("shell: per-cell parameter override setters clamp and key by cell")
     // Idempotent re-write returns false.
     CHECK_FALSE (processor.setSequencerCellOverride (0, 0, StyleParamId::filterResonance, 10.0f));
 
+    // The reserved per-cell Volume override key is valid and clamps to [0,1].
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::volume, 0.4f));
+    REQUIRE (ovAt (0, 0, StyleParamId::volume));
+    CHECK (seq.overrides.at (0).at (StyleParamId::volume) == Catch::Approx (0.4f));
+    CHECK (processor.setSequencerCellOverride (0, 0, StyleParamId::volume, 9.0f));
+    CHECK (seq.overrides.at (0).at (StyleParamId::volume) == Catch::Approx (1.0f));
+
     // Empty cell / invalid param id rejected.
     CHECK_FALSE (processor.setSequencerCellOverride (1, 0, StyleParamId::filterResonance, 1.0f));
     CHECK_FALSE (processor.setSequencerCellOverride (
@@ -478,6 +568,8 @@ TEST_CASE ("shell: per-cell parameter override setters clamp and key by cell")
     CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterType));
     CHECK_FALSE (ovAt (0, 0, StyleParamId::filterType));
     CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::filterResonance));
+    CHECK (processor.clearSequencerCellOverride (0, 0, StyleParamId::volume));
+    CHECK_FALSE (ovAt (0, 0, StyleParamId::volume));
     CHECK (seq.overrides.count (0) == 0);
 }
 

@@ -325,6 +325,25 @@ void NeditProcessor::setStyleWeight (int styleIndex, float weight)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setStyleVolume (int styleIndex, float volume)
+{
+    if (! state::isValidPlaybackStyleIndex (styleIndex))
+        return;
+    uiState_.generate.styleParams.setStyleVolume (
+        static_cast<state::PlaybackStyle> (styleIndex), volume);
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
+[[nodiscard]] float NeditProcessor::styleVolume (int styleIndex) const
+{
+    if (! state::isValidPlaybackStyleIndex (styleIndex))
+        return 1.0f;
+    return uiState_.generate.styleParams.getStyleVolume (
+        static_cast<state::PlaybackStyle> (styleIndex));
+}
+
+//------------------------------------------------------------------------
 float NeditProcessor::getSliceProbability (int sliceIndex) const
 {
     const auto& w = uiState_.generate.sliceWeights;
@@ -753,7 +772,7 @@ void NeditProcessor::setSelectedDrawingStyle (int styleOrdinal)
 bool NeditProcessor::setSequencerCellOverride (int row, int column,
                                                state::StyleParamId id, float value)
 {
-    if (! state::isValidStyleParamId (static_cast<int> (id)))
+    if (! state::isValidSequencerOverrideId (static_cast<int> (id)))
         return false;
     auto& seq = uiState_.sequencer;
     if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns
@@ -783,7 +802,7 @@ bool NeditProcessor::setSequencerCellOverride (int row, int column,
 bool NeditProcessor::clearSequencerCellOverride (int row, int column,
                                                  state::StyleParamId id)
 {
-    if (! state::isValidStyleParamId (static_cast<int> (id)))
+    if (! state::isValidSequencerOverrideId (static_cast<int> (id)))
         return false;
     auto& seq = uiState_.sequencer;
     if (row < 0 || column < 0 || row >= seq.rows || column >= seq.columns)
@@ -892,6 +911,10 @@ void NeditProcessor::rebuildSlicesPreservingWeights()
     }
 
     uiState_.generate.sliceWeights = std::move (newWeights);
+    // Slice count feeds the sequencer grid's row count; re-derive dims so a
+    // sensitivity/quantize/manual-point edit that added/removed slices is
+    // reflected (resizeGrid resets only when dims actually change).
+    resizeSequencerGridForSample();
     provider_.publish (uiState_);
 }
 

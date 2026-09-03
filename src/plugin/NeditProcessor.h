@@ -76,6 +76,12 @@ public:
     // clamps to [0,1], ignores out-of-range style indices.
     void setStyleWeight (int styleIndex, float weight);
 
+    // Per-style volume gain (GenerateState.styleParams.styleVolume[i]),
+    // one independent value per PlaybackStyle (issue #7). Publish only;
+    // clamps to [0,1], ignores out-of-range style indices.
+    void setStyleVolume (int styleIndex, float volume);
+    [[nodiscard]] float styleVolume (int styleIndex) const;
+
     // Trim: direct frame-based write from the waveform view's trim handles.
     void setTrimFrames (std::int64_t startFrame, std::int64_t endFrame);
 
