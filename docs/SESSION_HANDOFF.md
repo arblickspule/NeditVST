@@ -1483,4 +1483,22 @@ session handoff notes (oldest first).
   `MacPlatform::pump` sent `runMode:beforeDate:` to `NSApplication` instead
   of `NSRunLoop`. Fix: pump via `[[NSRunLoop mainRunLoop] runMode:beforeDate:]`
   and keep `NSApplication` only for `updateWindows`.
+- Mac: in-place override slider "flashes then vanishes on click"
+  (2026-09-03). The sliders that pop over sequencer cells (the salmon
+  `OverrideEdit` box from `beginEditSlider`/`drawEditSlider`) opened from the
+  right-click override menu and vanished the instant you clicked. Linux was
+  unaffected; Mac disappeared. ROOT CAUSE: on macOS the release that closes
+  the right-click `COptionMenu` is re-delivered to the grid view as an
+  `onMouseUp`, so `SequencerGridView::onMouseUp` called `finishEditSlider()`
+  immediately after `beginEditSlider()` set the state active — the box drew
+  ("flash") then was torn down ("vanished") before the user could press and
+  drag. Linux's modal `COptionMenu` consumes that release, so it never
+  reached the view. FIX: `onMouseUp` now only closes the slider when an
+  actual drag was engaged (`editDragging_`, set by the first press on the
+  slider) — `if (edit_.active && editDragging_) finishEditSlider();`. The
+  stray menu-close release (no preceding press) no longer deactivates a
+  freshly-opened slider; press-drag-release still commits+closes it, and the
+  palette-strip press and `onMouseCancel` still dismiss it explicitly.
+  290/290 green, zero warnings. Needs a macOS retest (dev machine is
+  Linux/RelWithDebInfo only).
 

@@ -2339,7 +2339,14 @@ public:
     CMouseEventResult onMouseUp (CPoint& where, const CButtonState& buttons) override
     {
         onMouseMoved (where, buttons);
-        if (edit_.active)
+        // Only close the in-place slider when the user actually engaged a
+        // drag on it (press set editDragging_ true). A mouse-up that was not
+        // preceded by a press -- e.g. the release that closes the right-click
+        // menu after beginEditSlider() runs, which macOS re-delivers to this
+        // view -- must not immediately deactivate a freshly-opened slider
+        // (it would "flash then vanish" before the user can drag). Linux's
+        // modal COptionMenu consumes that release, so it never hit this.
+        if (edit_.active && editDragging_)
             finishEditSlider();
         editDragging_ = false;
         dragging_ = false;
