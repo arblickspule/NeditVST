@@ -8,7 +8,22 @@ structure. UI decoupled from Engine; both operate on State. Tests for all
 critical aspects. Profiling/debugging utilities that are trivially
 included/excluded.
 
-## Current status (updated 2026-09-02)
+## Current status (updated 2026-09-03)
+
+**Merge note (2026-09-03): fork `main` reconciled into `feature/custom-ui-components`
+so PR #29 could merge.** The fork's `main` had diverged: it carried the copilot CI
+polish (editor-smoke fixes, macOS ccache, least-privilege workflow) merged via PRs
+#26/#27, and an independent (rebased) copy of the editor-smoke / macOS-crash work,
+while `feature` carried the newer multi-instance/reopen smoke + our later bug fixes.
+Resolution: feature's version won for the duplicated work (`editor_smoke.*`,
+`NeditEditor` font-guard block); main's unique additions were kept — the
+`-fobjc-arc` / `/Zc:char8_t-` smoke compile options (`tools/CMakeLists.txt`), the
+Windows smoke exe path + ccache/least-privilege CI bits (`build.yml`), the
+`NSRunLoop` pump fix (`editor_smoke_mac.mm` — ours had the buggy `[app runMode:]`),
+and both documentation sections in AGENTS.md. Verified: 290/290 tests green,
+smoke opens editor on Linux. NOTE: feature/fork-main now share a common ancestor
+(`c532421`) again; the un-merged orphan is only against `nedrush/NeditVST`'s own
+`main` (the JUCE prototype).
 
 **Phase 1 (State) — implemented, 51 tests green.**
 
@@ -1582,6 +1597,14 @@ HARDENING entries below).
     override-menu classification, the parameter-surface count (19+8), and a
     rewritten v2→v3 backward-compat chunk test (`v2 chunks (scalar volume)
     load with per-style volume defaulted`). 290/290 green, zero warnings.
+- macOS editor_smoke crash — "runMode selector on NSApplication"
+  (arblickspule/NeditVST, 2026-09-02): the CI job "editor-smoke
+  (macos-latest)" failed at runtime after opening the editor with
+  `NSInvalidArgumentException` (`-[NSApplication runMode:beforeDate:]:
+  unrecognized selector`). Root cause: `tools/editor_smoke_mac.mm`
+  `MacPlatform::pump` sent `runMode:beforeDate:` to `NSApplication` instead
+  of `NSRunLoop`. Fix: pump via `[[NSRunLoop mainRunLoop] runMode:beforeDate:]`
+  and keep `NSApplication` only for `updateWindows`.
 
 ## Rules of engagement
 

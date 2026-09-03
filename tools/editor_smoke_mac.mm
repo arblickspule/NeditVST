@@ -63,14 +63,15 @@ public:
     void pump (int ms) override
     {
         NSApplication* app = [NSApplication sharedApplication];
+        NSRunLoop* runLoop = [NSRunLoop mainRunLoop];
         const NSDate* end =
             [NSDate dateWithTimeIntervalSinceNow: (NSTimeInterval) ms / 1000.0];
-        // runMode:beforeDate: drives the CFRunLoop, so VSTGUI's sources and
+        // NSRunLoop runMode:beforeDate: drives the CFRunLoop, so VSTGUI's sources and
         // timers (idle, redraw) actually fire alongside window events.
         while ([[NSDate date] compare: end] == NSOrderedAscending)
         {
-            [app runMode: NSDefaultRunLoopMode
-                beforeDate: [NSDate dateWithTimeIntervalSinceNow: 0.02]];
+            [runLoop runMode: NSDefaultRunLoopMode
+                   beforeDate: [NSDate dateWithTimeIntervalSinceNow: 0.02]];
             [app updateWindows];
         }
     }
