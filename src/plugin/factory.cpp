@@ -18,8 +18,8 @@ BEGIN_FACTORY_DEF ("Nedit Project",                                   // vendor
 // classFlags is 0 (single-component effects cannot be distributed).
 DEF_CLASS2 (INLINE_UID (0x9547773A, 0x0C7D4168, 0x80EB880D, 0xABB4697F),
             PClassInfo::kManyInstances,
-            kVstAudioEffectClass,
-            "Nedit",
+             kVstAudioEffectClass,
+            "NeditRemix",
             0,
             "Instrument|Sampler",
             "0.1.0",
