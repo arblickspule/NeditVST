@@ -148,6 +148,345 @@ inline constexpr double kMinSequencerRowH = 14.0;
     return (row >= 0 && row < layout.totalRows) ? row : -1;
 }
 
+// ---------------------------------------------------------------------------
+// Persistent 2D viewport over the sequencer step grid (issue #2).
+//
+// The grid's content is (totalRows rows x totalCols cols); the editor sized
+// the base cell width/height via computeSequencerLayout(). The user can then
+// ZOOM either axis (scale the cell size, H&V together by default) and PAN
+// (scroll the content within the viewport) with two overlay scrollbars, a
+// wheel (zoom) or a middle-mouse drag (pan). The origin is offset in pixels
+// from the top-left of the content; the whole window is tracked as a
+// NORMALIZED [0,1] origin so it survives pattern-length changes and session
+// reload (whose stale values caused the original editor's SIGSEGV -- see
+// UiState's doc comment).
+// ---------------------------------------------------------------------------
+
+// Per-axis zoom: 1.0 = the base cell size from computeSequencerLayout().
+// zooms both axes together by default; a scrollbar-locked wheel only moves
+// its own axis.
+// The bounds live in state::Types.h (shared with the state sanitizer);
+// only the UI interaction constants stay here.
+using state::kMinSequencerZoom;
+using state::kMaxSequencerZoom;
+
+inline constexpr double kSequencerZoomPerNotch = 1.15;  // multiplier per wheel notch
+
+// The full scroll/pan state for the grid's viewport. All numbers derive
+// from the model + view dims; nothing is a magic literal the view must keep
+// in sync.
+struct SequencerViewport
+{
+    double zoomX = 1.0;
+    double zoomY = 1.0;
+    // Origin as a fraction of the (scrolled) content extent, [0,1]:
+    // 0 = fully scrolled to the top/left, 1 = fully scrolled to the
+    // bottom/right. Normalized so it is independent of zoom and dims.
+    double originX = 0.0;
+    double originY = 0.0;
+};
+
+// Constrain a zoom to [kMinSequencerZoom, kMaxSequencerZoom].
+[[nodiscard]] inline double clampSequencerZoom (double zoom) noexcept
+{
+    return std::clamp (zoom, kMinSequencerZoom, kMaxSequencerZoom);
+}
+
+// The factor that moves `currentZoom` toward `currentZoom * multiplier`,
+// clamped so the RESULT stays within [min, max]. Used to work in factors
+// (an axis-locked wheel keeps the other axis at factor 1.0).
+[[nodiscard]] inline double newZoomFactor (double currentZoom, double multiplier) noexcept
+{
+    return clampSequencerZoom (currentZoom * multiplier) / std::max (1e-9, currentZoom);
+}
+
+// Clamp a normalized origin into [0,1].
+[[nodiscard]] inline double clampSequencerOrigin (double origin) noexcept
+{
+    return std::clamp (origin, 0.0, 1.0);
+}
+
+// Floor/ceiling the zoom on both axes and clamp both origins.
+[[nodiscard]] inline SequencerViewport clampSequencerViewport (SequencerViewport v) noexcept
+{
+    v.zoomX = clampSequencerZoom (v.zoomX);
+    v.zoomY = clampSequencerZoom (v.zoomY);
+    v.originX = clampSequencerOrigin (v.originX);
+    v.originY = clampSequencerOrigin (v.originY);
+    return v;
+}
+
+// The pixel extent of the full (unscrolled) content on one axis, at the
+// given zoom. Zero if the layout/grid is degenerate.
+[[nodiscard]] inline double sequencerContentExtent (const SequencerGridLayout& layout,
+                                                    bool vertical,
+                                                    const SequencerViewport& vp) noexcept
+{
+    if (vertical)
+        return layout.rowHeight * static_cast<double> (layout.totalRows) * vp.zoomY;
+    return layout.colWidth * static_cast<double> (layout.totalCols) * vp.zoomX;
+}
+
+// The logical zoom-OUT floor for an axis: the zoom at which the content
+// exactly fills the viewport (every row/column visible, no empty gap). Zooming
+// out past this would shrink the content below the view and leave dead space,
+// which is never useful -- so it, not the fixed kMinSequencerZoom, is the real
+// lower bound. computeSequencerLayout() sizes the base cell so the content
+// already fills the view whenever it fits (colWidth = viewW/totalCols; and
+// rowHeight = viewH/totalRows in the fit case), so this returns 1.0 for an
+// axis that fits at base zoom and < 1.0 only when the min-row-height floor made
+// the base content overflow (many rows). Always in [kMinSequencerZoom, 1.0];
+// falls back to kMinSequencerZoom for degenerate inputs.
+[[nodiscard]] inline double sequencerMinZoom (const SequencerGridLayout& layout,
+                                              bool vertical, double viewExtent) noexcept
+{
+    const SequencerViewport unit;   // zoom 1.0 on both axes
+    const double baseContent = sequencerContentExtent (layout, vertical, unit);
+    if (baseContent <= 0.0 || viewExtent <= 0.0)
+        return kMinSequencerZoom;
+    // fit is in (0,1]; keep it within the absolute band as a safety net.
+    return std::clamp (viewExtent / baseContent, kMinSequencerZoom, kMaxSequencerZoom);
+}
+
+// Effective per-axis pixel sizes of a rendered cell at the current zoom.
+// (The base colWidth/rowHeight from computeSequencerLayout() are multiplied
+// by the per-axis zoom.)
+[[nodiscard]] inline double sequencerCellWidth (const SequencerGridLayout& layout,
+                                                const SequencerViewport& vp) noexcept
+{
+    return std::max (0.0, layout.colWidth * vp.zoomX);
+}
+
+[[nodiscard]] inline double sequencerCellHeight (const SequencerGridLayout& layout,
+                                                 const SequencerViewport& vp) noexcept
+{
+    return std::max (0.0, layout.rowHeight * vp.zoomY);
+}
+
+// The maximum scrollable pixel offset on an axis: how far the content can be
+// scrolled past the origin while still filling the viewport. 0 when the
+// content fits (fully zoomed out / few rows).
+[[nodiscard]] inline double sequencerMaxScroll (const SequencerGridLayout& layout,
+                                                bool vertical, double viewExtent,
+                                                const SequencerViewport& vp) noexcept
+{
+    const double content = sequencerContentExtent (layout, vertical, vp);
+    const double limit = std::max (0.0, content - viewExtent);
+    return limit;
+}
+
+// Convert a normalized [0,1] origin into the equivalent absolute pixel
+// offset (see sequencerMaxScroll). Clamped so the content never leaves a
+// gap at the far end of the viewport.
+[[nodiscard]] inline double sequencerOriginPx (const SequencerGridLayout& layout,
+                                               bool vertical, double viewExtent,
+                                               const SequencerViewport& vp) noexcept
+{
+    const double limit = sequencerMaxScroll (layout, vertical, viewExtent, vp);
+    const double origin = vertical ? vp.originY : vp.originX;
+    return std::clamp (origin * limit, 0.0, std::max (0.0, limit));
+}
+
+// Zoom/scroll-aware version of columnFromX (which maps the unzoomed,
+// unscrolled grid). Column index at pixel x given the scrolled origin in
+// pixels; -1 outside the grid.
+[[nodiscard]] inline int sequencerColumnFromX (const SequencerGridLayout& layout,
+                                               const SequencerViewport& vp,
+                                               double x, double viewLeft,
+                                               double originXpx) noexcept
+{
+    const double cw = sequencerCellWidth (layout, vp);
+    if (cw <= 0.0 || x < viewLeft)
+        return -1;
+    const int col = static_cast<int> ((x - viewLeft + originXpx) / cw);
+    return (col >= 0 && col < layout.totalCols) ? col : -1;
+}
+
+// Zoom/scroll-aware version of rowFromBottomY. Slice (row) index at pixel y
+// for the bottom-up grid given the scrolled origin in pixels; -1 when
+// outside the content's row bands or the viewport. Same boundary convention
+// as rowFromBottomY: the pixel at a band's top edge belongs to the band
+// above it (the lower row).
+[[nodiscard]] inline int sequencerRowFromY (const SequencerGridLayout& layout,
+                                            const SequencerViewport& vp,
+                                            double y, double viewTop, double viewBottom,
+                                            double originYpx) noexcept
+{
+    const double ch = sequencerCellHeight (layout, vp);
+    if (ch <= 0.0 || layout.totalRows <= 0 || y < viewTop || y >= viewBottom)
+        return -1;
+    const double v = (y - viewTop + originYpx) / ch;   // content pixel in cell units
+    const int row = static_cast<int> (static_cast<double> (layout.totalRows) - v);
+    return (row >= 0 && row < layout.totalRows) ? row : -1;
+}
+
+// The pixel x (top of a given column, in grid-content space) of a step
+// column, offset by the current origin so callers can place + cull bars.
+[[nodiscard]] inline double sequencerColumnX (const SequencerGridLayout& layout,
+                                              const SequencerViewport& vp,
+                                              double originXpx, int column) noexcept
+{
+    return static_cast<double> (column) * sequencerCellWidth (layout, vp) - originXpx;
+}
+
+// The pixel y of a row band's BOTTOM edge in viewport-local space, under the
+// canonical "window over the content" model: the view shows content pixels
+// [originPx, originPx + viewExtent], content pixel 0 = content TOP (row
+// totalRows-1's upper edge), and the piano-roll rows grow downward (row 0 at
+// the content's bottom). originYpx is the scrolled offset in pixels. A row
+// whose bottom lies below viewBottom (visible with origin near 0) is simply
+// outside the window; callers cull.
+[[nodiscard]] inline double sequencerRowBottom (const SequencerGridLayout& layout,
+                                                const SequencerViewport& vp,
+                                                double viewTop, double originYpx,
+                                                int row) noexcept
+{
+    const double ch = sequencerCellHeight (layout, vp);
+    return viewTop + (static_cast<double> (layout.totalRows) - static_cast<double> (row)) * ch
+         - originYpx;
+}
+
+// One overlay scrollbar's geometry: a track the knob can travel and the
+// knob itself, sized to the visible fraction and placed by the normalized
+// origin. No scroll needed when the content fits (`scrollable` false).
+struct SequencerScrollBar
+{
+    bool scrollable = false;      // content overflows the viewport on this axis
+    double trackStart = 0.0;      // knob leading-edge travel range (px)
+    double trackEnd = 0.0;        // ... exclusive end
+    double knobStart = 0.0;       // knob leading edge (px), for drawing/hit-test
+    double knobEnd = 0.0;         // knob trailing edge (px)
+    double visibleFraction = 1.0; // visible / all content on this axis
+};
+
+// Minimum grab surface for an overlay knob -- the visible fraction alone
+// can be absurdly thin when zoomed out.
+inline constexpr double kSequencerScrollBarMinKnob = 12.0;
+
+// Compute one axis's overlay scrollbar geometry. `viewExtent` is the
+// viewport size on that axis (width for H, height for V) and `vp` carries
+// the per-axis zoom + origin.
+[[nodiscard]] inline SequencerScrollBar computeSequencerScrollBar (
+    bool vertical, const SequencerGridLayout& layout, double viewExtent,
+    const SequencerViewport& vp)
+{
+    SequencerScrollBar bar;
+    const double content = sequencerContentExtent (layout, vertical, vp);
+    if (viewExtent <= 0.0 || content <= 0.0)
+        return bar;
+
+    const double visible = std::min (1.0, viewExtent / content);
+    bar.visibleFraction = visible;
+    bar.scrollable = visible < 1.0;
+    if (! bar.scrollable)
+        return bar;
+
+    const double trackLen = viewExtent;
+    bar.trackStart = 0.0;
+    bar.trackEnd = trackLen;
+
+    double knobLen = std::clamp (visible * trackLen,
+                                 kSequencerScrollBarMinKnob, trackLen);
+    const double norm = vertical ? vp.originY : vp.originX;
+    const double lead = norm * (trackLen - knobLen);   // classic scrollbar mapping
+    bar.knobStart = lead;
+    bar.knobEnd = lead + knobLen;
+    return bar;
+}
+
+// Wheel zoom on one axis (`xFactor`/`yFactor` are independent so an
+// overlay-scrollbar-locked wheel can scale a single axis), about the
+// cursor position (a [0,1] fraction of the viewport on each axis). The
+// content pixel under the cursor stays anchored under it. Returns a
+// clamped viewport.
+[[nodiscard]] inline SequencerViewport zoomSequencerViewport (
+    const SequencerGridLayout& layout, double viewWidth, double viewHeight,
+    SequencerViewport vp, double cursorNormX, double cursorNormY,
+    double xFactor, double yFactor) noexcept
+{
+    // Per-axis lower bound is the "fill the viewport" fit, not the fixed floor:
+    // zoom-out stops once every row/column is visible (issue: no dead space).
+    const double minX = sequencerMinZoom (layout, false, viewWidth);
+    const double minY = sequencerMinZoom (layout, true, viewHeight);
+
+    // Clamp the factors so the RESULT lands in [axisMin, max] (an axis-locked
+    // wheel keeps the other factor at 1.0).
+    xFactor = std::clamp (vp.zoomX * xFactor, minX, kMaxSequencerZoom)
+            / std::max (1e-9, vp.zoomX);
+    yFactor = std::clamp (vp.zoomY * yFactor, minY, kMaxSequencerZoom)
+            / std::max (1e-9, vp.zoomY);
+
+    const double oldCX = sequencerContentExtent (layout, false, vp);
+    const double oldCY = sequencerContentExtent (layout, true, vp);
+    const double oxPx = sequencerOriginPx (layout, false, viewWidth, vp);
+    const double oyPx = sequencerOriginPx (layout, true, viewHeight, vp);
+
+    const double cursorContentX = oxPx + cursorNormX * viewWidth;
+    const double cursorContentY = oyPx + cursorNormY * viewHeight;
+
+    const double newCX = std::max (0.0, oldCX * xFactor);
+    const double newCY = std::max (0.0, oldCY * yFactor);
+    const double newOxPx = cursorContentX * xFactor - cursorNormX * viewWidth;
+    const double newOyPx = cursorContentY * yFactor - cursorNormY * viewHeight;
+
+    vp.zoomX = std::clamp (vp.zoomX * xFactor, minX, kMaxSequencerZoom);
+    vp.zoomY = std::clamp (vp.zoomY * yFactor, minY, kMaxSequencerZoom);
+
+    const double newMaxX = std::max (0.0, newCX - viewWidth);
+    const double newMaxY = std::max (0.0, newCY - viewHeight);
+    vp.originX = newMaxX > 0.0 ? clampSequencerOrigin (newOxPx / newMaxX) : 0.0;
+    vp.originY = newMaxY > 0.0 ? clampSequencerOrigin (newOyPx / newMaxY) : 0.0;
+    return vp;
+}
+
+// Pan by a pixel delta on both axes; the origin moves by -deltaPx/maxScroll
+// (dragging right/up scrolls content left/down -- standard grab-and-move
+// viewport feel). Returns a clamped viewport.
+[[nodiscard]] inline SequencerViewport panSequencerViewport (
+    const SequencerGridLayout& layout, double viewWidth, double viewHeight,
+    SequencerViewport vp, double deltaXPx, double deltaYPx) noexcept
+{
+    const double maxX = sequencerMaxScroll (layout, false, viewWidth, vp);
+    const double maxY = sequencerMaxScroll (layout, true, viewHeight, vp);
+    if (maxX > 0.0)
+        vp.originX = clampSequencerOrigin (vp.originX - deltaXPx / maxX);
+    if (maxY > 0.0)
+        vp.originY = clampSequencerOrigin (vp.originY - deltaYPx / maxY);
+    return vp;
+}
+
+// The scroll/pan zone classification for a point over the grid view;
+// returned by sequencerScrollZone() so the view can dispatch the wheel to
+// the right axis (issue #2: over a scrollbar, zoom is locked to that bar's
+// orientation; over the canvas, zoom applies to both axes).
+enum class SequencerScrollZone
+{
+    canvas,          // over the grid itself: wheel zooms both axes
+    horizontalBar,   // over the H overlay scrollbar: wheel zooms X only
+    verticalBar      // over the V overlay scrollbar: wheel zooms Y only
+};
+
+// Hit-test a point into a scroll zone. The overlay bars live at the bottom
+// (H) and right (V) of the view; `hitExtend` widens their invisible grab
+// strip beyond the visible `barThickness` (issue #2: "sliders hit test ...
+// larger than the visible control").
+[[nodiscard]] inline SequencerScrollZone sequencerScrollZone (
+    double x, double y, double viewWidth, double viewHeight,
+    double barThickness, double hitExtend) noexcept
+{
+    if (viewWidth <= 0.0 || viewHeight <= 0.0)
+        return SequencerScrollZone::canvas;
+
+    // The H bar owns the whole bottom band (including the bottom-right corner
+    // its track fills); the V bar owns the right band ABOVE the H bar.
+    if (x >= viewWidth - barThickness - hitExtend
+        && y < viewHeight - barThickness)
+        return SequencerScrollZone::verticalBar;
+    if (y >= viewHeight - barThickness - hitExtend)
+        return SequencerScrollZone::horizontalBar;
+    return SequencerScrollZone::canvas;
+}
+
 // Accumulated pixel height of `nRows` rows from the bottom of the viewport.
 [[nodiscard]] inline double rowsHeightFromBottom (const SequencerGridLayout& layout,
                                                   int nRows) noexcept

@@ -16,13 +16,29 @@ folder (see below); this section is the short "where we are now" snapshot.
 - Native VST3 rewrite complete end-to-end: State → Engine (slicing, schedulers,
   the 9 playback styles, DSP) → VST3 shell → VSTGUI editor (waveform, style
   band + params, timing ribbon, sequencer step grid + per-cell overrides).
+- Sequencer grid now has issue #2's scroll/pan: normalized persistent 2D
+  viewport in `SequencerState` (v4 serialization) + overlay scrollbars + h&v
+  wheel-zoom (axis-locked over a bar) + middle-mouse drag pan, all driven by
+  framework-free zoom/pan/scrollbar math in `src/ui/SequencerGridGeometry.h`.
 - Plugin display name: **NeditRemix**.
 - Branch model: the ORIGINAL `nedrush/NeditVST@main` is the JUCE PROTOTYPE
   (exploration: reverb/delay porting). The native rewrite lives on the
   rewrite branch (`rewrite` on the original; `feature/custom-ui-components` /
   `main` on the fork). The two share NO common ancestor — switch with
   `git checkout`, never merge/rebase between them.
-- Test totals last run: 290/290 green, zero warnings (full plugin build).
+- Cross-platform UI-test harness landed (`tools/nedit_ui_harness.cpp`): hosts
+  the editor IN-PROCESS on a native parent window (reusing editor_smoke's
+  platform glue) and drives synthetic mouse/wheel events straight into the
+  live `CFrame` via `CFrame::dispatchEvent` (direct-first driver), asserting
+  the persisted sequencer viewport reacts (defaults, canvas zoom, zoom clamps,
+  scrollbar axis-lock, MMB pan, knob drag + track paging). Uses Debug-only
+  test hooks (`NeditProcessor::testHookEditor`, `NeditEditor::testHookFrame`/
+  `testHookSequencerGrid`); gated behind `NEDIT_BUILD_UI_HARNESS`; registered
+  as the `ui_harness` ctest (exit 77 = skip when headless); Linux CI job runs
+  it under xvfb. macOS/Windows harness runs are a follow-up (the in-process
+  `VSTGUI::init` path is so far only verified on Linux/xcb).
+- Test totals last run: 303/303 green, zero warnings (full plugin build incl.
+  the ui_harness ctest).
 
 ## Docs (optional reading — split out of AGENTS.md to keep this file lean)
 

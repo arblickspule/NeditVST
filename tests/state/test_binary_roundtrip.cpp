@@ -181,3 +181,33 @@ TEST_CASE ("v2 chunks (scalar volume) load with per-style volume defaulted", "[s
     for (const auto v : restored->generate.styleParams.styleVolume)
         CHECK (v == 1.0f);
 }
+
+TEST_CASE ("v3 chunks (no sequencer viewport) load with viewport defaulted", "[serialize]")
+{
+    // v3 wrote the sequencer section WITHOUT the trailing grid viewport the
+    // v4 writer appends. Rewriting the version word of a v4 chunk to 3 must
+    // reproduce that: the section parses, the trailing doubles are skipped,
+    // and the viewport keeps its defaults.
+    using namespace nedit::state;
+
+    PluginState original;
+    original.sequencer.viewport = { 2.5, 0.5, 0.75, 0.25 };
+    original.sample.samplePath = "/tmp/old-session.wav";
+
+    auto bytes = serialize (original);
+    REQUIRE (bytes.size() >= 12);
+
+    // bytes[4..8) is the format version u32 right after the magic.
+    const std::uint32_t v3 = 3;
+    for (std::size_t i = 0; i < 4; ++i)
+        bytes[4 + i] = static_cast<std::uint8_t> ((v3 >> (8 * i)) & 0xff);
+
+    const auto restored = deserialize (bytes);
+    REQUIRE (restored.has_value());
+
+    CHECK (restored->sample.samplePath == original.sample.samplePath);
+    CHECK (restored->sequencer.viewport.zoomX == 1.0);
+    CHECK (restored->sequencer.viewport.zoomY == 1.0);
+    CHECK (restored->sequencer.viewport.originX == 0.0);
+    CHECK (restored->sequencer.viewport.originY == 1.0);
+}

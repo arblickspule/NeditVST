@@ -98,6 +98,26 @@ TEST_CASE ("sequencer sanitize wipes unpopulated bank slots", "[sanitize]")
     CHECK (sequencer.patternBank[5].grid.empty());
 }
 
+TEST_CASE ("sequencer sanitize clamps the grid viewport", "[sanitize]")
+{
+    SequencerState sequencer;
+    sequencer.viewport = { 100.0, -5.0, 3.0, -0.5 };
+    sequencer.sanitize();
+
+    CHECK (sequencer.viewport.zoomX == kMaxSequencerZoom);
+    CHECK (sequencer.viewport.zoomY == kMinSequencerZoom);
+    CHECK (sequencer.viewport.originX == 1.0);
+    CHECK (sequencer.viewport.originY == 0.0);
+}
+
+TEST_CASE ("sequencer viewport sanitize is idempotent", "[sanitize]")
+{
+    SequencerGridViewport vp { 1.0, 0.5, 0.5, 0.5 };
+    const auto before = vp;
+    vp.sanitize();
+    CHECK (vp == before);
+}
+
 TEST_CASE ("performance sanitize clamps snapshots to the sample", "[sanitize]")
 {
     PerformanceState performance;

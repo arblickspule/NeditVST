@@ -1549,3 +1549,112 @@ session handoff notes (oldest first).
     confirmed in the disassembly), 290/290 tests green, bundle redeployed to
     `~/.vst3`. Needs a Bitwig A/B retest on-device.
 
+## Session handoff (2026-09-05, scroll/pan — Sequencer grid viewport, issue #2)
+
+- **Issue #2 (overlay scrollbars + h&v zoom + MMB pan) implemented state →
+  geometry → view end-to-end.** All 302 tests green, zero warnings, plugin
+  builds clean. (UI tests: 36 cases / 296 assertions; state tests:
+  57 cases / 1229 assertions.)
+- **Geometry** (`src/ui/SequencerGridGeometry.h`, framework-free + unit-tested):
+  canonical "window over content" model — view shows content
+  `[originPx, originPx + view]`, content pixel 0 = content left/top, piano-roll
+  rows grow DOWNWARD (row 0 at content bottom); origin normalized [0,1] so it
+  survives pattern-length changes + session reload (issue #2's stale-absolute-
+  offset SIGSEGV pitfall #6).
+  - `sequencerRowBottom(layout,vp,viewTop,originYpx,row)` rewritten to the
+    window model (no more viewBottom param); `sequencerRowFromY` mirrors it
+    (band top edge → lower row). Earlier `sequencerOriginPx` bug (used
+    originX for both axes) fixed → axis-aware.
+  - `zoomSequencerViewport` (per-axis cursor-anchored), `panSequencerViewport`
+    (origin -= deltaPx/maxScroll), `computeSequencerScrollBar` (visible-
+    fraction knob, min 12px), `sequencerScrollZone(x,y,w,h,thick,hit)` — H bar
+    owns bottom band incl. bottom-right corner; V bar owns right band above H.
+  - Zoom bounds canonicalized in state (`state::kMinSequencerZoom`=0.25 /
+    kMax=8.0); UI keeps interaction constants only (`kSequencerZoomPerNotch`).
+- **State layer**: `SequencerGridViewport{zoomX,zoomY,originX,originY}` +
+  `sanitize()` + `SequencerState.viewport`; format version **3 → 4** (4
+  trailing doubles in the sequencer section, read only when version >= 4, old
+  readers skip); JSON gains `sequencer.viewport`. v3-compat round-trip test
+  (patches the version word) expects **defaults** — note the fresh-state
+  default `originY = 1.0` (opens showing slice 0 at the grid bottom, matching
+  the original's `scrollRows_ = 0` initial view).
+- **View** (`SequencerGridView`, NeditEditor.cpp): replaced `scrollRows_` /
+  `columnFromX` / `rowFromBottomY` with the zoom-aware geometry everywhere
+  (beat shading, bars, markers, playhead, edit slider, palette). New
+  `publishViewport` → `NeditProcessor::setSequencerViewport` (publish-only
+  setter, sanitize + provider publish), overlay scrollbars drawn via
+  `computeSequencerScrollBar` (thumb `kScrollbarThumb`, thickness 10px,
+  hitExtend 6px, drawn only when scrollable), wheel = cursor-anchored zoom,
+  axis-locked over a bar, drag knob/track-click on bars, MMB drag pan. Note:
+  when a bar isn't scrollable its band still falls through to cell painting.
+- **Remaining**: harness framework (todo #5) — Debug-only test-hook exposing
+  the editor `CFrame*`, Hybrid direct-first driver + scenario runner wired
+  into CI (3-OS matrix), then the first scroll/pan scenario. Original
+  reference: `/tmp/opencode/NeditVST/Source/SequencerGrid.h` +
+  `WaveformDisplay.h`.
+
+---
+
+## Session handoff (2026-09-05, cross-platform UI-test harness)
+
+- **Delivered the UI-test harness** the previous session flagged as remaining
+  (todos #5–#7). `tools/nedit_ui_harness.cpp`: hosts a `NeditProcessor`
+  IN-PROCESS (no bundle load), opens the real VSTGUI editor on a native parent
+  window reusing editor_smoke's `smoke::Platform`/`PlatformHost`, then drives
+  synthetic `MouseDownEvent`/`MouseMoveEvent`/`MouseUpEvent`/`MouseWheelEvent`
+  straight into the live `CFrame` with `CFrame::dispatchEvent`. Those events
+  travel the real hit-test + capture path (`CViewContainer::onMouseDownEvent`
+  sets the mouse-down view when the consumed child's refcount > 1 — which it is
+  once `addView` stores it — so follow-up move/up route back to the grid), so
+  they land in the actual `SequencerGridView` handlers. **27/27 checks pass.**
+- **Test hooks** (Debug-only, `#if !defined(NDEBUG)`, compiled out of release):
+  `NeditProcessor::testHookEditor()` (back-pointer `editor_` set in
+  `createView`, cleared by `NeditEditor::close()` so it never dangles) +
+  `NeditEditor::testHookFrame()` (returns the `CFrame`) +
+  `testHookSequencerGrid()` (returns the grid as `CControl*` — the view type is
+  private to the .cpp). `NeditProcessor::setTestHookEditor()` is the single
+  guarded write path.
+- **Scenarios** (arrange via `setSequencerViewport`, act via events, assert on
+  `debugUiState().sequencer.viewport`): fresh defaults (`originY==1`), canvas
+  wheel zoom (both axes, equal, anchored), zoom clamps to
+  `[kMinSequencerZoom, kMaxSequencerZoom]`, wheel over a scrollbar locks that
+  axis (V→Y only, H→X only), middle-mouse drag pan (both directions, clamped),
+  V-scrollbar knob drag + track-click paging, and the hook clearing on
+  `close()`. Sample rows come from a synthesized click-train WAV written to
+  `/tmp` at runtime (`writeClickTrainWav`, 24 sustained-attack segments →
+  24 slices); pan/scrollbar checks first zoom to max so overflow is guaranteed
+  regardless of slice count.
+- **Gotchas hit + fixed while wiring it:**
+  - VSTGUI `vstguibase.h` auto-`#define`s `NDEBUG` unless `DEBUG` is defined,
+    which both hid the test hooks AND would mismatch the `CView`/`CFrame`
+    vtable (the ODR trap `src/plugin/CMakeLists.txt` documents). Fix: the
+    harness target sets `$<$<CONFIG:Debug>:DEBUG>` exactly like `nedit_plugin`.
+  - Linking `nedit_plugin` pulls the SDK's `commoniids.cpp` (it references the
+    Linux runloop iids), so the harness must NOT `DEF_CLASS_IID` the
+    `IPlugFrame`/`IRunLoop`/`IEventHandler`/`ITimerHandler` iids (editor_smoke
+    does, because it does not link nedit_plugin) — that was a multiple-def.
+  - In-process there is no bundle load, so nothing runs the SDK
+    `ModuleInitializer`s: the harness calls `InitModule()` itself (fires
+    `InitVSTGUI` → `VSTGUI::init()` → installs the platform factory; without it
+    `gPlatformFactory` asserts on first `CFrame`), then hands the plugin
+    factory the host context (`GetPluginFactory()->setHostContext`) so the
+    Linux runloop callback wires up. Needs `nedit_plugin_entry` linked
+    (GetPluginFactory + moduleHandle).
+  - `enable_testing()` was called AFTER `add_subdirectory(tools)`, so the
+    harness's `add_test` never registered. Moved `enable_testing()` above the
+    plugin/tools subdirs.
+- **Build/CI wiring:** `NEDIT_BUILD_UI_HARNESS` option (default ON) + the
+  `nedit_ui_harness` target in `tools/CMakeLists.txt` (reuses the shared per-OS
+  `SMOKE_PLATFORM_SOURCE`; no VST3 hosting/module sources — nothing is loaded
+  from a bundle). Registered as the `ui_harness` ctest with
+  `SKIP_RETURN_CODE 77` (headless / release → skip). New Linux `ui-harness` CI
+  job builds Debug + runs it under `xvfb-run`. The main 3-OS Release build job
+  passes `-DNEDIT_BUILD_UI_HARNESS=OFF` (the in-process `VSTGUI::init` path is
+  only verified on Linux so far; macOS/Windows harness runs are the follow-up).
+- **Test totals:** 303/303 green (302 + the `ui_harness` ctest), zero warnings,
+  full plugin build.
+- **Next candidates:** verify/enable the harness on macOS + Windows (prove the
+  in-process `VSTGUI::init`/runloop path there, then widen the CI matrix); add
+  more scenarios (horizontal scrollbar drag, per-cell paint/extension gestures,
+  waveform trim handles) now that the driver exists.
+

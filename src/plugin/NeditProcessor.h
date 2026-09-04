@@ -30,6 +30,8 @@
 
 namespace nedit::plugin {
 
+class NeditEditor;
+
 // Clip a derived slice list to the CURRENT trim, remapping per-slice weights
 // in lockstep so `outSlices`/`outWeights` stay parallel to the input. The
 // view keeps a SOFT trim (slices outside are hidden, never rebuilt), and the
@@ -71,6 +73,7 @@ public:
     // Performance-page tab (UiState.activeTab). Publish only; the panel
     // below the tab bar re-renders from state.
     void setActiveTab (state::UiTab tab);
+    void setSequencerViewport (float zoomX, float zoomY, float originX, float originY);
 
     // Per-style draw weight (GenerateState.styleWeights[i]). Publish only;
     // clamps to [0,1], ignores out-of-range style indices.
@@ -274,6 +277,14 @@ public:
         return loaded != nullptr ? static_cast<int> (loaded->slices.size()) : 0;
     }
 
+#if !defined(NDEBUG)
+    // Debug-only UI-test hook (tools/nedit_ui_harness). Returns the live
+    // editor created by the most recent createView(kEditor), or nullptr when
+    // no editor is open. NOT part of any VST3 interface -- compiled out of
+    // release builds so the shipping plugin exposes no test surface.
+    [[nodiscard]] NeditEditor* testHookEditor() const noexcept { return editor_; }
+#endif
+
 private:
     void registerParameters();
     void syncParameterObjectsFromState();
@@ -304,6 +315,17 @@ private:
 
     // Controller-side authoritative live state.
     state::PluginState uiState_;
+
+#if !defined(NDEBUG)
+public:
+    // Editor back-pointer for the Debug-only UI-test hook. Set in
+    // createView(kEditor), cleared by NeditEditor::close() so testHookEditor()
+    // never returns a dangling view. Public setter (not a friend) keeps the
+    // coupling to a single guarded call site.
+    void setTestHookEditor (NeditEditor* editor) noexcept { editor_ = editor; }
+private:
+    NeditEditor* editor_ = nullptr;
+#endif
 
     // Audio-thread plumbing.
     engine::SnapshotProvider provider_;

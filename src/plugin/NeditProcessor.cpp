@@ -306,6 +306,20 @@ void NeditProcessor::setActiveTab (state::UiTab tab)
 }
 
 //------------------------------------------------------------------------
+void NeditProcessor::setSequencerViewport (float zoomX, float zoomY,
+                                           float originX, float originY)
+{
+    // Issue #2: the sequencer grid's 2D pan/zoom viewport persists in the
+    // model (so it survives session reload and pattern-length changes).
+    uiState_.sequencer.viewport.zoomX = zoomX;
+    uiState_.sequencer.viewport.zoomY = zoomY;
+    uiState_.sequencer.viewport.originX = originX;
+    uiState_.sequencer.viewport.originY = originY;
+    uiState_.sequencer.viewport.sanitize();
+    provider_.publish (uiState_);
+}
+
+//------------------------------------------------------------------------
 void NeditProcessor::setTrimFrames (std::int64_t startFrame, std::int64_t endFrame)
 {
     uiState_.sample.trimStartFrame = startFrame;
@@ -961,7 +975,13 @@ void NeditProcessor::stopSliceAudition()
 Steinberg::IPlugView* PLUGIN_API NeditProcessor::createView (Steinberg::FIDString name)
 {
     if (name != nullptr && std::strcmp (name, Vst::ViewType::kEditor) == 0)
-        return static_cast<Steinberg::IPlugView*> (new NeditEditor (this));
+    {
+        auto* editor = new NeditEditor (this);
+#if !defined(NDEBUG)
+        setTestHookEditor (editor);
+#endif
+        return static_cast<Steinberg::IPlugView*> (editor);
+    }
     return nullptr;
 }
 

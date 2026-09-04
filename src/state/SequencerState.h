@@ -33,6 +33,35 @@
 
 namespace nedit::state {
 
+// Persistent scroll/pan viewport of the sequencer grid editor (issue #2).
+// Zoom is applied to the base cell size derived by the UI; origins are
+// normalized [0,1] fractions of the scrollable extent (0 = left/top,
+// 1 = right/bottom) so the values survive pattern-length changes and
+// session reload (absolute offsets caused the original editor's SIGSEGV --
+// see UiState's doc comment). Stored in the model because the grid is the
+// only surface with independent pan/zoom; the unit-testable mapping to
+// pixels lives in ui::SequencerGridGeometry (framework-free).
+struct SequencerGridViewport
+{
+    double zoomX = 1.0;
+    double zoomY = 1.0;
+    double originX = 0.0;
+    // A fresh grid opens bottom-anchored (origin 1.0 = fully scrolled to
+    // the content's bottom, showing slice 0 -- row 0 -- at the grid's bottom
+    // edge), matching the original's initial scrollRows_ = 0 view.
+    double originY = 1.0;
+
+    void sanitize() noexcept
+    {
+        zoomX = clampValue (zoomX, kMinSequencerZoom, kMaxSequencerZoom);
+        zoomY = clampValue (zoomY, kMinSequencerZoom, kMaxSequencerZoom);
+        originX = clampValue (originX, 0.0, 1.0);
+        originY = clampValue (originY, 0.0, 1.0);
+    }
+
+    bool operator== (const SequencerGridViewport&) const = default;
+};
+
 // One saved pattern. Dimensions are captured with the grid because they
 // define the flat-index stride.
 struct SequencerPattern
@@ -87,6 +116,9 @@ struct SequencerState
     // --- UI-adjacent but model-owned ---------------------------------------------
     int selectedDrawingStyle = 0;  // style ordinal the palette paints with
 
+    // Normalized scroll/pan viewport of the grid editor (issue #2).
+    SequencerGridViewport viewport;
+
     // --- pattern bank ---------------------------------------------------------------
     std::array<SequencerPattern, kNumMidiNotes> patternBank {};
     PatternSwitchTiming patternSwitchTiming = PatternSwitchTiming::immediate;
@@ -117,6 +149,8 @@ struct SequencerState
             w = clampValue (w, 0.0f, 1.0f);
 
         selectedDrawingStyle = clampValue (selectedDrawingStyle, 0, kNumPlaybackStyles - 1);
+
+        viewport.sanitize();
 
         for (auto& pattern : patternBank)
         {

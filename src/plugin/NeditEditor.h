@@ -15,7 +15,7 @@
 
 #include <array>
 
-namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; class CRect; }
+namespace VSTGUI { class CTextLabel; class CTextButton; class COptionMenu; class CRect; class CFrame; class CControl; }
 
 #include <atomic>
 #include <memory>
@@ -108,6 +108,18 @@ public:
     {
         return notifySampleChanged_;
     }
+
+#if !defined(NDEBUG)
+    // Debug-only UI-test hooks (tools/nedit_ui_harness). Expose the live
+    // CFrame (so a test can dispatch synthetic mouse/wheel events straight
+    // into the real view tree) and the sequencer grid view (so scenarios can
+    // read its rect without hunting the hierarchy). Compiled out of release
+    // builds. Valid only between open() and close().
+    [[nodiscard]] VSTGUI::CFrame* testHookFrame() const noexcept;
+    // Returned as CControl* (the grid view type is private to the .cpp); the
+    // harness only needs getViewSize()/isVisible()/event dispatch off it.
+    [[nodiscard]] VSTGUI::CControl* testHookSequencerGrid() const noexcept;
+#endif
 
     //--- Style-probability paint overlay -------------------------------------
     // Pressing off the thin vertical track in a probability column enters a

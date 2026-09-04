@@ -99,6 +99,7 @@ namespace nedit::test {
 
     sequencer.patternSwitchTiming = PatternSwitchTiming::endOfPattern;
     sequencer.patternSwitchIntervalIndex = kNoteValue4n;
+    sequencer.viewport = { 2.5, 0.5, 0.75, 0.25 };
 
     // --- performance ---
     auto& performance = state.performance;

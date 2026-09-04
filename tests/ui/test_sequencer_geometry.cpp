@@ -165,6 +165,286 @@ TEST_CASE ("sequencer cell bars: anticipatory clamp at the next active column")
     CHECK (bars[0].endColumn == 3);   // clamped short of the active column
 }
 
+// ---------------------------------------------------------------------------
+// Issue #2 scroll/pan viewport over the grid (SequencerViewport).
+// ---------------------------------------------------------------------------
+
+TEST_CASE ("sequencer viewport: content extents and cell sizes track zoom")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 16, 16);
+
+    // Zoom 1.0 = the base cell size; the grid exactly fills the viewport.
+    ui::SequencerViewport fit;
+    CHECK (ui::sequencerContentExtent (l, false, fit) == Catch::Approx (kViewW));
+    CHECK (ui::sequencerContentExtent (l, true, fit) == Catch::Approx (kViewH));
+    CHECK (ui::sequencerCellWidth (l, fit) == Catch::Approx (l.colWidth));
+    CHECK (ui::sequencerCellHeight (l, fit) == Catch::Approx (l.rowHeight));
+    CHECK (ui::sequencerMaxScroll (l, false, kViewW, fit) == Catch::Approx (0.0));
+    CHECK (ui::sequencerMaxScroll (l, true, kViewH, fit) == Catch::Approx (0.0));
+
+    // Zoomed 2x / 0.5x.
+    ui::SequencerViewport z { 2.0, 0.5, 0.0, 0.0 };
+    CHECK (ui::sequencerContentExtent (l, false, z) == Catch::Approx (2.0 * kViewW));
+    CHECK (ui::sequencerContentExtent (l, true, z) == Catch::Approx (0.5 * kViewH));
+    CHECK (ui::sequencerCellWidth (l, z) == Catch::Approx (2.0 * l.colWidth));
+    CHECK (ui::sequencerCellHeight (l, z) == Catch::Approx (0.5 * l.rowHeight));
+
+    // Y zoomed out so far the content fits: no Y scroll, origin pinned to 0.
+    CHECK (ui::sequencerMaxScroll (l, true, kViewH, z) == Catch::Approx (0.0));
+    CHECK (ui::sequencerOriginPx (l, true, kViewH, z) == Catch::Approx (0.0));
+
+    // X scrolled: originPx = origin * maxScroll.
+    const double maxX = ui::sequencerMaxScroll (l, false, kViewW, z);
+    ui::SequencerViewport half { 2.0, 0.5, 0.5, 0.5 };
+    CHECK (ui::sequencerOriginPx (l, false, kViewW, half) == Catch::Approx (0.5 * maxX));
+}
+
+TEST_CASE ("sequencer viewport: clamping keeps zoom and origin in range")
+{
+    auto vp = ui::clampSequencerViewport ({ 100.0, -3.0, 5.0, -0.2 });
+    CHECK (vp.zoomX == Catch::Approx (ui::kMaxSequencerZoom));
+    CHECK (vp.zoomY == Catch::Approx (ui::kMinSequencerZoom));
+    CHECK (vp.originX == Catch::Approx (1.0));
+    CHECK (vp.originY == Catch::Approx (0.0));
+
+    CHECK (ui::clampSequencerZoom (0.0) == Catch::Approx (ui::kMinSequencerZoom));
+
+    // newZoomFactor clamps the RESULT, so the returned factor keeps the
+    // existing zoom below max or above min.
+    CHECK (ui::newZoomFactor (4.0, 4.0) == Catch::Approx (ui::kMaxSequencerZoom / 4.0));
+    CHECK (ui::newZoomFactor (1.0, 0.001) == Catch::Approx (ui::kMinSequencerZoom));
+}
+
+TEST_CASE ("sequencer viewport: zoom-out floor is the fill-the-view fit")
+{
+    // Few rows: everything fits at base zoom, so the fit-min is 1.0 on both
+    // axes (columns always fill; rows fill because rowHeight = viewH/rows).
+    // Zooming out cannot go below 1.0 -- that would leave dead space.
+    {
+        const auto l = ui::computeSequencerLayout (kViewW, kViewH, 8, 16);
+        CHECK (ui::sequencerMinZoom (l, false, kViewW) == Catch::Approx (1.0));
+        CHECK (ui::sequencerMinZoom (l, true, kViewH) == Catch::Approx (1.0));
+
+        const auto out = ui::zoomSequencerViewport (
+            l, kViewW, kViewH, ui::SequencerViewport {}, 0.5, 0.5, 0.001, 0.001);
+        CHECK (out.zoomX == Catch::Approx (1.0));
+        CHECK (out.zoomY == Catch::Approx (1.0));
+    }
+
+    // Many rows: base content overflows in Y, so Y's fit-min is < 1 (the zoom
+    // at which every row shrinks to exactly fill the height); X still fills at
+    // 1.0. Below the fit-min there would be empty space, so it is the floor.
+    {
+        const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+        const double fitY = ui::sequencerMinZoom (l, true, kViewH);
+        CHECK (fitY < 1.0);
+        CHECK (fitY > ui::kMinSequencerZoom);   // the floor moved above 0.25
+        CHECK (fitY == Catch::Approx (kViewH / (ui::kMinSequencerRowH * 64.0)));
+        CHECK (ui::sequencerMinZoom (l, false, kViewW) == Catch::Approx (1.0));
+
+        // At the fit-min the content exactly fills the viewport (no dead space).
+        const ui::SequencerViewport atFit { 1.0, fitY, 0.0, 0.0 };
+        CHECK (ui::sequencerContentExtent (l, true, atFit) == Catch::Approx (kViewH));
+
+        // Repeated wheel-out saturates at the fit-min, not kMinSequencerZoom.
+        ui::SequencerViewport out;
+        for (int i = 0; i < 40; ++i)
+            out = ui::zoomSequencerViewport (l, kViewW, kViewH, out, 0.5, 0.5,
+                                             1.0 / ui::kSequencerZoomPerNotch,
+                                             1.0 / ui::kSequencerZoomPerNotch);
+        CHECK (out.zoomY == Catch::Approx (fitY));
+        CHECK (out.zoomX == Catch::Approx (1.0));
+    }
+}
+
+TEST_CASE ("sequencer viewport: anchored zoom keeps the cursor content fixed")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 16, 16);
+    ui::SequencerViewport vp;
+
+    // Zoom 2x both axes about the 25%-25% point. Before: content px 225
+    // (X) under viewport px 225, content px 100 (Y) under viewport px 100.
+    const auto out = ui::zoomSequencerViewport (
+        l, kViewW, kViewH, vp, 0.25, 0.25, 2.0, 2.0);
+
+    CHECK (out.zoomX == Catch::Approx (2.0));
+    CHECK (out.zoomY == Catch::Approx (2.0));
+    // Anchor: after zoom the SAME content pixel must sit under the cursor.
+    const double cursorXpx = 0.25 * kViewW;
+    const double cursorYpx = 0.25 * kViewH;
+    const double cx = ui::sequencerOriginPx (l, false, kViewW, out) + cursorXpx;
+    const double cy = ui::sequencerOriginPx (l, true, kViewH, out) + cursorYpx;
+    CHECK (cx == Catch::Approx (2.0 * 0.25 * kViewW)); // 225 * 2
+    CHECK (cy == Catch::Approx (2.0 * 0.25 * kViewH)); // 100 * 2
+
+    // Tightly zoomed against a corner keeps the origin clamped to [0,1].
+    const auto edge = ui::zoomSequencerViewport (
+        l, kViewW, kViewH, vp, 1.0, 0.0, 1000.0, 1000.0);
+    CHECK (edge.zoomX == Catch::Approx (ui::kMaxSequencerZoom));
+    CHECK (edge.originX == Catch::Approx (1.0));
+    CHECK (edge.originY == Catch::Approx (0.0));
+}
+
+TEST_CASE ("sequencer viewport: scrollbar-locked wheel moves one axis only")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+    ui::SequencerViewport vp;
+
+    // 64 rows scroll; 32 cols at 28.125px = exactly 900px, no X scroll.
+    const auto out = ui::zoomSequencerViewport (
+        l, kViewW, kViewH, vp, 0.5, 0.5, ui::kSequencerZoomPerNotch, 1.0);
+
+    CHECK (out.zoomX == Catch::Approx (ui::kSequencerZoomPerNotch));
+    CHECK (out.zoomY == Catch::Approx (1.0));
+    // Origin in a non-scrolling axis is pinned at 0; Y centered stays 0.
+    CHECK (out.originY == Catch::Approx (0.0));
+}
+
+TEST_CASE ("sequencer viewport: pan drags the content opposite to the hand")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+    ui::SequencerViewport vp { 2.0, 2.0, 0.5, 0.5 };
+
+    // Drag right (positive X) scrolls content left => origin drops by
+    // deltaX / maxScroll. 64 rows at 14px * 2 = 1792px vs 400px view.
+    const double maxX = ui::sequencerMaxScroll (l, false, kViewW, vp);
+    const double maxY = ui::sequencerMaxScroll (l, true, kViewH, vp);
+
+    const auto out = ui::panSequencerViewport (
+        l, kViewW, kViewH, vp, 0.5 * maxX, -0.5 * maxY);
+    CHECK (out.originX == Catch::Approx (0.0));   // dragged to the far right
+    CHECK (out.originY == Catch::Approx (1.0));   // dragged up to the top
+
+    // Dragging beyond the limit clamps.
+    const auto clamped = ui::panSequencerViewport (l, kViewW, kViewH, vp, -maxX, 2.0 * maxY);
+    CHECK (clamped.originX == Catch::Approx (1.0));
+    CHECK (clamped.originY == Catch::Approx (0.0));
+
+    // A fully-visible axis ignores panning on that axis.
+    ui::SequencerViewport fit;
+    const auto noScroll = ui::panSequencerViewport (
+        ui::computeSequencerLayout (kViewW, kViewH, 16, 16), kViewW, kViewH,
+        fit, -500.0, 500.0);
+    CHECK (noScroll.originX == Catch::Approx (0.0));
+    CHECK (noScroll.originY == Catch::Approx (0.0));
+}
+
+TEST_CASE ("sequencer viewport: row/column pixel placement with scroll")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+    ui::SequencerViewport z { 1.0, 1.0, 0.25, 0.5 };
+    const double ox = ui::sequencerOriginPx (l, false, kViewW, z);
+    const double oy = ui::sequencerOriginPx (l, true, kViewH, z);
+
+    const double colW = ui::sequencerCellWidth (l, z);
+    const double rowH = ui::sequencerCellHeight (l, z);
+    CHECK (ui::sequencerColumnX (l, z, ox, 0) == Catch::Approx (-ox));
+    CHECK (ui::sequencerColumnX (l, z, ox, 5) == Catch::Approx (5.0 * colW - ox));
+    // 64 rows at 14px = 896px content in a 400px window: originY 0.5 scrolls
+    // by 0.5 * 496 = 248px, so row 0's bottom sits at 896 - 248 = 648px and
+    // the row above it 14px higher.
+    CHECK (ui::sequencerRowBottom (l, z, 0.0, oy, 0) == Catch::Approx (648.0));
+    CHECK (ui::sequencerRowBottom (l, z, 0.0, oy, 7) == Catch::Approx (648.0 - 7.0 * rowH));
+}
+
+TEST_CASE ("sequencer viewport: zoom-aware hit-testing mirrors the geometry")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+    ui::SequencerViewport vp { 2.0, 2.0, 0.5, 0.5 };
+    const double ox = ui::sequencerOriginPx (l, false, kViewW, vp);
+    const double oy = ui::sequencerOriginPx (l, true, kViewH, vp);
+
+    const double colW = ui::sequencerCellWidth (l, vp);
+    const double rowH = ui::sequencerCellHeight (l, vp);
+
+    // The content pixel under each cell maps back to that cell. With zoom 2
+    // and origin 0.5 the visible window falls on cols 8..23 and rows 25..38.
+    for (int c : { 8, 16, 23 })
+    {
+        const double cxw = ui::sequencerColumnX (l, vp, ox, c) + colW * 0.5;
+        CHECK (ui::sequencerColumnFromX (l, vp, cxw, 0.0, ox) == c);
+    }
+    for (int r : { 25, 32, 38 })
+    {
+        const double ryr = ui::sequencerRowBottom (l, vp, 0.0, oy, r) - rowH * 0.5;
+        CHECK (ui::sequencerRowFromY (l, vp, ryr, 0.0, kViewH, oy) == r);
+    }
+
+    // Outside the grid (left / below row 0's band) => -1.
+    CHECK (ui::sequencerColumnFromX (l, vp, -1.0, 0.0, ox) == -1);
+    CHECK (ui::sequencerRowFromY (l, vp, kViewH - oy - rowH - 0.5, 0.0, kViewH, oy) == -1);
+
+    // An unzoomed viewport the same as rowFromBottomY/columnFromX at scroll 0.
+    const auto flat = ui::computeSequencerLayout (kViewW, kViewH, 16, 8);
+    ui::SequencerViewport fit;
+    CHECK (ui::sequencerRowFromY (flat, fit, kViewH - 0.5, 0.0, kViewH, 0.0) == 0);
+    CHECK (ui::sequencerColumnFromX (flat, fit, 0.0, 0.0, 0.0) == 0);
+}
+
+TEST_CASE ("sequencer overlay scrollbar: knob tracks visible fraction + origin")
+{
+    const auto l = ui::computeSequencerLayout (kViewW, kViewH, 64, 32);
+
+    // Vertical: 64 rows * 14px = 896px in a 400px viewport.
+    ui::SequencerViewport vp;
+    const auto vbar = ui::computeSequencerScrollBar (true, l, kViewH, vp);
+    REQUIRE (vbar.scrollable);
+    CHECK (vbar.visibleFraction == Catch::Approx (kViewH / 896.0));
+    CHECK (vbar.trackStart == Catch::Approx (0.0));
+    CHECK (vbar.trackEnd == Catch::Approx (kViewH));
+    CHECK (vbar.knobStart == Catch::Approx (0.0));
+    CHECK (vbar.knobEnd == Catch::Approx (kViewH / 896.0 * kViewH));
+
+    // At origin 0.5 the knob sits mid-track.
+    ui::SequencerViewport mid { 1.0, 1.0, 0.0, 0.5 };
+    const auto vmid = ui::computeSequencerScrollBar (true, l, kViewH, mid);
+    const double knobLen = vmid.knobEnd - vmid.knobStart;
+    CHECK (vmid.knobStart == Catch::Approx (0.5 * (kViewH - knobLen)));
+
+    // Fully scrolled: knob flush with the track end.
+    ui::SequencerViewport end { 1.0, 1.0, 0.0, 1.0 };
+    const auto vend = ui::computeSequencerScrollBar (true, l, kViewH, end);
+    CHECK (vend.knobEnd == Catch::Approx (kViewH));
+    // Visible fraction never leaves a min-sized knob even when the content is large.
+    CHECK (vend.knobEnd - vend.knobStart >= ui::kSequencerScrollBarMinKnob);
+
+    // Horizontal does not scroll at zoom 1 (32 cols * 28.125 = 900 = view).
+    const auto hbar = ui::computeSequencerScrollBar (false, l, kViewW, vp);
+    CHECK_FALSE (hbar.scrollable);
+
+    // ... but does once zoomed in, and re-reads the visible fraction.
+    ui::SequencerViewport zx { 2.0, 1.0, 0.0, 0.0 };
+    const auto hzoom = ui::computeSequencerScrollBar (false, l, kViewW, zx);
+    REQUIRE (hzoom.scrollable);
+    CHECK (hzoom.visibleFraction == Catch::Approx (0.5));
+}
+
+TEST_CASE ("sequencer scroll zone: wheel axis lock and corner ownership")
+{
+    constexpr double kThick = 10.0;
+    constexpr double kHit = 6.0;
+
+    // Canvas interior.
+    CHECK (ui::sequencerScrollZone (450.0, 200.0, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::canvas);
+    // Bottom band (including hit extension) => horizontal bar.
+    CHECK (ui::sequencerScrollZone (450.0, kViewH - 1.0, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::horizontalBar);
+    CHECK (ui::sequencerScrollZone (450.0, kViewH - kThick - kHit + 0.5, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::horizontalBar);
+    // Just above the band => canvas again.
+    CHECK (ui::sequencerScrollZone (450.0, kViewH - kThick - kHit - 0.5, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::canvas);
+    // Right band above the H bar => vertical bar.
+    CHECK (ui::sequencerScrollZone (kViewW - 1.0, 200.0, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::verticalBar);
+    CHECK (ui::sequencerScrollZone (kViewW - kThick - kHit + 0.5, 200.0, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::verticalBar);
+    // Bottom-right corner belongs to the horizontal bar's track.
+    CHECK (ui::sequencerScrollZone (kViewW - 1.0, kViewH - 1.0, kViewW, kViewH, kThick, kHit)
+           == ui::SequencerScrollZone::horizontalBar);
+}
+
 TEST_CASE ("cell override menu: per-style param entries with Subdivide + Volume")
 {
     using state::PlaybackStyle;

@@ -443,6 +443,13 @@ namespace {
 
         out.writeU8 (static_cast<std::uint8_t> (sequencer.patternSwitchTiming));
         out.writeI32 (sequencer.patternSwitchIntervalIndex);
+
+        // v4+: the grid viewport (issue #2). Appended at the section's end
+        // so pre-v4 readers skip it harmlessly (trailing bytes are ignored).
+        out.writeF64 (sequencer.viewport.zoomX);
+        out.writeF64 (sequencer.viewport.zoomY);
+        out.writeF64 (sequencer.viewport.originX);
+        out.writeF64 (sequencer.viewport.originY);
     }
 
     [[nodiscard]] bool readSequencer (StreamReader& in, SequencerState& sequencer,
@@ -495,6 +502,16 @@ namespace {
             sequencer.patternSwitchTiming = PatternSwitchTiming::immediate;
 
         sequencer.patternSwitchIntervalIndex = in.readI32();
+
+        // v4+ carries the grid viewport; older streams keep its defaults.
+        if (version >= 4)
+        {
+            sequencer.viewport.zoomX = in.readF64();
+            sequencer.viewport.zoomY = in.readF64();
+            sequencer.viewport.originX = in.readF64();
+            sequencer.viewport.originY = in.readF64();
+        }
+
         return in.ok();
     }
 

@@ -387,7 +387,11 @@ std::string toJson (const PluginState& state)
             { "selectedDrawingStyle", s.selectedDrawingStyle },
             { "patternBank", std::move (bank) },
             { "patternSwitchTiming", static_cast<int> (s.patternSwitchTiming) },
-            { "patternSwitchIntervalIndex", s.patternSwitchIntervalIndex }
+            { "patternSwitchIntervalIndex", s.patternSwitchIntervalIndex },
+            { "viewport", { { "zoomX", s.viewport.zoomX },
+                            { "zoomY", s.viewport.zoomY },
+                            { "originX", s.viewport.originX },
+                            { "originY", s.viewport.originY } } }
         };
     }
 
@@ -551,6 +555,14 @@ std::optional<PluginState> fromJson (const std::string& text)
 
         readEnumField (*it, "patternSwitchTiming", s.patternSwitchTiming);
         readField (*it, "patternSwitchIntervalIndex", s.patternSwitchIntervalIndex);
+
+        if (const auto viewport = it->find ("viewport"); viewport != it->end() && viewport->is_object())
+        {
+            readField (*viewport, "zoomX", s.viewport.zoomX);
+            readField (*viewport, "zoomY", s.viewport.zoomY);
+            readField (*viewport, "originX", s.viewport.originX);
+            readField (*viewport, "originY", s.viewport.originY);
+        }
     }
 
     if (const auto it = j.find ("performance"); it != j.end() && it->is_object())

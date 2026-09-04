@@ -46,6 +46,7 @@ option(NEDIT_BUILD_TESTS    "Build unit tests"                         ON)
 option(NEDIT_BUILD_PLUGIN   "Build the VST3 plugin (fetches VST3 SDK)"  OFF)
 option(NEDIT_BUILD_TOOLS    "Build the Linux X11 host harness"         ON)
 option(NEDIT_BUILD_EDITOR_SMOKE "Build the cross-platform editor smoke test" ON)
+option(NEDIT_BUILD_UI_HARNESS "Build the cross-platform UI-test harness (Debug hooks)" ON)
 option(NEDIT_DEBUG_TOOLS    "Compile in debug/profiling utilities"      ON)
 option(NEDIT_MAC_UNIVERSAL  "Build a universal (arm64 + x86_64) macOS plugin" OFF)
 
@@ -79,18 +80,24 @@ add_subdirectory(src/engine)
 add_subdirectory(src/ui)
 add_subdirectory(src/debug)
 
+# Enable testing before the plugin/tools subdirs so tools/ (nedit_ui_harness)
+# can register its ctest -- add_test only records into the top-level test file
+# once enable_testing() has run in this (parent) scope.
+if(NEDIT_BUILD_TESTS)
+    enable_testing()
+endif()
+
 if(NEDIT_BUILD_PLUGIN)
     # Phase 4: VST3 SDK + VSTGUI via FetchContent. See AGENTS.md roadmap.
     # Added BEFORE tests/ so test targets can reference the entry objects.
     add_subdirectory(src/plugin)
     # Dev/test tools: editor_smoke is cross-platform (CI), host_harness is
     # an interactive Linux-only X11 window driver.
-    if(NEDIT_BUILD_EDITOR_SMOKE OR NEDIT_BUILD_TOOLS)
+    if(NEDIT_BUILD_EDITOR_SMOKE OR NEDIT_BUILD_TOOLS OR NEDIT_BUILD_UI_HARNESS)
         add_subdirectory(tools)
     endif()
 endif()
 
 if(NEDIT_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()

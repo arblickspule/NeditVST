@@ -226,6 +226,12 @@ inline constexpr int kDefaultControlBaseNote = 36;  // C1
 inline constexpr int kMaxSequencerRows = 32;
 inline constexpr int kMaxSequencerColumns = 256;
 
+// Zoom bounds for the sequencer grid's persistent viewport (issue #2).
+// Persisted (normalized) so they are clamped on load; the UI-layer geometry
+// shares these constants so the sanitizer and the canvas can't drift.
+inline constexpr double kMinSequencerZoom = 0.25;   // cells shrunk to 25%
+inline constexpr double kMaxSequencerZoom = 8.0;    // cells grown to 8x
+
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------

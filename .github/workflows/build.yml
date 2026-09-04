@@ -76,6 +76,7 @@ jobs:
           -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
           -DNEDIT_BUILD_PLUGIN=ON
           -DNEDIT_BUILD_TOOLS=OFF
+          -DNEDIT_BUILD_UI_HARNESS=OFF
 
       - name: Configure (macOS with ccache)
         if: runner.os == 'macOS'
@@ -87,6 +88,7 @@ jobs:
           -DCMAKE_OBJCXX_COMPILER_LAUNCHER=ccache
           -DNEDIT_BUILD_PLUGIN=ON
           -DNEDIT_BUILD_TOOLS=OFF
+          -DNEDIT_BUILD_UI_HARNESS=OFF
 
       - name: Build
         if: runner.os != 'macOS'
@@ -174,3 +176,45 @@ jobs:
           else
             ./build/tools/nedit_editor_smoke ./build/nedit.vst3 300 2 5
           fi
+
+  # UI-test harness (issue #2 scroll/pan): opens the editor IN-PROCESS and
+  # drives synthetic mouse/wheel events straight into the live CFrame via the
+  # Debug-only test hooks, asserting the persisted sequencer viewport reacts
+  # correctly (zoom/pan/scrollbars). Must be a DEBUG build -- the test hooks
+  # (and VSTGUI's DEBUG vtable) only exist there. Linux-only for now: the
+  # direct-injection driver is portable, but the in-process VSTGUI::init path
+  # (no bundle load) is currently only verified on Linux/xcb; macOS/Windows
+  # are a follow-up. Runs under xvfb (headless -> the harness would exit 77).
+  ui-harness:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libwayland-dev wayland-protocols \
+            libx11-dev \
+            libxcb1-dev libxcb-util-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libglib2.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            xvfb
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DNEDIT_BUILD_PLUGIN=ON -DNEDIT_BUILD_TOOLS=OFF -DNEDIT_BUILD_UI_HARNESS=ON
+
+      - name: Build UI harness
+        run: cmake --build build --config Debug --parallel --target nedit_ui_harness
+
+      - name: Run UI harness
+        shell: bash
+        run: xvfb-run -a ./build/tools/nedit_ui_harness all

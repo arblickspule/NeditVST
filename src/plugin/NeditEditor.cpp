@@ -92,6 +92,7 @@ const CColor kAccentMutedHi { 198, 124, 117, 255 }; // muted salmon+  active val
 const CColor kAccentOn      {  32,  16,  13, 255 }; // on-salmon   text on accent fill
 const CColor kAccentHover   { 224, 104,  90, 255 }; // salmon-500  hover
 const CColor kAccentPressed { 194,  85,  72, 255 }; // salmon-600  pressed
+const CColor kScrollbarThumb {  62,  68,  76, 255 }; // graphite-500  scrollbar knobs
 
 // Per-playback-style accents (same mapping as the original's
 // PlaybackStylePalette::getStyleColour, ordered by PlaybackStyle ordinal).
@@ -2056,25 +2057,41 @@ private:
 // The framework-free step-grid geometry lives in nedit::ui (nedit_ui);
 // bring the helpers into this nedit::plugin::ui scope so the control reads
 // them unqualified.
-using nedit::ui::clampSequencerScroll;
-using nedit::ui::columnFromX;
+using nedit::ui::clampSequencerViewport;
 using nedit::ui::computeSequencerLayout;
+using nedit::ui::computeSequencerScrollBar;
+using nedit::ui::kSequencerZoomPerNotch;
 using nedit::ui::naturalStepsForSlice;
 using nedit::ui::noteValueBeats;
-using nedit::ui::rowFromBottomY;
+using nedit::ui::panSequencerViewport;
+using nedit::ui::sequencerCellHeight;
+using nedit::ui::sequencerCellWidth;
+using nedit::ui::sequencerColumnFromX;
+using nedit::ui::sequencerColumnX;
+using nedit::ui::sequencerMinZoom;
+using nedit::ui::sequencerOriginPx;
+using nedit::ui::sequencerRowBottom;
+using nedit::ui::sequencerRowFromY;
+using nedit::ui::sequencerScrollZone;
 using nedit::ui::SequencerGridLayout;
+using nedit::ui::SequencerScrollBar;
+using nedit::ui::SequencerScrollZone;
+using nedit::ui::SequencerViewport;
+using nedit::ui::zoomSequencerViewport;
 
 // ── Sequencer step grid (Sequence tab). ─────────────────────────────────
 // A piano-roll step grid (slice 0 at the BOTTOM): procedural sizing
 // (everything derives from the viewport + grid dims via the pure
-// SequencerGridGeometry helpers), vertical scrolling when the slice count
-// exceeds the viewport, beat-bar shading, active cells rendered as bars
-// spanning their declared length (mirroring the engine's Sequenced pick,
-// including the anticipatory clamp), per-cell extension + override
-// markers, and a live playhead column. Interactions: left-drag paints the
-// selected drawing style (painting over the same style erases), right-drag
-// erases, Shift+drag extends the grabbed cell's declared length, wheel
-// scrolls.
+// SequencerGridGeometry helpers), the normalized 2D grid viewport
+// (issue #2: independent h&v zoom + pan, persisted in SequencerState),
+// beat-bar shading, active cells rendered as bars spanning their declared
+// length (mirroring the engine's Sequenced pick, including the anticipatory
+// clamp), per-cell extension + override markers, a live playhead column,
+// and two overlay scrollbars (wheel over a bar zooms that axis only; knob
+// drag + track click page; middle-mouse drag pans). Interactions:
+// left-drag paints the selected drawing style (painting over the same style
+// erases), right-drag erases, Shift+drag extends the grabbed cell's
+// declared length, wheel zooms anchored at the cursor.
 class SequencerGridView : public CControl
 {
 public:
@@ -2094,17 +2111,49 @@ public:
     // with a salmon indicator under the selected drawing style).
     static constexpr double kPaletteH = 18.0;
 
-    [[nodiscard]] int scroll() const noexcept { return scrollRows_; }
+    // Overlay scrollbar (issue #2): visible thickness of the thumb track and
+    // the (invisible) hit extension around it -- the grab surface is larger
+    // than the drawn control, as the issue allows.
+    static constexpr double kScrollBarThickness = 10.0;
+    static constexpr double kScrollBarHitExtend = 6.0;
 
-    void setScroll (int rows) noexcept
+    // The grid's normalized 2D viewport derived from the model (issue #2).
+    // The stored zoom is floored per-axis at the "fill the viewport" fit
+    // (sequencerMinZoom): the state's absolute floor is kMinSequencerZoom, but
+    // a value persisted when the grid had more rows could sit below the fit for
+    // the current row count -- rendering it verbatim would leave dead space, so
+    // we clamp up on read (the next wheel/pan publishes the corrected value).
+    // Assumes layout_ is current (every caller rebuilds it first).
+    [[nodiscard]] ui::SequencerViewport viewport() const noexcept
     {
-        const int clamped = std::max (0, rows);
-        if (clamped != scrollRows_)
-        {
-            scrollRows_ = clamped;
-            invalid();
-        }
+        const auto& v = editor_->owner()->uiStateView().sequencer.viewport;
+        const CRect g = gridRect (getViewSize());
+        return ui::SequencerViewport {
+            std::max (v.zoomX, ui::sequencerMinZoom (layout_, false, g.getWidth())),
+            std::max (v.zoomY, ui::sequencerMinZoom (layout_, true, g.getHeight())),
+            v.originX, v.originY };
     }
+
+    // Persist a new viewport through the processor (mutate + publish) and
+    // redraw. The model owns the values so they survive session reload.
+    void publishViewport (ui::SequencerViewport vp)
+    {
+        editor_->owner()->setSequencerViewport (static_cast<float> (vp.zoomX),
+                                                static_cast<float> (vp.zoomY),
+                                                static_cast<float> (vp.originX),
+                                                static_cast<float> (vp.originY));
+        invalid();
+    }
+
+    // The scroll/pan state carried by a knob drag or track click.
+    struct ScrollbarDrag
+    {
+        bool active = false;
+        bool vertical = false;
+        double startAlong = 0.0;   // knob edge position (px) at press
+        double startOrigin = 0.0;  // normalized origin at press
+        double travel = 0.0;       // trackLen - knobLen at press (px)
+    };
 
     void draw (CDrawContext* dc) override
     {
@@ -2137,19 +2186,30 @@ public:
             return;
         }
 
+        const CRect g = gridRect (r);
+        const double gw = g.getWidth();
+        const double gh = g.getHeight();
+        const auto vp = viewport();
+        const double oxPx = ui::sequencerOriginPx (layout_, false, gw, vp);
+        const double colW = ui::sequencerCellWidth (layout_, vp);
+
         // ── Beat-bar column shading: every bar boundary (a whole bar's
         // worth of steps) gets a subtly brighter band + a divider line so
-        // the grid reads in bars regardless of step resolution. ──
+        // the grid reads in bars regardless of step resolution. Culling is
+        // zoom/scroll-aware (columns grow by zoom and scroll left of the
+        // window are skipped). ──
         const double stepsPerBarD = noteValueBeats (seq.stepResolutionIndex) > 0.0
                                         ? 4.0 / noteValueBeats (seq.stepResolutionIndex)
                                         : 4.0;
         const int stepsPerBar = std::max (1, static_cast<int> (std::lround (stepsPerBarD)));
 
-        const CRect g = gridRect (r);
-
         for (int col = 0; col < layout_.totalCols; ++col)
         {
-            const double x = r.left + static_cast<double> (col) * layout_.colWidth;
+            const double x = g.left + ui::sequencerColumnX (layout_, vp, oxPx, col);
+            if (x + colW <= g.left)
+                continue;
+            if (x >= g.right)
+                break;
             if (col % stepsPerBar == 0)
             {
                 if (col > 0)
@@ -2163,7 +2223,8 @@ public:
             {
                 // Faint per-beat shading inside the bar.
                 dc->setFillColor (mixColor (kSurface2, kSurface1, 0.4));
-                dc->drawRect (CRect (x, g.top + 1, x + layout_.colWidth, g.bottom - 1),
+                dc->drawRect (CRect (x, g.top + 1, std::min (g.right, x + colW),
+                                     g.bottom - 1),
                               kDrawFilled);
             }
         }
@@ -2175,28 +2236,19 @@ public:
         const int playingStep = owner->debugScheduler().playingStepIndex();
         if (playingStep >= 0 && playingStep < layout_.totalCols)
         {
-            const double x = r.left + static_cast<double> (playingStep) * layout_.colWidth;
-            dc->setFrameColor (kAccentBright);
-            dc->setLineWidth (1);
-            dc->drawLine (CPoint (x, g.top), CPoint (x, g.bottom));
+            const double x = g.left + ui::sequencerColumnX (layout_, vp, oxPx, playingStep);
+            if (x >= g.left - colW && x < g.right)
+            {
+                dc->setFrameColor (kAccentBright);
+                dc->setLineWidth (1);
+                dc->drawLine (CPoint (x, g.top), CPoint (x, g.bottom));
+            }
         }
 
-        // ── Scroll hint when rows are clipped ──
-        if (layout_.scrolls)
-        {
-            const double trackH = g.getHeight();
-            const double knobH = trackH * static_cast<double> (layout_.visibleRows)
-                                 / static_cast<double> (layout_.totalRows);
-            const double knobTop = g.top
-                                   + (trackH - knobH)
-                                         * static_cast<double> (scrollRows_)
-                                         / static_cast<double> (layout_.maxScroll > 0
-                                                                    ? layout_.maxScroll
-                                                                    : 1);
-            dc->setFillColor (kTextDisabled);
-            dc->drawRect (CRect (g.right - 4, knobTop, g.right - 2, knobTop + std::max (8.0, knobH)),
-                          kDrawFilled);
-        }
+        // ── Overlay scrollbars (issue #2): H along the grid's bottom edge,
+        // V along its right edge. Overlay = drawn over the content, not
+        // reserved. Only the axes that actually overflow render a bar. ──
+        drawScrollbars (dc, g, vp, gw, gh);
 
         // ── In-place override slider overlay ──
         if (edit_.active)
@@ -2230,8 +2282,35 @@ public:
             return kMouseEventHandled;
         }
 
+        // Middle-mouse drag pans (issue #2). Works even with an empty grid
+        // (a no-op then), so the gesture never feels dead.
+        if (buttons.isMiddleButton())
+        {
+            panning_ = true;
+            lastPanX_ = where.x;
+            lastPanY_ = where.y;
+            return kMouseEventHandled;
+        }
+
         if (layout_.visibleRows <= 0)
             return kMouseEventNotHandled;
+
+        const CRect g = gridRect (r);
+        const double gw = g.getWidth();
+        const double gh = g.getHeight();
+        const auto vp = viewport();
+        const double oxPx = ui::sequencerOriginPx (layout_, false, gw, vp);
+        const double oyPx = ui::sequencerOriginPx (layout_, true, gh, vp);
+
+        // Overlay scrollbars take precedence over the grid under the pointer
+        // (their band is drawn on top of the content). Knob press starts a
+        // drag; a track press pages the view (knob centers on the click).
+        const auto zone = ui::sequencerScrollZone (
+            where.x - g.left, where.y - g.top, gw, gh,
+            kScrollBarThickness, kScrollBarHitExtend);
+        if (zone != ui::SequencerScrollZone::canvas
+            && tryScrollbarPress (where, g, zone == ui::SequencerScrollZone::verticalBar, vp))
+            return kMouseEventHandled;
 
         // An in-place override slider is live: a press inside the grid band
         // starts the drag (pointer-capture style) so the user can scrub a
@@ -2243,9 +2322,10 @@ public:
             return kMouseEventHandled;
         }
 
-        const int col = columnFromX (layout_, where.x, r.left);
-        const int row = rowFromBottomY (layout_, where.y, r.top + kPaletteH,
-                                        r.bottom, scrollRows_);
+        const int col = ui::sequencerColumnFromX (layout_, vp,
+                                                  where.x - g.left, 0.0, oxPx);
+        const int row = ui::sequencerRowFromY (layout_, vp,
+                                               where.y - g.top, 0.0, gh, oyPx);
         if (row < 0 || col < 0)
             return kMouseEventNotHandled;
 
@@ -2306,6 +2386,37 @@ public:
 
         const CRect r = getViewSize();
 
+        // Middle-mouse pan: drag the canvas, content follows the cursor.
+        if (panning_)
+        {
+            const double dx = where.x - lastPanX_;
+            const double dy = where.y - lastPanY_;
+            if (dx != 0.0 || dy != 0.0)
+            {
+                lastPanX_ = where.x;
+                lastPanY_ = where.y;
+                const CRect g = gridRect (r);
+                publishViewport (ui::panSequencerViewport (
+                    layout_, g.getWidth(), g.getHeight(), viewport(), dx, dy));
+            }
+            return kMouseEventHandled;
+        }
+
+        // Overlay scrollbar knob drag.
+        if (barDrag_.active)
+        {
+            const CRect g = gridRect (r);
+            const double along = barDrag_.vertical ? where.y - g.top : where.x - g.left;
+            auto vp = viewport();
+            const double norm = barDrag_.startOrigin
+                              + (along - barDrag_.startAlong) / std::max (1e-9, barDrag_.travel);
+            publishViewport (ui::clampSequencerViewport (
+                barDrag_.vertical
+                    ? ui::SequencerViewport { vp.zoomX, vp.zoomY, vp.originX, norm }
+                    : ui::SequencerViewport { vp.zoomX, vp.zoomY, norm, vp.originY }));
+            return kMouseEventHandled;
+        }
+
         if (edit_.active)
         {
             if (editDragging_)
@@ -2315,7 +2426,12 @@ public:
 
         if (extending_)
         {
-            const int col = columnFromX (layout_, where.x, r.left);
+            const CRect g = gridRect (r);
+            const double gw = g.getWidth();
+            const auto vp = viewport();
+            const double oxPx = ui::sequencerOriginPx (layout_, false, gw, vp);
+            const int col = ui::sequencerColumnFromX (layout_, vp,
+                                                      where.x - g.left, 0.0, oxPx);
             if (col < 0)
                 return kMouseEventHandled;
             const int delta = col - grabCol_;
@@ -2332,9 +2448,14 @@ public:
         if (! dragging_)
             return kMouseEventNotHandled;
 
-        const int col = columnFromX (layout_, where.x, r.left);
-        const int row = rowFromBottomY (layout_, where.y, r.top + kPaletteH,
-                                        r.bottom, scrollRows_);
+        const CRect g = gridRect (r);
+        const auto vp = viewport();
+        const double oxPx = ui::sequencerOriginPx (layout_, false, g.getWidth(), vp);
+        const double oyPx = ui::sequencerOriginPx (layout_, true, g.getHeight(), vp);
+        const int col = ui::sequencerColumnFromX (layout_, vp,
+                                                  where.x - g.left, 0.0, oxPx);
+        const int row = ui::sequencerRowFromY (layout_, vp,
+                                               where.y - g.top, 0.0, g.getHeight(), oyPx);
         if (row < 0 || col < 0)
             return kMouseEventHandled;
         applyPaintAt (row, col);
@@ -2356,6 +2477,8 @@ public:
         editDragging_ = false;
         dragging_ = false;
         extending_ = false;
+        panning_ = false;
+        barDrag_.active = false;
         return kMouseEventHandled;
     }
 
@@ -2364,6 +2487,8 @@ public:
         dragging_ = false;
         extending_ = false;
         editDragging_ = false;
+        panning_ = false;
+        barDrag_.active = false;
         finishEditSlider();
         return kMouseEventHandled;
     }
@@ -2375,11 +2500,33 @@ public:
         const auto& seq = editor_->owner()->uiStateView().sequencer;
         auto loaded = editor_->owner()->acquireLoadedSample();
         rebuildLayout (loaded != nullptr ? seq.rows : 0);
-        if (! layout_.scrolls)
+        if (layout_.visibleRows <= 0)
             return;
 
-        const int steps = event.deltaY < 0.0 ? -1 : 1;
-        setScroll (scrollRows_ + steps);
+        // Issue #2: the wheel zooms BOTH axes, anchored at the cursor --
+        // except over an overlay scrollbar, where zoom is locked to that
+        // bar's orientation.
+        const CRect g = gridRect (getViewSize());
+        const double gw = g.getWidth();
+        const double gh = g.getHeight();
+        const auto vp = viewport();
+        const double factor = std::pow (ui::kSequencerZoomPerNotch,
+                                        event.deltaY > 0.0 ? 1.0 : -1.0);
+        double xFactor = factor;
+        double yFactor = factor;
+
+        const auto zone = ui::sequencerScrollZone (
+            event.mousePosition.x - g.left, event.mousePosition.y - g.top, gw, gh,
+            kScrollBarThickness, kScrollBarHitExtend);
+        if (zone == ui::SequencerScrollZone::horizontalBar)
+            yFactor = 1.0;
+        else if (zone == ui::SequencerScrollZone::verticalBar)
+            xFactor = 1.0;
+
+        const double normX = std::clamp ((event.mousePosition.x - g.left) / gw, 0.0, 1.0);
+        const double normY = std::clamp ((event.mousePosition.y - g.top) / gh, 0.0, 1.0);
+        publishViewport (ui::zoomSequencerViewport (
+            layout_, gw, gh, vp, normX, normY, xFactor, yFactor));
         event.consumed = true;
     }
 
@@ -2399,7 +2546,6 @@ private:
         layout_ = computeSequencerLayout (r.getWidth(),
                                           r.getHeight() - kPaletteH,
                                           totalRows, rowsEffectiveColumns());
-        scrollRows_ = clampSequencerScroll (layout_, scrollRows_);
     }
 
     // The grid's sub-rect: the view minus the palette strip at its top. All
@@ -2488,26 +2634,41 @@ private:
                         kCenterText);
     }
 
-    void drawBars (CDrawContext* dc, const CRect& r, const LoadedSample& loaded,
+    void drawBars (CDrawContext* dc, const CRect& g, const LoadedSample& loaded,
                    const state::SequencerState& seq)
     {
         const double originalBpm = engine::tempo::calculatedOriginalBpm (
             editor_->owner()->uiStateView().sample);
 
-        // Visible row bands, bottom-up; band b shows slice scrollRows_ + b.
-        for (int b = 0; b < layout_.visibleRows; ++b)
+        const double gw = g.getWidth();
+        const double gh = g.getHeight();
+        const auto vp = viewport();
+        const double oxPx = ui::sequencerOriginPx (layout_, false, gw, vp);
+        const double oyPx = ui::sequencerOriginPx (layout_, true, gh, vp);
+
+        // Row bands grow DOWNWARD from content top; row 0's bottom is the
+        // content's bottom edge. Under the current scroll the bottom rows
+        // with rowBottom below the grid are visible first; rows whose band
+        // has fully passed the top are done.
+        for (int row = 0; row < layout_.totalRows; ++row)
         {
-            const int row = scrollRows_ + b;
-            if (row >= layout_.totalRows || row >= static_cast<int> (loaded.slices.size()))
+            if (row >= static_cast<int> (loaded.slices.size()))
                 break;
 
-            const double rowBottom = r.bottom - static_cast<double> (b) * layout_.rowHeight;
-            const double rowTop = rowBottom - layout_.rowHeight;
+            const double rowBottom = ui::sequencerRowBottom (layout_, vp, 0.0, oyPx, row);
+            if (rowBottom <= 0.0)
+                break;
+            const double rowTop = rowBottom - ui::sequencerCellHeight (layout_, vp);
+            if (rowTop >= gh)
+                continue;
+
+            const double rowBottomY = g.top + rowBottom;
+            const double rowTopY = g.top + rowTop;
 
             // Row separator.
             dc->setFrameColor (kOutline);
             dc->setLineWidth (1);
-            dc->drawLine (CPoint (r.left, rowBottom), CPoint (r.right, rowBottom));
+            dc->drawLine (CPoint (g.left, rowBottomY), CPoint (g.right, rowBottomY));
 
             // Scan this row's cells directly (monophonic rows, one style).
             // Use the SampleState's rate + tempo (exactly what the engine's
@@ -2517,6 +2678,12 @@ private:
 
             for (int col = 0; col < layout_.totalCols; ++col)
             {
+                const double colLeft = ui::sequencerColumnX (layout_, vp, oxPx, col);
+                if (colLeft + ui::sequencerCellWidth (layout_, vp) <= 0.0)
+                    continue;
+                if (colLeft >= gw)
+                    break;
+
                 const int style = gridAt (row, col);
                 if (style < 0)
                     continue;
@@ -2541,8 +2708,8 @@ private:
                     }
                 }
 
-                drawBar (dc, r, rowTop, rowBottom, col, end, style);
-                drawMarkers (dc, r, rowTop, col, end, style, seq, cell);
+                drawBar (dc, g, rowTopY, rowBottomY, col, end, style, vp, oxPx);
+                drawMarkers (dc, g, rowTopY, col, end, style, seq, cell, vp, oxPx);
             }
         }
     }
@@ -2559,31 +2726,34 @@ private:
         return false;
     }
 
-    void drawBar (CDrawContext* dc, const CRect& r, double rowTop, double rowBottom,
-                  int col, int end, int style)
+    void drawBar (CDrawContext* dc, const CRect& g, double rowTop, double rowBottom,
+                  int col, int end, int style,
+                  const ui::SequencerViewport& vp, double oxPx)
     {
-        const double left = r.left + static_cast<double> (col) * layout_.colWidth;
-        const double width = static_cast<double> (end - col) * layout_.colWidth - 1.0;
+        const double colLeft = g.left + ui::sequencerColumnX (layout_, vp, oxPx, col);
+        const double colW = ui::sequencerCellWidth (layout_, vp);
+        const double width = static_cast<double> (end - col) * colW - 1.0;
         const double inset = 1.0;
         const CColor& base = kStyleColours[static_cast<std::size_t> (style)];
         const CColor fill = mixColor (base, kSurface2, 0.12);   // tone it toward the panel
 
         dc->setFillColor (fill);
-        dc->drawRect (CRect (left, rowTop + inset, left + std::max (0.0, width),
+        dc->drawRect (CRect (colLeft, rowTop + inset, colLeft + std::max (0.0, width),
                              rowBottom - inset),
                       kDrawFilled);
         dc->setFrameColor (base);
         dc->setLineWidth (1);
-        dc->drawRect (CRect (left, rowTop + inset, left + std::max (0.0, width),
+        dc->drawRect (CRect (colLeft, rowTop + inset, colLeft + std::max (0.0, width),
                              rowBottom - inset),
                       kDrawStroked);
     }
 
-    void drawMarkers (CDrawContext* dc, const CRect& r, double rowTop,
+    void drawMarkers (CDrawContext* dc, const CRect& g, double rowTop,
                       int col, int end, int style, const state::SequencerState& seq,
-                      std::uint32_t cell)
+                      std::uint32_t cell, const ui::SequencerViewport& vp, double oxPx)
     {
-        const double left = r.left + static_cast<double> (col) * layout_.colWidth;
+        const double colW = ui::sequencerCellWidth (layout_, vp);
+        const double left = g.left + ui::sequencerColumnX (layout_, vp, oxPx, col);
         const double top = rowTop + 2.0;
         constexpr double size = 4.0;
 
@@ -2594,7 +2764,7 @@ private:
         if (const auto it = seq.overrides.find (cell); it != seq.overrides.end())
         {
             (void) it;
-            const double cx = left + static_cast<double> (end - col) * layout_.colWidth - 8.0;
+            const double cx = left + static_cast<double> (end - col) * colW - 8.0;
             dc->setFillColor (kAccentMutedHi);
             drawTriangle (dc, CPoint (cx, top), CPoint (cx + size - 1, top),
                           CPoint (cx, top + size - 1));
@@ -2622,6 +2792,95 @@ private:
         dc->drawGraphicsPath (path, CDrawContext::kPathFilled);
         path->forget();
         dc->setDrawMode (kAliasing);
+    }
+
+    // ── Overlay scrollbars (issue #2) ────────────────────────────────────
+
+    // Press on an overlay scrollbar: knob press opens a drag (from which
+    // onMouseMoved continues), track press pages by centering the knob.
+    // Returns true when the press was consumed by a bar.
+    bool tryScrollbarPress (const CPoint& where, const CRect& g, bool vertical,
+                            const ui::SequencerViewport& vp) noexcept
+    {
+        const double trackExtent = vertical ? g.getHeight() : g.getWidth();
+        const ui::SequencerScrollBar bar = ui::computeSequencerScrollBar (
+            vertical, layout_, trackExtent, vp);
+        if (! bar.scrollable)
+            return false;
+
+        const double knobLen = bar.knobEnd - bar.knobStart;
+        const double travel = std::max (0.0, (bar.trackEnd - bar.trackStart) - knobLen);
+        const double along = vertical ? (where.y - g.top) : (where.x - g.left);
+
+        if (along >= bar.knobStart && along < bar.knobEnd)
+        {
+            barDrag_ = ScrollbarDrag { true, vertical, along,
+                                       vertical ? vp.originY : vp.originX, travel };
+            return true;
+        }
+
+        // Track click: page the view so the knob centers on the click.
+        const double norm = travel > 0.0
+            ? std::clamp ((along - knobLen * 0.5) / travel, 0.0, 1.0)
+            : 0.0;
+        setViewportAxis (vp, vertical, norm);
+        return true;
+    }
+
+    // Set one axis' normalized origin, keeping the other axis untouched and
+    // publishing the result to the model.
+    void setViewportAxis (const ui::SequencerViewport& vp, bool vertical, double origin)
+    {
+        publishViewport (ui::clampSequencerViewport (
+            vertical
+                ? ui::SequencerViewport { vp.zoomX, vp.zoomY, vp.originX, origin }
+                : ui::SequencerViewport { vp.zoomX, vp.zoomY, origin, vp.originY }));
+    }
+
+    // Draw the H bar along the grid's bottom edge and the V bar along its
+    // right edge, over the content. Each renders only when its axis really
+    // overflows (bar.scrollable), i.e. content > view at the current zoom.
+    void drawScrollbars (CDrawContext* dc, const CRect& g,
+                         const ui::SequencerViewport& vp, double gw, double gh) const
+    {
+        const ui::SequencerScrollBar h = ui::computeSequencerScrollBar (
+            false, layout_, gw, vp);
+        if (h.scrollable)
+        {
+            dc->setFillColor (kSurface1);
+            dc->drawRect (CRect (g.left, g.bottom - kScrollBarThickness,
+                                 g.right, g.bottom),
+                          kDrawFilled);
+            dc->setFillColor (kScrollbarThumb);
+            dc->drawRect (CRect (g.left + h.knobStart,
+                                 g.bottom - kScrollBarThickness,
+                                 g.left + h.knobEnd, g.bottom),
+                          kDrawFilled);
+            dc->setFrameColor (kOutline);
+            dc->setLineWidth (1);
+            dc->drawRect (CRect (g.left, g.bottom - kScrollBarThickness,
+                                 g.right, g.bottom),
+                          kDrawStroked);
+        }
+
+        const ui::SequencerScrollBar v = ui::computeSequencerScrollBar (
+            true, layout_, gh, vp);
+        if (v.scrollable)
+        {
+            dc->setFillColor (kSurface1);
+            dc->drawRect (CRect (g.right - kScrollBarThickness, g.top,
+                                 g.right, g.bottom),
+                          kDrawFilled);
+            dc->setFillColor (kScrollbarThumb);
+            dc->drawRect (CRect (g.right - kScrollBarThickness, g.top + v.knobStart,
+                                 g.right, g.top + v.knobEnd),
+                          kDrawFilled);
+            dc->setFrameColor (kOutline);
+            dc->setLineWidth (1);
+            dc->drawRect (CRect (g.right - kScrollBarThickness, g.top,
+                                 g.right, g.bottom),
+                          kDrawStroked);
+        }
     }
 
     // ── Per-cell parameter override: context menu + in-place value slider ──
@@ -2659,9 +2918,13 @@ private:
     // Centred on the step's column, clamped inside the view.
     void editSliderBounds (int col, const CRect& r, double& left, double& right) const noexcept
     {
-        const double center = r.left + (static_cast<double> (col) + 0.5) * layout_.colWidth;
-        left  = std::max (r.left + 2.0, center - kEditSliderW * 0.5);
-        right = std::min (r.right - 2.0, center + kEditSliderW * 0.5);
+        const CRect g = gridRect (r);
+        const auto vp = viewport();
+        const double oxPx = ui::sequencerOriginPx (layout_, false, g.getWidth(), vp);
+        const double center = g.left + ui::sequencerColumnX (layout_, vp, oxPx, col)
+                                      + ui::sequencerCellWidth (layout_, vp) * 0.5;
+        left  = std::max (g.left + 2.0, center - kEditSliderW * 0.5);
+        right = std::min (g.right - 2.0, center + kEditSliderW * 0.5);
     }
 
     void beginEditSlider (int row, int col, state::StyleParamId id)
@@ -2725,9 +2988,12 @@ private:
     {
         if (edit_.minValue == edit_.maxValue)
             return;
-        const double rowIndex = static_cast<double> (edit_.row - scrollRows_);
-        const double rowBottom = r.bottom - rowIndex * layout_.rowHeight;
-        const double rowTop = rowBottom - layout_.rowHeight;
+        const CRect g = gridRect (r);
+        const auto vp = viewport();
+        const double oyPx = ui::sequencerOriginPx (layout_, true, g.getHeight(), vp);
+        const double rowBottom = g.top + ui::sequencerRowBottom (layout_, vp, 0.0, oyPx,
+                                                                 edit_.row);
+        const double rowTop = rowBottom - ui::sequencerCellHeight (layout_, vp);
 
         // A compact box centred on the step's column at that row.
         const double boxW = edit_.right - edit_.left;
@@ -2834,7 +3100,6 @@ private:
 
     NeditEditor* editor_ = nullptr;
     SequencerGridLayout layout_;   // cached for draw/hit-testing
-    int scrollRows_ = 0;               // scroll offset (rows)
     bool dragging_ = false;
     bool erase_ = false;
     int paintStyle_ = 0;
@@ -2842,6 +3107,10 @@ private:
     int grabRow_ = 0;
     int grabCol_ = 0;
     int lastDelta_ = 0;
+    bool panning_ = false;         // middle-mouse pan in progress (issue #2)
+    double lastPanX_ = 0.0;
+    double lastPanY_ = 0.0;
+    ScrollbarDrag barDrag_;        // overlay scrollbar knob drag (issue #2)
     OverrideEdit edit_;                         // in-place override slider
     bool editDragging_ = false;                 // slider drag in progress
     // Owns the live right-click menu tree (top + submenus) until its popup
@@ -4582,12 +4851,31 @@ void PLUGIN_API NeditEditor::close()
     for (auto& column : paramMiniMenus_)
         column.fill (nullptr);
     waveformView_ = nullptr;
+    sequencerGrid_ = nullptr;
+#if !defined(NDEBUG)
+    // Drop the processor's Debug-only back-pointer before the view tree dies
+    // so testHookEditor() can never hand out a dangling editor.
+    if (owner_ != nullptr)
+        owner_->setTestHookEditor (nullptr);
+#endif
     if (frame != nullptr)
     {
         frame->close();
         frame = nullptr;
     }
 }
+
+#if !defined(NDEBUG)
+VSTGUI::CFrame* NeditEditor::testHookFrame() const noexcept
+{
+    return frame;
+}
+
+VSTGUI::CControl* NeditEditor::testHookSequencerGrid() const noexcept
+{
+    return sequencerGrid_;   // SequencerGridView : CControl (complete here)
+}
+#endif
 
 //------------------------------------------------------------------------
 Steinberg::tresult PLUGIN_API NeditEditor::onSize (Steinberg::ViewRect* newSize)
