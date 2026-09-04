@@ -1,0 +1,61 @@
+diff --git a/vstgui/lib/cviewcontainer.cpp b/vstgui/lib/cviewcontainer.cpp
+index 29bf7373..a7aace98 100644
+--- a/vstgui/lib/cviewcontainer.cpp
++++ b/vstgui/lib/cviewcontainer.cpp
+@@ -21,6 +21,7 @@
+ 
+ #include <algorithm>
+ #include <cassert>
++#include <vector>
+ 
+ namespace VSTGUI {
+ 
+@@ -1529,7 +1530,17 @@ bool CViewContainer::removed (CView* parent)
+ 	if (!isAttached ())
+ 		return false;
+ 
+-	for (const auto& pV : pImpl->children)
++	// Nedit patch: iterate a snapshot of the children list. Tearing down a
++	// nested option-menu submenu from a dbRemoved() hook while THIS
++	// container is being removed can erase nodes from pImpl->children,
++	// invalidating a live range-for iterator and leaving the loop to walk
++	// freed list memory (crash in CView::removed on a destroyed view).
++	// Iterating a copy is safe: a child already removed by such a nested
++	// erase merely bails out at its own isAttached() guard, exactly like
++	// removeView()'s own find()/erase() pair tolerates.
++	std::vector<SharedPointer<CView>> children (pImpl->children.begin (),
++	                                            pImpl->children.end ());
++	for (const auto& pV : children)
+ 		pV->removed (this);
+ 
+ 	return CView::removed (parent);
+diff --git a/vstgui/lib/platform/common/genericoptionmenu.cpp b/vstgui/lib/platform/common/genericoptionmenu.cpp
+index a3db18fc..2c3fc2b7 100644
+--- a/vstgui/lib/platform/common/genericoptionmenu.cpp
++++ b/vstgui/lib/platform/common/genericoptionmenu.cpp
+@@ -281,7 +281,24 @@ private:
+ 		{
+ 			if (!allowAnimation)
+ 			{
+-				subMenuView->getParentView ()->asViewContainer ()->removeView (subMenuView);
++				// Nedit patch: dbRemoved() reaches here while the enclosing
++				// modal container is mid-removal, so the submenu may ALREADY
++				// be detached (or even torn down by that very cascade).
++				// Double-removeView() on an attached-but-being-removed view
++				// re-enters CViewContainer::removeView on the same list node
++				// and leaves its find()/erase() iterator dangling. Skip the
++				// redundant removal and always drop the raw pointer so it
++				// cannot be re-entered later from a stale hook.
++				auto view = shared (subMenuView);
++				subMenuView = nullptr;
++				if (view->isAttached ())
++				{
++					if (auto parent = view->getParentView ())
++					{
++						if (auto container = parent->asViewContainer ())
++							container->removeView (view);
++					}
++				}
+ 			}
+ 			else
+ 			{

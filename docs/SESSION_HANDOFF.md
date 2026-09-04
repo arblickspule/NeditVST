@@ -1502,3 +1502,50 @@ session handoff notes (oldest first).
   290/290 green, zero warnings. Needs a macOS retest (dev machine is
   Linux/RelWithDebInfo only).
 
+## Session handoff (2026-09-04, evening)
+
+- CI/Apple work: fixed the mac/win editor-smoke regressions + made macOS
+  build a real `.vst3` bundle (`685a941` "Fix macOS + Windows CI build; add
+  universal macOS binary option", `16c4064` "Default macOS build to
+  Apple-Silicon-only; keep universal opt-in"). Added `NEDIT_MAC_UNIVERSAL`
+  (default OFF; `-DNEDIT_MAC_UNIVERSAL=ON` builds `arm64;x86_64`), an APPLE
+  `deploy` target → `~/Library/Audio/Plug-Ins/VST3`, and ad-hoc codesigning
+  (`codesign --force --deep --sign -`) so unsigned MH_BUNDLES load on
+  Apple Silicon. CI run `33901037636` fully green (build + editor-smoke on
+  mac/win/linux); that run produced a universal macOS bundle. Build-id
+  string embedded as `NEDIT_BUILD_ID` (drawn in-editor as "BUILD <sha>").
+- **Bitwig crash, fixed via new VSTGUI patch**
+  (`vstgui-optionmenu-submenu-teardown-crash.patch`): repeatable crash while
+  "modding Scratch Curves on a cell in sequencer" (right-click a Scratch
+  cell → pick a curve from a nested "Forward Curve"/"Backward Curve"
+  submenu). Crash reports in `crash_rports/`.
+  - Stack (`EngineCrash.dump`, resolved against unstripped
+    `build/src/plugin/nedit.so` + `addr2line`): VSTGUI `CVSTGUITimer` →
+    `Animation::Timer::onTimer` → `Animator::onTimer` →
+    `DispatchList::postForEach` dropping a finished animation →
+    `Animation::~Animation()` fires its stored notification →
+    `GenericOptionMenu::removeModalView` completion lambda
+    (`genericoptionmenu.cpp:633`) → `CFrame::endModalViewSession` →
+    `CFrame::removeView` → modal container `removed()` cascade →
+    `CView::removed` SIGSEGV writing `pImpl->parentView` (offset +0xec on a
+    freed Impl → use-after-free).
+  - Root cause: dismissing the popup removes the menu data browser; its
+    `DataSource::dbRemoved` hook calls `closeSubMenu(false)` →
+    `CViewContainer::removeView(subMenuView)` while `CViewContainer::removed`
+    is RANGE-ITERATING that same `pImpl->children` `std::list` and the
+    submenu is still a listed-but-unvisited child. Erasing the next node
+    mid-iteration invalidates the range-for hidden iterator → the loop
+    dereferences freed list memory → `removed()` on a destroyed view.
+  - Fix (in the vendored VSTGUI 4.10, applied at configure time for ALL
+    platforms like `cmake/vstgui-x11-reopen-crash.patch` is for Linux):
+    1. `CViewContainer::removed` — iterate a `std::vector` snapshot of
+       `children` instead of the live `std::list`; already-removed children
+       bail out at their own `isAttached()` guard.
+    2. `GenericOptionMenu::closeSubMenu(false)` — guard the non-animated
+       branch (`shared()` + `isAttached()` + null parent), always null out
+       `subMenuView`, so `dbRemoved` can never double-remove / re-enter the
+       same list node.
+  - Verified: patch applies clean, plugin rebuilds (new `CViewContainer::removed`
+    confirmed in the disassembly), 290/290 tests green, bundle redeployed to
+    `~/.vst3`. Needs a Bitwig A/B retest on-device.
+

@@ -19,28 +19,46 @@ endif()
 
 set(VST3_SDK_DIR ${vst3sdk_SOURCE_DIR} CACHE PATH "VST3 SDK source root")
 
-# Patch VSTGUI (Linux only): keep the xcb connection alive across editor
-# close/open so cairo-xcb's process-global connection cache doesn't go stale
-# and crash the next open() in cairo_xcb_surface_create (upstream VSTGUI
-# #249/#334/#335). Idempotent: only applied when the marker comment is absent.
+# Patch VSTGUI. Each patch is idempotent: applied only when its marker
+# comment is absent from the target file, so re-configures are no-ops.
+#   - x11 reopen crash: keep the xcb connection alive across editor
+#     close/open so cairo-xcb's process-global connection cache doesn't go
+#     stale and crash the next open() in cairo_xcb_surface_create (upstream
+#     VSTGUI #249/#334/#335). Linux only -- the lifecycle bug is x11.
+#   - option-menu submenu teardown: harden two core container-removal
+#     re-entrancy paths (CViewContainer::removed list iteration, and
+#     GenericOptionMenu::closeSubMenu's no-animation branch) that nested
+#     option-menu submenus hit on dismissal. Applies on every platform --
+#     the same double-remove/invalidated-iterator window exists under any
+#     generic-menu backend.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(Git REQUIRED)
-    set(_vstgui_x11platform "${VST3_SDK_DIR}/vstgui4/vstgui/lib/platform/linux/x11platform.cpp")
-    if(EXISTS "${_vstgui_x11platform}")
-        file(READ "${_vstgui_x11platform}" _vstgui_platform_src)
-        if(NOT _vstgui_platform_src MATCHES "Keep the xcb connection")
+    set(_vstgui_patches
+        "platform/linux/x11platform.cpp|Keep the xcb connection|vstgui-x11-reopen-crash.patch")
+endif()
+list(APPEND _vstgui_patches
+    "cviewcontainer.cpp|Nedit patch|vstgui-optionmenu-submenu-teardown-crash.patch")
+find_package(Git REQUIRED)
+foreach(_vstgui_desc IN LISTS _vstgui_patches)
+    string(REPLACE "|" ";" _vstgui_fields "${_vstgui_desc}")
+    list(GET _vstgui_fields 0 _vstgui_target)
+    list(GET _vstgui_fields 1 _vstgui_marker)
+    list(GET _vstgui_fields 2 _vstgui_patchfile)
+    set(_vstgui_file "${VST3_SDK_DIR}/vstgui4/vstgui/lib/${_vstgui_target}")
+    if(EXISTS "${_vstgui_file}")
+        file(READ "${_vstgui_file}" _vstgui_src)
+        if(NOT _vstgui_src MATCHES "${_vstgui_marker}")
             execute_process(
                 COMMAND "${GIT_EXECUTABLE}" -C "${VST3_SDK_DIR}/vstgui4" apply
-                        "${CMAKE_CURRENT_LIST_DIR}/../../cmake/vstgui-x11-reopen-crash.patch"
+                        "${CMAKE_CURRENT_LIST_DIR}/../../cmake/${_vstgui_patchfile}"
                 RESULT_VARIABLE _vstgui_patch_result
                 ERROR_VARIABLE _vstgui_patch_err)
             if(NOT _vstgui_patch_result EQUAL 0)
                 message(FATAL_ERROR
-                    "Failed to apply VSTGUI reopen-crash patch: ${_vstgui_patch_err}")
+                    "Failed to apply VSTGUI patch ${_vstgui_patchfile}: ${_vstgui_patch_err}")
             endif()
         endif()
     endif()
-endif()
+endforeach()
 
 # Third-party code: silence ITS warnings (ours stay fully enabled everywhere
 # else; SDK headers are SYSTEM-included so they never leak into consumer TUs).
