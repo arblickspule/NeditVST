@@ -47,6 +47,16 @@ option(NEDIT_BUILD_PLUGIN   "Build the VST3 plugin (fetches VST3 SDK)"  OFF)
 option(NEDIT_BUILD_TOOLS    "Build the Linux X11 host harness"         ON)
 option(NEDIT_BUILD_EDITOR_SMOKE "Build the cross-platform editor smoke test" ON)
 option(NEDIT_DEBUG_TOOLS    "Compile in debug/profiling utilities"      ON)
+option(NEDIT_MAC_UNIVERSAL  "Build a universal (arm64 + x86_64) macOS plugin" ON)
+
+# Universal macOS binary: one .vst3 that loads on both Apple Silicon and
+# Intel Macs. Applied only when the caller did not pin
+# CMAKE_OSX_ARCHITECTURES explicitly; override with -DNEDIT_MAC_UNIVERSAL=OFF
+# (then clear CMAKE_OSX_ARCHITECTURES to fall back to the host arch).
+if(APPLE AND NEDIT_MAC_UNIVERSAL AND NOT CMAKE_OSX_ARCHITECTURES)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING
+        "Build architectures for macOS (set by NEDIT_MAC_UNIVERSAL)" FORCE)
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings (applied to our own targets via nedit_warnings interface lib)

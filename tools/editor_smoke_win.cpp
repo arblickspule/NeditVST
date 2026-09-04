@@ -11,6 +11,8 @@
 
 #include <cstdio>
 
+using namespace Steinberg;
+
 namespace smoke
 {
 

@@ -9,6 +9,8 @@
 
 #include <cstdio>
 
+using namespace Steinberg;
+
 namespace smoke
 {
 
@@ -64,7 +66,7 @@ public:
     {
         NSApplication* app = [NSApplication sharedApplication];
         NSRunLoop* runLoop = [NSRunLoop mainRunLoop];
-        const NSDate* end =
+        NSDate* end =
             [NSDate dateWithTimeIntervalSinceNow: (NSTimeInterval) ms / 1000.0];
         // NSRunLoop runMode:beforeDate: drives the CFRunLoop, so VSTGUI's sources and
         // timers (idle, redraw) actually fire alongside window events.

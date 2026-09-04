@@ -366,4 +366,21 @@ if(NEDIT_IS_LINUX)
         COMMENT "Deploying nedit.vst3 to ${NEDIT_USER_VST3_DIR}")
 endif()
 
+if(APPLE)
+    # Convenience: install the assembled bundle into the user VST3 directory
+    # as a REAL bundle. macOS builds make the .vst3/Contents/MacOS/<name>
+    # MH_BUNDLE directly; the raw MODULE artifact (nedit.so) is NOT a
+    # loadable plugin and Ableton scans the complete bundle, so always ship
+    # the directory this target copies.
+    # `cmake --build . --target deploy`
+    set(NEDIT_USER_VST3_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/VST3" CACHE PATH
+        "Where `deploy` installs the .vst3 bundle")
+    add_custom_target(deploy
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${NEDIT_USER_VST3_DIR}/nedit.vst3
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${NEDIT_VST3_BUNDLE_DIR} ${NEDIT_USER_VST3_DIR}/nedit.vst3
+        DEPENDS nedit_vst3
+        COMMENT "Deploying nedit.vst3 to ${NEDIT_USER_VST3_DIR}")
+endif()
+
 message(STATUS "Nedit: plugin target enabled (SDK: ${VST3_SDK_DIR})")
